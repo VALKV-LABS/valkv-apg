@@ -9079,6 +9079,33 @@
           }
         }
       },
+      "PluginConfigAcl": {
+        "title": "acl",
+        "description": "Allows or denies authenticated consumers by group. deny wins (spec §9.4).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "allow": {
+            "description": "When not empty, only consumers in one of these groups pass.",
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 256,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Common/$defs/name"
+            }
+          },
+          "deny": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 256,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Common/$defs/name"
+            }
+          }
+        }
+      },
       "PluginConfigBandwidthLimit": {
         "title": "bandwidth_limit",
         "description": "Byte-budget token bucket: admission before proxying, debit after the response (spec §9.4).",
@@ -9098,6 +9125,337 @@
           "scope": {
             "$ref": "#/components/schemas/Common/$defs/limitScope",
             "default": "workspace"
+          }
+        }
+      },
+      "PluginConfigBasicAuth": {
+        "title": "basic_auth",
+        "description": "Authenticates a consumer by user name and password (spec §9.4, §10).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "realm": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9 _.-]{1,128}$",
+            "default": "api"
+          },
+          "hide_credentials": {
+            "description": "Remove the Authorization header before the request is forwarded.",
+            "type": "boolean",
+            "default": true
+          },
+          "anonymous": {
+            "description": "A consumer name to run as when no credentials are presented.",
+            "$ref": "#/components/schemas/Common/$defs/name"
+          }
+        }
+      },
+      "PluginConfigCors": {
+        "title": "cors",
+        "description": "Cross-origin resource sharing. Preflight requests are answered by the gateway (spec §9.4).",
+        "type": "object",
+        "required": [
+          "origins"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "origins": {
+            "description": "Exact origins, * for any, or one wildcard label such as https://*.example.com.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^(\\*|https?://(\\*\\.)?[A-Za-z0-9.-]+(:[0-9]{1,5})?)$"
+            }
+          },
+          "methods": {
+            "type": "array",
+            "uniqueItems": true,
+            "default": [
+              "GET",
+              "POST",
+              "PUT",
+              "PATCH",
+              "DELETE",
+              "OPTIONS"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/Common/$defs/httpMethod"
+            }
+          },
+          "headers": {
+            "description": "Request headers allowed. Empty means: whatever the preflight asks for.",
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 64,
+            "default": [],
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "expose_headers": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 64,
+            "default": [],
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "max_age": {
+            "description": "Seconds a browser may cache the preflight answer.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 86400,
+            "default": 86400
+          },
+          "credentials": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "if": {
+          "properties": {
+            "credentials": {
+              "const": true
+            }
+          },
+          "required": [
+            "credentials"
+          ]
+        },
+        "then": {
+          "properties": {
+            "origins": {
+              "not": {
+                "contains": {
+                  "const": "*"
+                }
+              }
+            }
+          }
+        }
+      },
+      "PluginConfigIpRestriction": {
+        "title": "ip_restriction",
+        "description": "Allows or denies requests by client address. deny wins (spec §9.4).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "allow": {
+            "description": "CIDR blocks or addresses. When not empty, anything outside is denied.",
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 1024,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PluginConfigIpRestriction/$defs/cidr"
+            }
+          },
+          "deny": {
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 1024,
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/PluginConfigIpRestriction/$defs/cidr"
+            }
+          }
+        },
+        "$defs": {
+          "cidr": {
+            "type": "string",
+            "pattern": "^([0-9]{1,3}(\\.[0-9]{1,3}){3}(/([0-9]|[12][0-9]|3[0-2]))?|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?)$"
+          }
+        }
+      },
+      "PluginConfigJwtAuth": {
+        "title": "jwt_auth",
+        "description": "Verifies a JSON Web Token and optionally maps it to a consumer (spec §9.4).",
+        "type": "object",
+        "required": [
+          "issuer"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "issuer": {
+            "description": "The iss claim must equal this.",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "audiences": {
+            "description": "When not empty, the aud claim must contain one of these.",
+            "type": "array",
+            "uniqueItems": true,
+            "maxItems": 32,
+            "default": [],
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          "jwks_url": {
+            "description": "Where the signing keys are published.",
+            "type": "string",
+            "pattern": "^https?://",
+            "maxLength": 2048
+          },
+          "jwks": {
+            "description": "Signing keys inline, as a JSON Web Key Set.",
+            "type": "object",
+            "required": [
+              "keys"
+            ],
+            "properties": {
+              "keys": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 32,
+                "items": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "secret": {
+            "description": "Shared secret for HS256.",
+            "x-apg-secret": true,
+            "$ref": "#/components/schemas/Common/$defs/secretValue"
+          },
+          "algorithms": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "default": [
+              "RS256",
+              "ES256"
+            ],
+            "items": {
+              "enum": [
+                "RS256",
+                "RS384",
+                "RS512",
+                "ES256",
+                "ES384",
+                "EdDSA",
+                "HS256"
+              ]
+            }
+          },
+          "leeway_secs": {
+            "description": "Clock difference tolerated for exp and nbf.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 600,
+            "default": 60
+          },
+          "token_sources": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "default": [
+              "header:Authorization"
+            ],
+            "items": {
+              "type": "string",
+              "pattern": "^(header|query|cookie):[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "required": {
+            "description": "When false, a request with no token passes unauthenticated.",
+            "type": "boolean",
+            "default": true
+          },
+          "consumer_claim": {
+            "description": "A claim whose value must equal a consumer custom_id.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+          },
+          "claims_to_headers": {
+            "description": "Claim name to the request header that carries it upstream.",
+            "type": "object",
+            "maxProperties": 32,
+            "default": {},
+            "propertyNames": {
+              "pattern": "^[A-Za-z0-9_.-]{1,64}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "jwks_cache_secs": {
+            "type": "integer",
+            "minimum": 10,
+            "maximum": 86400,
+            "default": 300
+          },
+          "anonymous": {
+            "description": "A consumer name to run as when no token is presented.",
+            "$ref": "#/components/schemas/Common/$defs/name"
+          }
+        },
+        "oneOf": [
+          {
+            "required": [
+              "jwks_url"
+            ]
+          },
+          {
+            "required": [
+              "jwks"
+            ]
+          },
+          {
+            "required": [
+              "secret"
+            ]
+          }
+        ]
+      },
+      "PluginConfigKeyAuth": {
+        "title": "key_auth",
+        "description": "Authenticates a consumer by an API key (spec §9.4, §10).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key_names": {
+            "description": "Header and query parameter names the key may arrive in.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 8,
+            "uniqueItems": true,
+            "default": [
+              "x-api-key"
+            ],
+            "items": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          },
+          "in_header": {
+            "type": "boolean",
+            "default": true
+          },
+          "in_query": {
+            "type": "boolean",
+            "default": false
+          },
+          "hide_credentials": {
+            "description": "Remove the key before the request is forwarded.",
+            "type": "boolean",
+            "default": true
+          },
+          "anonymous": {
+            "description": "A consumer name to run as when no key is presented.",
+            "$ref": "#/components/schemas/Common/$defs/name"
           }
         }
       },
@@ -9138,6 +9496,20 @@
           "response_headers": {
             "type": "boolean",
             "default": true
+          }
+        }
+      },
+      "PluginConfigRequestSizeLimit": {
+        "title": "request_size_limit",
+        "description": "Refuses request bodies over a size (spec §9.4).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1099511627776,
+            "default": 10485760
           }
         }
       },

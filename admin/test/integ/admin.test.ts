@@ -474,9 +474,33 @@ describe("plugins", () => {
   });
 
   it("refuses a plugin type this build cannot enforce, rather than storing it", async () => {
-    const res = await h.call("POST", `${D}/plugins`, { body: { type: "jwt_auth", scope: "workspace", config: { issuer: "x" } } });
+    const res = await h.call("POST", `${D}/plugins`, { body: { type: "wasm", scope: "workspace", config: { module: "m" } } });
     expect(res.status).toBe(422);
     expect(res.json.error.message).toContain("not available in this build");
+  });
+
+  it("validates an authentication plugin's configuration and seals its secret", async () => {
+    // Exactly one key source is required.
+    const none = await h.call("POST", `${D}/plugins`, { body: { name: "jwt-none", type: "jwt_auth", scope: "workspace", config: { issuer: "x" } } });
+    expect(none.status).toBe(422);
+    // A secret-typed field never takes a bare string.
+    const bare = await h.call("POST", `${D}/plugins`, { body: { name: "jwt-bare", type: "jwt_auth", scope: "workspace", config: { issuer: "x", secret: "plain-text", algorithms: ["HS256"] } } });
+    expect(bare.status).toBe(422);
+    // Credentials with an open wildcard is not a configuration a browser honours.
+    const cors = await h.call("POST", `${D}/plugins`, { body: { name: "cors-bad", type: "cors", scope: "workspace", config: { origins: ["*"], credentials: true } } });
+    expect(cors.status).toBe(422);
+
+    const before = await h.lastSeq();
+    const ok = await h.call("POST", `${D}/plugins`, {
+      body: { name: "jwt-hs", type: "jwt_auth", scope: "workspace", enabled: false, config: { issuer: "x", secret: { $secret: "the-shared-secret" }, algorithms: ["HS256"] } },
+    });
+    expect(ok.status).toBe(201);
+    expect(ok.json.config.secret).toEqual({ $secret: "***" });
+    expect(ok.json.config.leeway_secs).toBe(60);
+    const [event] = await h.events(before);
+    expect(JSON.stringify(event)).not.toContain("the-shared-secret");
+    expect(event!.data["data"].config.secret.$secret_ciphertext).toMatch(/^v1:/);
+    await h.call("DELETE", `${D}/plugins/jwt-hs`);
   });
 
   it("allows one instance per type at each exact attachment point", async () => {

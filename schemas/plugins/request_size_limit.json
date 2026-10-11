@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/request_size_limit.json",
+  "title": "request_size_limit",
+  "description": "Refuses request bodies over a size (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "max_bytes": { "type": "integer", "minimum": 0, "maximum": 1099511627776, "default": 10485760 }
+  }
+}

@@ -54,7 +54,26 @@ pub fn load(path: &Path, schemas: &Schemas, env: &dyn Fn(&str) -> Option<String>
         return Err(faults);
     }
     let doc = config::parse_and_merge(&sources)?;
-    let events = config::compile(&doc, schemas)?;
+    let mut events = config::compile(&doc, schemas)?;
+
+    // A credential whose key or password is a reference (`$env`, `$file`) is
+    // read here and replaced by its hash, so nothing downstream holds it in clear.
+    let mut faults = Vec::new();
+    for event in events.iter_mut().filter(|e| e.kind == "credential") {
+        let Some(data) = event.data.as_mut().and_then(|d| d.as_object_mut()) else { continue };
+        for (field, hashed) in [("key", "key_hash"), ("password", "password_sha256")] {
+            let Some(reference) = data.remove(field) else { continue };
+            match crate::secrets::resolve(&reference, "", None) {
+                Ok(clear) => {
+                    data.insert(hashed.to_string(), serde_json::Value::String(apg_core::consumers::sha256_hex(clear.as_bytes())));
+                }
+                Err(message) => faults.push(Fault::new("/consumers", format!("credential '{}': {field}: {message}", data.get("name").and_then(|n| n.as_str()).unwrap_or_default()))),
+            }
+        }
+    }
+    if !faults.is_empty() {
+        return Err(faults);
+    }
 
     let mut resources = Resources::new();
     for event in &events {

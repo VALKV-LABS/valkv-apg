@@ -13,6 +13,7 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 
 use crate::metrics;
+use crate::plugins::Runtime;
 use crate::upstream::{self, Upstreams};
 
 /// Liveness of the config source, and whether the node has ever held a
@@ -67,6 +68,8 @@ pub struct Gateway {
     pub health: SourceHealth,
     /// Backend health, circuits, resolved addresses and upstream trust material.
     pub upstreams: Arc<Upstreams>,
+    /// Built plugin instances.
+    pub plugins: Arc<Runtime>,
     /// ACME HTTP-01 answers every node of the fleet must give (spec TLS-10): token to key authorisation.
     challenges: ArcSwap<HashMap<String, String>>,
     /// Answers for challenges this node started itself, when nothing distributes them (file mode).
@@ -88,6 +91,7 @@ impl Gateway {
             snapshot: ArcSwap::from_pointee(Snapshot::default()),
             applied_seq: AtomicU64::new(0),
             health: SourceHealth::new(stale_after_secs),
+            plugins: Arc::new(Runtime::new(upstreams.secrets.clone())),
             upstreams: Arc::new(Upstreams::new(upstreams)),
             challenges: ArcSwap::from_pointee(HashMap::new()),
             local_challenges: DashMap::new(),
@@ -121,6 +125,7 @@ impl Gateway {
         }
         // Before the swap, so no request meets a service whose state is not there yet.
         self.upstreams.sync(resources, &snapshot);
+        self.plugins.sync(&snapshot);
         let challenges: HashMap<String, String> = resources
             .kind("acme_challenge")
             .filter_map(|(token, stored)| Some((token.clone(), stored.data.get("key_authorization")?.as_str()?.to_string())))

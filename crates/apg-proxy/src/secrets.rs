@@ -66,9 +66,53 @@ impl SecretBox {
     }
 }
 
+/// Reads a secret-typed configuration value (spec §9.6): `{ "$env": NAME }`
+/// from this node's environment, `{ "$file": PATH }` from a file, or
+/// `{ "$secret_ciphertext": … }` as sealed by the control plane for the
+/// resource named by `aad`.
+pub fn resolve(value: &serde_json::Value, aad: &str, secrets: Option<&SecretBox>) -> Result<String, String> {
+    let text = |key: &str| value.get(key).and_then(serde_json::Value::as_str);
+    if let Some(name) = text("$env") {
+        if !name.starts_with("APG_SECRET_") {
+            return Err(format!("only variables named APG_SECRET_* may be read; got {name}"));
+        }
+        return std::env::var(name).ok().filter(|v| !v.is_empty()).ok_or_else(|| format!("environment variable {name} is not set on this node"));
+    }
+    if let Some(path) = text("$file") {
+        return std::fs::read_to_string(path).map(|s| s.trim_end_matches(['\r', '\n']).to_string()).map_err(|e| format!("cannot read '{path}': {e}"));
+    }
+    if let Some(sealed) = text("$secret_ciphertext") {
+        let secrets = secrets.ok_or("APG_SECRET_KEY is not set on this node, so the sealed value cannot be opened")?;
+        return String::from_utf8(secrets.open(sealed, aad)?).map_err(|_| "the sealed value is not text".to_string());
+    }
+    Err("a secret value must be given as $env or $file, or sealed by a control plane".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn secret_values_are_read_from_a_file_or_opened_and_never_from_arbitrary_variables() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secret");
+        std::fs::write(&path, "from-a-file\n").unwrap();
+        assert_eq!(resolve(&json!({ "$file": path.to_str().unwrap() }), "x", None).unwrap(), "from-a-file");
+        assert!(resolve(&json!({ "$file": "/no/such/file" }), "x", None).is_err());
+
+        let secrets = SecretBox::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", None).unwrap();
+        let sealed = json!({ "$secret_ciphertext": secrets.seal(b"sealed-value", "plugin:p1") });
+        assert_eq!(resolve(&sealed, "plugin:p1", Some(&secrets)).unwrap(), "sealed-value");
+        assert!(resolve(&sealed, "plugin:p2", Some(&secrets)).is_err(), "bound to its plugin");
+        assert!(resolve(&sealed, "plugin:p1", None).unwrap_err().contains("APG_SECRET_KEY"));
+
+        // PATH and friends are not secrets a configuration may read.
+        assert!(resolve(&json!({ "$env": "PATH" }), "x", None).unwrap_err().contains("APG_SECRET_"));
+        assert!(resolve(&json!({ "$env": "APG_SECRET_SURELY_NOT_SET_ANYWHERE" }), "x", None).unwrap_err().contains("not set"));
+        assert!(resolve(&json!({ "$secret": "clear" }), "x", None).is_err(), "a clear value never reaches a node from a control plane");
+        assert!(resolve(&json!("bare string"), "x", None).is_err());
+    }
 
     const KEY_A: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
     const KEY_B: &str = "//79/Pv6+fj39vX08/Lx8O/u7ezr6uno5+bl5OPi4eA=";

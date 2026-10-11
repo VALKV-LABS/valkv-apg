@@ -14,6 +14,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use apg_core::consumers::Consumer;
 use apg_core::path;
 use apg_core::plugins::Site;
 use apg_core::snapshot::{CompiledRewrite, CompiledRoute, Matched, Request as MatchRequest, ServiceEntry, Snapshot};
@@ -25,9 +26,11 @@ use pingora_core::{Error, ErrorSource, ErrorType};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 
+use crate::auth::{AuthEffects, AuthOutcome};
 use crate::config::HttpMode;
 use crate::gateway::Gateway;
 use crate::limits::{BandwidthConfig, Buckets, RateLimitConfig, Subject, bucket_key};
+use crate::plugins::{AUTH_TYPES, Built, FAIL_CLOSED, Req, Verdict};
 use crate::metrics;
 use crate::net::{Cidr, client_ip, normalize_host};
 use crate::upstream::{Picked, hash_parts, weighted_pick};
@@ -95,6 +98,20 @@ pub struct Ctx {
     server_port: Option<u16>,
     /// Seconds a refused client should wait; sent as `Retry-After`.
     retry_after: Option<u64>,
+    /// Who the caller is, once authentication has said.
+    consumer: Option<Arc<Consumer>>,
+    /// The claims of a verified token.
+    jwt_claims: Option<serde_json::Value>,
+    /// The challenge to send with a 401.
+    www_authenticate: Option<String>,
+    /// Headers plugins add to whatever response the request gets (spec PL-8).
+    response_headers: Vec<(String, String)>,
+    /// Changes plugins ask for on the forwarded request.
+    strip_headers: Vec<String>,
+    strip_query: Vec<String>,
+    set_headers: Vec<(String, String)>,
+    /// Largest request body a plugin allows.
+    max_body: Option<u64>,
 }
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -134,6 +151,8 @@ struct KeySource<'a> {
     path: &'a str,
     query: &'a str,
     workspace_id: &'a str,
+    /// Empty until authentication has named a consumer.
+    consumer_id: &'a str,
 }
 
 impl KeySource<'_> {
@@ -143,8 +162,7 @@ impl KeySource<'_> {
             "client_ip" => self.client_ip,
             "path" => self.path,
             "workspace" => self.workspace_id,
-            // Consumers are identified by authentication plugins, which arrive in build phase 2e.
-            "consumer" => "",
+            "consumer" => self.consumer_id,
             other => match other.split_once(':')? {
                 ("header", name) => header(self.req, name).unwrap_or(""),
                 ("cookie", name) => header(self.req, "cookie").unwrap_or("").split(';').filter_map(|pair| pair.trim().split_once('=')).find(|(k, _)| *k == name).map_or("", |(_, v)| v),
@@ -164,6 +182,7 @@ fn idempotent(method: &str) -> bool {
 const NO_BACKEND: (u16, &str, &str) = (503, "NO_HEALTHY_BACKEND", "no upstream is available for this route");
 const UPSTREAM_ERROR: (u16, &str, &str) = (502, "UPSTREAM_ERROR", "the upstream could not be reached or answered invalidly");
 const UPSTREAM_TIMEOUT: (u16, &str, &str) = (504, "UPSTREAM_TIMEOUT", "the upstream did not answer in time");
+const PAYLOAD_TOO_LARGE: (u16, &str, &str) = (413, "PAYLOAD_TOO_LARGE", "the request body is larger than this route accepts");
 
 impl ApgProxy {
     pub fn new(gateway: Arc<Gateway>, settings: ProxySettings) -> Self {
@@ -208,6 +227,208 @@ impl ApgProxy {
     fn refuse<T>(ctx: &mut Ctx, refusal: (u16, &'static str, &'static str)) -> pingora_core::Result<T> {
         ctx.refusal = Some(refusal);
         Err(Error::explain(ErrorType::Custom(refusal.1), refusal.2))
+    }
+
+    fn key_source<'a>(&self, session: &'a Session, ctx: &'a Ctx, matched: &'a Matched, query: &'a str) -> KeySource<'a> {
+        KeySource {
+            req: session.req_header(),
+            host: &ctx.host,
+            client_ip: &ctx.client_ip,
+            path: &ctx.path,
+            query,
+            workspace_id: &matched.workspace_id,
+            consumer_id: ctx.consumer.as_ref().map_or("", |c| c.id.as_str()),
+        }
+    }
+
+    /// Settles who the caller is once every authentication scheme has had its
+    /// say (spec PL-10): each configured scheme must pass, either with a valid
+    /// credential or, when no credential of its scheme was presented, through
+    /// its `anonymous` consumer.
+    fn settle_identity(ctx: &mut Ctx, snapshot: &Snapshot, matched: &Matched, outcomes: Vec<AuthOutcome>) -> Result<(), (u16, &'static str, &'static str)> {
+        let mut anonymous: Option<String> = None;
+        let mut authenticated = false;
+        for outcome in outcomes {
+            match outcome {
+                AuthOutcome::Authenticated { consumer, claims } => {
+                    authenticated = true;
+                    if ctx.consumer.is_none() {
+                        ctx.consumer = consumer;
+                    }
+                    if ctx.jwt_claims.is_none() {
+                        ctx.jwt_claims = claims;
+                    }
+                }
+                AuthOutcome::NoCredential { anonymous: Some(name), .. } => {
+                    anonymous.get_or_insert(name);
+                }
+                AuthOutcome::NoCredential { anonymous: None, challenge } => {
+                    ctx.www_authenticate = challenge;
+                    return Err((401, "UNAUTHENTICATED", "authentication is required"));
+                }
+                // Refused where they were found.
+                AuthOutcome::Invalid { .. } | AuthOutcome::Unavailable => {}
+            }
+        }
+        if !authenticated && let Some(name) = anonymous {
+            match snapshot.consumers.by_name(&matched.workspace_id, &name) {
+                Some(consumer) => ctx.consumer = Some(consumer.clone()),
+                // Letting the request through as nobody would be failing open.
+                None => return Err((500, "PLUGIN_ERROR", "the anonymous consumer of an authentication plugin does not exist")),
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the request phase of every plugin that applies, highest priority
+    /// first (spec §9.2). Returns true when a plugin answered the request.
+    async fn run_request_plugins(&self, session: &mut Session, ctx: &mut Ctx, snapshot: &Arc<Snapshot>, matched: &Matched, query: &str) -> pingora_core::Result<bool> {
+        let kinds: Vec<&str> = snapshot.plugins.types().filter(|kind| snapshot.flag(&format!("plugin_{kind}"))).collect();
+        if kinds.is_empty() {
+            return Ok(false);
+        }
+        let headers = session.req_header().headers.clone();
+        let (method, host, path, client_ip) = (ctx.method.clone(), ctx.host.clone(), ctx.path.clone(), ctx.client_ip.clone());
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let req = Req { method: &method, host: &host, path: &path, query, client_ip: &client_ip, headers: &headers, workspace_id: &matched.workspace_id, system_route: matched.route.system, now };
+
+        let mut done: Vec<&str> = Vec::new();
+        let mut outcomes: Vec<AuthOutcome> = Vec::new();
+        let mut effects = AuthEffects::default();
+        let mut settled = false;
+        loop {
+            // What still applies, given what is known about the caller so far:
+            // an instance qualified by a consumer can only be chosen once
+            // authentication has named one.
+            let service_id = ctx.service.as_ref().map(|s| s.id.clone()).unwrap_or_default();
+            let consumer_id = ctx.consumer.as_ref().map(|c| c.id.clone());
+            let site = Site { route_id: &matched.route.id, service_id: &service_id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref() };
+            let remaining: Vec<(i32, &str, &apg_core::plugins::Instance)> = kinds
+                .iter()
+                .filter(|kind| !done.contains(kind))
+                .filter_map(|kind| {
+                    let instance = snapshot.plugins.effective(kind, &site)?;
+                    let priority = instance.plugin.priority.or_else(|| apg_plugin_sdk::plugin_type(kind).map(|t| t.default_priority)).unwrap_or(0);
+                    Some((priority, *kind, instance))
+                })
+                .collect();
+
+            if !settled && !remaining.iter().any(|(_, kind, _)| AUTH_TYPES.contains(kind)) {
+                settled = true;
+                if let Err((status, code, message)) = Self::settle_identity(ctx, snapshot, matched, std::mem::take(&mut outcomes)) {
+                    self.respond_error(session, ctx, status, code, message).await?;
+                    return Ok(true);
+                }
+                ctx.strip_headers.append(&mut effects.strip_headers);
+                ctx.strip_query.append(&mut effects.strip_query);
+                ctx.set_headers.append(&mut effects.set_headers);
+                if ctx.service.is_none() {
+                    // A split keyed on the consumer: the side can be chosen now.
+                    let key = ctx.consumer.as_ref().map(|c| c.id.clone());
+                    ctx.service = self.pick_service(snapshot, &matched.route, key.as_deref());
+                }
+                // Look again: the consumer and the service may bring other instances into play.
+                continue;
+            }
+            let Some((_, kind, instance)) = remaining.into_iter().max_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(a.1))) else { break };
+            done.push(kind);
+
+            let built = self.gateway.plugins.get(&instance.id);
+            let verdict = match built.as_deref() {
+                None | Some(Built::Broken(_)) => {
+                    metrics::PLUGIN_ERRORS.with_label_values(&[kind]).inc();
+                    if FAIL_CLOSED.contains(&kind) { Verdict::Deny { status: 500, code: "PLUGIN_ERROR", message: "a plugin that guards this route could not run" } } else { Verdict::Continue }
+                }
+                Some(Built::IpRestriction(plugin)) => plugin.check(req.client_ip),
+                Some(Built::Cors(plugin)) => {
+                    let result = plugin.check(&req);
+                    ctx.response_headers.extend(result.response_headers);
+                    match result.preflight {
+                        Some(headers) => Verdict::Respond { status: 204, headers, body: String::new() },
+                        None => Verdict::Continue,
+                    }
+                }
+                Some(Built::RequestSize { max_bytes }) => {
+                    ctx.max_body = Some(*max_bytes);
+                    let declared = req.header("content-length").and_then(|v| v.parse::<u64>().ok());
+                    if declared.is_some_and(|n| n > *max_bytes) { Verdict::Deny { status: PAYLOAD_TOO_LARGE.0, code: PAYLOAD_TOO_LARGE.1, message: PAYLOAD_TOO_LARGE.2 } } else { Verdict::Continue }
+                }
+                Some(Built::Acl(plugin)) => plugin.check(ctx.consumer.as_ref().map(|c| c.groups.as_slice())),
+                Some(Built::KeyAuth(_) | Built::BasicAuth(_) | Built::JwtAuth(_)) => {
+                    let outcome = match built.as_deref() {
+                        Some(Built::KeyAuth(plugin)) => plugin.check(&req, snapshot, &mut effects),
+                        Some(Built::BasicAuth(plugin)) => plugin.check(&req, snapshot, &self.gateway.plugins.verified_passwords, &mut effects).await,
+                        Some(Built::JwtAuth(plugin)) => plugin.check(&req, snapshot, &mut effects).await,
+                        _ => unreachable!("matched just above"),
+                    };
+                    match outcome {
+                        AuthOutcome::Invalid { challenge } => {
+                            ctx.www_authenticate = challenge;
+                            Verdict::Deny { status: 401, code: "UNAUTHENTICATED", message: "the credential presented is not valid" }
+                        }
+                        AuthOutcome::Unavailable => Verdict::Deny { status: 503, code: "AUTH_UNAVAILABLE", message: "authentication is temporarily unavailable" },
+                        other => {
+                            outcomes.push(other);
+                            Verdict::Continue
+                        }
+                    }
+                }
+                Some(Built::RateLimit(cfg)) => {
+                    let lookup = |name: &str| req.header(name).map(str::to_string);
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let decision = self.buckets.take_request(&bucket_key(&cfg.scope, &subject), cfg);
+                    ctx.rate = Some((cfg.clone(), decision.remaining));
+                    if decision.allowed {
+                        Verdict::Continue
+                    } else {
+                        metrics::LIMITED.with_label_values(&["rate_limit"]).inc();
+                        ctx.retry_after = Some(decision.retry_after_secs.max(1));
+                        Verdict::Deny { status: 429, code: "RATE_LIMITED", message: "rate limit exceeded" }
+                    }
+                }
+                Some(Built::Bandwidth(cfg)) => {
+                    let lookup = |name: &str| req.header(name).map(str::to_string);
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let key = bucket_key(&cfg.scope, &subject);
+                    if self.buckets.admit_bytes(&key, cfg) {
+                        // Charged in the log phase, once the real size is known.
+                        ctx.bandwidth = Some((key, cfg.clone()));
+                        Verdict::Continue
+                    } else {
+                        metrics::LIMITED.with_label_values(&["bandwidth_limit"]).inc();
+                        Verdict::Deny { status: 429, code: "BANDWIDTH_LIMIT_EXCEEDED", message: "bandwidth limit exceeded" }
+                    }
+                }
+            };
+            match verdict {
+                Verdict::Continue => {}
+                Verdict::Deny { status, code, message } => {
+                    self.respond_error(session, ctx, status, code, message).await?;
+                    return Ok(true);
+                }
+                Verdict::Respond { status, headers, body } => {
+                    self.respond_from_plugin(session, ctx, status, headers, body).await?;
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Sends a response a plugin produced (a preflight answer, a redirect, a static body).
+    async fn respond_from_plugin(&self, session: &mut Session, ctx: &mut Ctx, status: u16, headers: Vec<(String, String)>, body: String) -> pingora_core::Result<()> {
+        let mut head = ResponseHeader::build(status, None)?;
+        head.insert_header("content-length", body.len().to_string())?;
+        head.insert_header(REQUEST_ID_HEADER, ctx.request_id.as_str())?;
+        for (name, value) in ctx.response_headers.iter().chain(headers.iter()) {
+            head.append_header(name.clone(), value.clone())?;
+        }
+        ctx.bytes_out = body.len() as u64;
+        session.write_response_header(Box::new(head), body.is_empty()).await?;
+        if !body.is_empty() {
+            session.write_response_body(Some(Bytes::from(body)), true).await?;
+        }
+        Ok(())
     }
 
     /// Sends a gateway-generated error (spec §6.7): the standard JSON shape,
@@ -269,6 +490,13 @@ impl ApgProxy {
         }
         if let Some(secs) = ctx.retry_after {
             head.insert_header("retry-after", secs.to_string())?;
+        }
+        if let Some(challenge) = ctx.www_authenticate.as_deref().filter(|_| status == 401) {
+            head.insert_header("www-authenticate", challenge.to_string())?;
+        }
+        // Headers from plugins that ran before the refusal, so a browser can read a 401 or 429 (spec PL-8).
+        for (name, value) in &ctx.response_headers {
+            head.append_header(name.clone(), value.clone())?;
         }
         ctx.bytes_out = body.len() as u64;
         session.write_response_header(Box::new(head), false).await?;
@@ -383,59 +611,38 @@ impl ProxyHttp for ApgProxy {
             return Ok(true);
         }
 
-        let split_key = matched.route.split_key.as_deref().and_then(|selector| {
-            KeySource { req: session.req_header(), host: &ctx.host, client_ip: &ctx.client_ip, path: &ctx.path, query: &query, workspace_id: &matched.workspace_id }.value(selector)
-        });
-        let Some(service) = self.pick_service(&snapshot, &matched.route, split_key.as_deref()) else {
-            self.respond_error(session, ctx, NO_BACKEND.0, NO_BACKEND.1, NO_BACKEND.2).await?;
-            return Ok(true);
-        };
-        ctx.service = Some(service.clone());
-        if service.spec.load_balancing.strategy == "hash" {
-            ctx.hash_key = KeySource { req: session.req_header(), host: &ctx.host, client_ip: &ctx.client_ip, path: &ctx.path, query: &query, workspace_id: &matched.workspace_id }
-                .value(&service.spec.load_balancing.hash_key);
+        // The side of a split keyed on the consumer can only be chosen once
+        // the caller is known, so that choice waits for authentication.
+        let by_consumer = matched.route.targets.len() > 1 && matched.route.split_key.as_deref() == Some("consumer");
+        if !by_consumer {
+            let split_key = matched.route.split_key.as_deref().and_then(|selector| self.key_source(session, ctx, &matched, &query).value(selector));
+            let Some(service) = self.pick_service(&snapshot, &matched.route, split_key.as_deref()) else {
+                self.respond_error(session, ctx, NO_BACKEND.0, NO_BACKEND.1, NO_BACKEND.2).await?;
+                return Ok(true);
+            };
+            ctx.service = Some(service);
         }
         ctx.deadline = matched.route.timeout_ms.zip(ctx.started).map(|(ms, started)| started + Duration::from_millis(ms));
 
         // ── Request-phase plugins ────────────────────────────────────────────
-        let site = Site { route_id: &matched.route.id, service_id: &service.id, workspace_id: &matched.workspace_id, consumer_id: None };
-
-        if snapshot.flag("plugin_rate_limit")
-            && let Some(instance) = snapshot.plugins.effective("rate_limit", &site)
-        {
-            let cfg = RateLimitConfig::from_json(&instance.plugin.config);
-            let decision = {
-                let req = session.req_header();
-                let lookup = |name: &str| header(req, name).map(str::to_string);
-                let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: None, client_ip: &ctx.client_ip, header: &lookup };
-                self.buckets.take_request(&bucket_key(&cfg.scope, &subject), &cfg)
-            };
-            ctx.rate = Some((cfg, decision.remaining));
-            if !decision.allowed {
-                metrics::LIMITED.with_label_values(&["rate_limit"]).inc();
-                ctx.retry_after = Some(decision.retry_after_secs.max(1));
-                self.respond_error(session, ctx, 429, "RATE_LIMITED", "rate limit exceeded").await?;
-                return Ok(true);
-            }
+        if self.run_request_plugins(session, ctx, &snapshot, &matched, &query).await? {
+            return Ok(true);
         }
-
-        if snapshot.flag("plugin_bandwidth_limit")
-            && let Some(instance) = snapshot.plugins.effective("bandwidth_limit", &site)
-        {
-            let cfg = BandwidthConfig::from_json(&instance.plugin.config);
-            let key = {
-                let req = session.req_header();
-                let lookup = |name: &str| header(req, name).map(str::to_string);
-                let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: None, client_ip: &ctx.client_ip, header: &lookup };
-                bucket_key(&cfg.scope, &subject)
-            };
-            if !self.buckets.admit_bytes(&key, &cfg) {
-                metrics::LIMITED.with_label_values(&["bandwidth_limit"]).inc();
-                self.respond_error(session, ctx, 429, "BANDWIDTH_LIMIT_EXCEEDED", "bandwidth limit exceeded").await?;
-                return Ok(true);
+        let service = match ctx.service.clone() {
+            Some(service) => service,
+            None => {
+                let key = ctx.consumer.as_ref().map(|c| c.id.clone());
+                let Some(service) = self.pick_service(&snapshot, &matched.route, key.as_deref()) else {
+                    self.respond_error(session, ctx, NO_BACKEND.0, NO_BACKEND.1, NO_BACKEND.2).await?;
+                    return Ok(true);
+                };
+                ctx.service = Some(service.clone());
+                service
             }
-            // Charged in the log phase, once the real size is known.
-            ctx.bandwidth = Some((key, cfg));
+        };
+        if service.spec.load_balancing.strategy == "hash" {
+            let key = self.key_source(session, ctx, &matched, &query).value(&service.spec.load_balancing.hash_key);
+            ctx.hash_key = key;
         }
 
         // ── Backend ──────────────────────────────────────────────────────────
@@ -550,8 +757,32 @@ impl ProxyHttp for ApgProxy {
         upstream.insert_header("x-forwarded-host", ctx.host.as_str())?;
         upstream.insert_header(REQUEST_ID_HEADER, ctx.request_id.as_str())?;
 
+        // What authentication plugins asked for: credentials hidden, claims passed on.
+        for name in &ctx.strip_headers {
+            upstream.remove_header(name.as_str());
+        }
+        if !ctx.strip_query.is_empty()
+            && let Some(query) = upstream.uri.query()
+        {
+            let kept: Vec<&str> = query.split('&').filter(|pair| !ctx.strip_query.iter().any(|name| pair.split('=').next() == Some(name.as_str()))).collect();
+            let rebuilt = if kept.is_empty() { upstream.uri.path().to_string() } else { format!("{}?{}", upstream.uri.path(), kept.join("&")) };
+            if let Ok(uri) = rebuilt.parse::<http::Uri>() {
+                upstream.set_uri(uri);
+            }
+        }
+        for (name, value) in &ctx.set_headers {
+            upstream.insert_header(name.clone(), value.clone())?;
+        }
+
         if ctx.snapshot.as_ref().is_some_and(|s| s.identity_headers) {
             upstream.insert_header("x-apg-workspace", matched.workspace_id.as_str())?;
+            if let Some(consumer) = &ctx.consumer {
+                upstream.insert_header("x-apg-consumer-id", consumer.id.as_str())?;
+                upstream.insert_header("x-apg-consumer-name", consumer.name.as_str())?;
+                if let Some(custom_id) = &consumer.custom_id {
+                    upstream.insert_header("x-apg-consumer-custom-id", custom_id.as_str())?;
+                }
+            }
         }
 
         // Host header (spec HDR-3).
@@ -572,11 +803,18 @@ impl ProxyHttp for ApgProxy {
         if let Some(b) = body {
             ctx.bytes_in += b.len() as u64;
         }
+        // A body with no declared length is measured as it streams.
+        if ctx.max_body.is_some_and(|max| ctx.bytes_in > max) {
+            return Self::refuse(ctx, PAYLOAD_TOO_LARGE);
+        }
         Ok(())
     }
 
     async fn response_filter(&self, _session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
         ctx.upstream_status = Some(upstream_response.status.as_u16());
+        for (name, value) in &ctx.response_headers {
+            upstream_response.append_header(name.clone(), value.clone())?;
+        }
         upstream_response.insert_header(REQUEST_ID_HEADER, ctx.request_id.as_str())?;
         if let Some((cfg, remaining)) = &ctx.rate
             && cfg.response_headers
@@ -690,6 +928,7 @@ impl ProxyHttp for ApgProxy {
             backend = %ctx.backend_target,
             attempts = ctx.tries,
             workspace = ctx.matched.as_ref().map_or("", |m| m.workspace_id.as_str()),
+            consumer = ctx.consumer.as_ref().map_or("", |c| c.name.as_str()),
             "request"
         );
     }
@@ -762,7 +1001,7 @@ mod tests {
         let mut req = RequestHeader::build("GET", b"/orders?tenant=acme&flag&empty=", None).unwrap();
         req.insert_header("x-user", "u-7").unwrap();
         req.insert_header("cookie", "theme=dark; session=abc123").unwrap();
-        let source = KeySource { req: &req, host: "api.example.com", client_ip: "203.0.113.9", path: "/orders", query: "tenant=acme&flag&empty=", workspace_id: "w1" };
+        let source = KeySource { req: &req, host: "api.example.com", client_ip: "203.0.113.9", path: "/orders", query: "tenant=acme&flag&empty=", workspace_id: "w1", consumer_id: "c-7" };
         let value = |selector: &str| source.value(selector);
         assert_eq!(value("host").as_deref(), Some("api.example.com"));
         assert_eq!(value("client_ip").as_deref(), Some("203.0.113.9"));
@@ -772,11 +1011,13 @@ mod tests {
         assert_eq!(value("cookie:session").as_deref(), Some("abc123"));
         assert_eq!(value("query:tenant").as_deref(), Some("acme"));
         // Absent or empty: the request has no key, and the caller falls back to rotation.
-        for absent in ["header:x-missing", "cookie:missing", "query:missing", "query:flag", "query:empty", "consumer", "nonsense"] {
+        assert_eq!(value("consumer").as_deref(), Some("c-7"));
+        for absent in ["header:x-missing", "cookie:missing", "query:missing", "query:flag", "query:empty", "nonsense"] {
             assert_eq!(value(absent), None, "{absent}");
         }
-        let anonymous = KeySource { req: &req, host: "h", client_ip: "", path: "/", query: "", workspace_id: "w" };
+        let anonymous = KeySource { req: &req, host: "h", client_ip: "", path: "/", query: "", workspace_id: "w", consumer_id: "" };
         assert_eq!(anonymous.value("client_ip"), None);
+        assert_eq!(anonymous.value("consumer"), None, "no consumer was authenticated");
     }
 
     #[test]

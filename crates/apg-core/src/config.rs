@@ -20,7 +20,7 @@ use crate::template::Template;
 /// Plugin types this build can enforce. A document that uses any other type is
 /// rejected: accepting configuration nothing enforces is the failure this
 /// project exists to avoid (spec property 5).
-pub const ENFORCED_PLUGIN_TYPES: &[&str] = &["rate_limit", "bandwidth_limit"];
+pub const ENFORCED_PLUGIN_TYPES: &[&str] = &["rate_limit", "bandwidth_limit", "key_auth", "basic_auth", "jwt_auth", "acl", "ip_restriction", "request_size_limit", "cors"];
 
 /// Replaces `${VAR}` and `${VAR:-default}`. An unset variable with no default
 /// is an error (spec DEC-2), reported with the line it is on.
@@ -290,7 +290,16 @@ pub fn unbuilt() -> &'static Unbuilt {
     LIST.get_or_init(|| serde_yaml::from_str(include_str!("../../../schemas/unbuilt.yaml")).expect("schemas/unbuilt.yaml is valid"))
 }
 
-const UNBUILT: &str = "is not enforced by this build yet, so it is refused rather than silently ignored";
+/// True when a `{ "$secret": … }` form appears anywhere in a plugin configuration.
+fn holds_clear_secret(value: &Value) -> bool {
+    match value {
+        Value::Object(map) => map.contains_key("$secret") || map.values().any(holds_clear_secret),
+        Value::Array(list) => list.iter().any(holds_clear_secret),
+        _ => false,
+    }
+}
+
+const UNBUILT: &str ="is not enforced by this build yet, so it is refused rather than silently ignored";
 
 impl Compiler<'_> {
     fn fault(&mut self, pointer: String, message: impl Into<String>) {
@@ -519,14 +528,41 @@ impl Compiler<'_> {
         }
     }
 
+    /// A credential from a file. Nodes hold hashes only, so a key or password
+    /// written in the file is hashed here; one given as `$env` or `$file` is
+    /// passed on for the node to read and hash when it loads the file.
+    fn credential(&mut self, d: &WorkspaceDoc<'_>, consumer_id: &str, credential: &Value, at: &str, index: usize) {
+        let kind = credential["type"].as_str().unwrap_or_default();
+        let name = credential.get("name").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| format!("{kind}-{index}"));
+        let mut data = json!({ "name": name, "type": kind, "consumer_id": consumer_id, "enabled": credential.get("enabled").and_then(Value::as_bool).unwrap_or(true) });
+        if let Some(expires) = credential.get("expires_at") {
+            data["expires_at"] = expires.clone();
+        }
+        let mut secret = |field: &str, hashed: &str, this: &mut Self| match credential.get(field) {
+            Some(Value::String(clear)) => data[hashed] = json!(crate::consumers::sha256_hex(clear.as_bytes())),
+            Some(Value::Object(form)) if form.contains_key("$secret") => this.fault(format!("{at}/{field}"), "$secret is sealed by a control plane; in a file use $env or $file"),
+            Some(reference @ Value::Object(_)) => data[field] = reference.clone(),
+            _ => this.fault(format!("{at}/{field}"), format!("{field} is required: a file cannot generate one")),
+        };
+        match kind {
+            "key" => secret("key", "key_hash", self),
+            "basic" => {
+                secret("password", "password_sha256", self);
+                data["username"] = credential.get("username").cloned().unwrap_or_default();
+            }
+            _ => data["identity"] = credential.get("identity").cloned().unwrap_or_default(),
+        }
+        let id = stable_id("credential", consumer_id, &name);
+        self.events.push(ChangeEvent::upsert("credential", id, Some(Self::ws_id(d)), data));
+    }
+
     fn consumers(&mut self, d: &WorkspaceDoc<'_>, names: &mut Names) {
         for (i, consumer) in items(d, "consumers") {
             let at = format!("{}/consumers/{i}", d.at);
             let name = consumer["name"].as_str().unwrap_or_default();
             let id = self.name(d, "consumer", &mut names.consumers, name, format!("{at}/name"));
-            if consumer.get("credentials").and_then(Value::as_array).is_some_and(|c| !c.is_empty()) {
-                // No authentication plugin exists yet to check a credential against.
-                self.fault(format!("{at}/credentials"), "credentials are not available in this build: no authentication plugin can use them yet");
+            for (c_i, credential) in consumer.get("credentials").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                self.credential(d, &id, credential, &format!("{at}/credentials/{c_i}"), c_i);
             }
             let mut data = consumer.clone();
             data.remove("credentials");
@@ -571,6 +607,10 @@ impl Compiler<'_> {
             for f in self.schemas.validate(&format!("plugins/{kind}.json"), &config) {
                 let suffix = if f.pointer == "/" { String::new() } else { f.pointer };
                 self.faults.push(Fault::new(format!("{at}/config{suffix}"), f.message));
+            }
+            if holds_clear_secret(&config) {
+                // Only a control plane can seal a value; a node given `$secret` from a file could not open it.
+                self.fault(format!("{at}/config"), "$secret is for the Admin API; in a file give the value as $env or $file");
             }
             let consumer_id = match p.get("consumer").and_then(Value::as_str) {
                 None => None,
@@ -712,10 +752,42 @@ routes:
     #[test]
     fn features_this_build_cannot_enforce_are_refused_not_ignored() {
         let base = "version: 1\nservices:\n  - { name: s, backends: [{ target: 'a:1' }] }\n";
-        assert_eq!(pointers(compile_yaml(&format!("{base}routes:\n  - name: r\n    service: s\n    plugins: [{{ type: key_auth }}]\n"))), ["/routes/0/plugins/0/type"]);
+        assert_eq!(pointers(compile_yaml(&format!("{base}routes:\n  - name: r\n    service: s\n    plugins: [{{ type: wasm, config: {{ module: m }} }}]\n"))), ["/routes/0/plugins/0/type"]);
         // A domain defaults to an ACME certificate, which the node now obtains itself.
         assert!(compile_yaml(&format!("{base}domains:\n  - hostname: a.example.com\n")).is_ok());
-        assert_eq!(pointers(compile_yaml(&format!("{base}consumers:\n  - name: c\n    credentials: [{{ type: mtls, identity: x }}]\n"))), ["/consumers/0/credentials"]);
+        // A file cannot generate a key, and cannot hold a secret only a control plane can open.
+        assert_eq!(pointers(compile_yaml(&format!("{base}consumers:\n  - name: c\n    credentials: [{{ type: key }}]\n"))), ["/consumers/0/credentials/0/key"]);
+        assert_eq!(
+            pointers(compile_yaml(&format!("{base}consumers:\n  - name: c\n    credentials: [{{ type: key, key: {{ $secret: abcdefghijklmnopqrstuvwxyz }} }}]\n"))),
+            ["/consumers/0/credentials/0/key"]
+        );
+    }
+
+    // spec CON-4
+    #[test]
+    fn credentials_in_a_file_become_hashes_and_never_travel_in_clear() {
+        let doc = "version: 1\nconsumers:\n  - name: app\n    groups: [partners]\n    credentials:\n      - { type: key, key: apg_k_0123456789abcdef }\n      - { type: basic, username: app, password: correct-horse }\n      - { type: mtls, identity: client.example.com }\n      - { type: key, name: from-env, key: { $env: APG_SECRET_APP_KEY } }\n";
+        let events = compile_yaml(doc).unwrap();
+        let text = serde_json::to_string(&events).unwrap();
+        assert!(!text.contains("apg_k_0123456789abcdef") && !text.contains("correct-horse"));
+        let consumer = events.iter().find(|e| e.kind == "consumer").unwrap();
+        assert!(consumer.data.as_ref().unwrap().get("credentials").is_none());
+        let creds: Vec<&Value> = events.iter().filter(|e| e.kind == "credential").map(|e| e.data.as_ref().unwrap()).collect();
+        assert_eq!(creds.len(), 4);
+        assert!(creds.iter().all(|c| c["consumer_id"] == consumer.id.as_str()));
+        assert_eq!(creds[0]["key_hash"], crate::consumers::sha256_hex(b"apg_k_0123456789abcdef"));
+        assert_eq!(creds[1]["password_sha256"], crate::consumers::sha256_hex(b"correct-horse"));
+        assert_eq!((creds[1]["username"].as_str(), creds[2]["identity"].as_str()), (Some("app"), Some("client.example.com")));
+        // A reference is passed on for the node to read; it is not a secret itself.
+        assert_eq!(creds[3]["key"], json!({ "$env": "APG_SECRET_APP_KEY" }));
+        // Ids are stable across reloads.
+        let again = compile_yaml(doc).unwrap();
+        assert_eq!(events.iter().map(|e| &e.id).collect::<Vec<_>>(), again.iter().map(|e| &e.id).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn other_refusals_stay_in_place() {
+        let base = "version: 1\nservices:\n  - { name: s, backends: [{ target: 'a:1' }] }\n";
         assert_eq!(pointers(compile_yaml(&format!("{base}plugins:\n  - {{ type: rate_limit, scope: workspace, config: {{ per_sec: 1 }} }}\n"))), ["/plugins/0/config"]);
         assert_eq!(pointers(compile_yaml(&format!("{base}flags: {{ make_it_fast: true }}\n"))), ["/flags/make_it_fast"]);
     }

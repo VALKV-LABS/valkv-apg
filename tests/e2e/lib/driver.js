@@ -59,17 +59,37 @@ async function syncWorkspace(ws, section) {
   }
   for (const { name, ...rest } of section.ca_certificates ?? []) await adminCall("PUT", `${base}/ca-certificates/${name}`, rest);
   for (const { name, ...rest } of section.services ?? []) await adminCall("PUT", `${base}/services/${name}`, rest);
+  for (const { name, credentials = [], ...rest } of section.consumers ?? []) {
+    await adminCall("PUT", `${base}/consumers/${name}`, rest);
+    for (const [i, credential] of credentials.entries()) {
+      const { name: credentialName = `${credential.type}-${i}`, ...body } = credential;
+      await adminCall("PUT", `${base}/consumers/${name}/credentials/${credentialName}`, body);
+    }
+  }
   const wanted = new Set();
+  const wantedPlugins = new Set();
+  const putPlugin = async (name, body) => {
+    wantedPlugins.add(name);
+    await adminCall("PUT", `${base}/plugins/${name}`, body);
+  };
   for (const { name, plugins = [], ...rest } of section.routes ?? []) {
     wanted.add(name);
     await adminCall("PUT", `${base}/routes/${name}`, rest);
     for (const p of plugins) {
-      await adminCall("PUT", `${base}/plugins/${name}-${p.type.replace("_", "-")}`, { type: p.type, scope: "route", scope_ref: name, config: p.config ?? {} });
+      const { type, config = {}, ...qualifiers } = p;
+      const suffix = p.consumer ? `-${p.consumer}` : "";
+      await putPlugin(`${name}-${type.replaceAll("_", "-")}${suffix}`, { type, scope: "route", scope_ref: name, config, ...qualifiers });
     }
   }
-  // Routes the document no longer has are removed, as a declarative sync would.
+  for (const p of section.plugins ?? []) {
+    const { name, ...body } = p;
+    await putPlugin(name ?? [p.type.replaceAll("_", "-"), p.scope, p.scope_ref, p.consumer].filter(Boolean).join("-"), body);
+  }
+  // Routes and plugins the document no longer has are removed, as a declarative sync would.
   const existing = (await adminCall("GET", `${base}/routes?limit=500`)).json.data;
   for (const r of existing) if (!wanted.has(r.name)) await adminCall("DELETE", `${base}/routes/${r.name}`);
+  const plugins = (await adminCall("GET", `${base}/plugins?limit=500`)).json.data;
+  for (const p of plugins) if (!wantedPlugins.has(p.name)) await adminCall("DELETE", `${base}/plugins/${p.name}`);
 }
 
 /** Database mode: make the control plane match the document, then wait for every node to catch up. */

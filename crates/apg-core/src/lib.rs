@@ -13,6 +13,7 @@
 //! same matching code (spec RT-6).
 
 pub mod config;
+pub mod consumers;
 pub mod model;
 pub mod path;
 pub mod plugins;

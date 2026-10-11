@@ -11,6 +11,7 @@ use std::sync::Arc;
 use regex::Regex;
 
 use crate::model::{BaseDomain, Domain, ErrorResponseSpec, Plugin, Rewrite, Route, Service, Workspace};
+use crate::consumers::ConsumerIndex;
 use crate::path::prefix_matches;
 use crate::plugins::PluginIndex;
 use crate::resources::Resources;
@@ -276,6 +277,7 @@ pub struct Snapshot {
     /// Hostnames to hold an ACME certificate for, with the challenge type to use (spec TLS-4).
     acme_hosts: Vec<AcmeHost>,
     pub plugins: PluginIndex,
+    pub consumers: ConsumerIndex,
     flags: HashMap<String, bool>,
     error_responses: HashMap<String, CompiledErrorResponse>,
     pub identity_headers: bool,
@@ -386,6 +388,10 @@ impl Snapshot {
                 None => snap.domains_exact.insert(host, ws.clone()),
             };
         }
+
+        let (consumers, undecodable) = ConsumerIndex::build(resources);
+        snap.consumers = consumers;
+        snap.report.undecodable += undecodable;
 
         for (id, s) in resources.kind("service") {
             let (Ok(spec), Some(ws)) = (serde_json::from_value::<Service>(s.data.clone()), &s.workspace_id) else {

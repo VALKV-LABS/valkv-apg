@@ -73,6 +73,13 @@ impl PluginIndex {
         chosen.plugin.enabled.then_some(chosen)
     }
 
+    /// Every instance, in no particular order.
+    pub fn instances(&self) -> impl Iterator<Item = &Instance> {
+        self.by_type.values().flat_map(|per| {
+            per.by_route.values().chain(per.by_service.values()).chain(per.by_workspace.values()).flatten().chain(per.global.iter())
+        })
+    }
+
     /// Plugin types that have at least one instance.
     pub fn types(&self) -> impl Iterator<Item = &str> {
         self.by_type.keys().map(String::as_str)

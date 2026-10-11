@@ -16,6 +16,7 @@ const all = {
     ["routing", "./routing.js"],
     ["upstream", "./upstream.js"],
     ["tls", "./tls.js"],
+    ["plugins", "./plugins.js"],
   ],
   api_poll: [
     ["smoke", "./smoke.js"],
@@ -23,6 +24,7 @@ const all = {
     ["routing", "./routing.js"],
     ["upstream", "./upstream.js"],
     ["tls", "./tls.js"],
+    ["plugins", "./plugins.js"],
   ],
 }[mode];
 
