@@ -145,7 +145,8 @@ pub fn compile(doc: &Value, schemas: &Schemas) -> Result<Vec<ChangeEvent>, Vec<F
     // Settings and flags are global.
     let mut base_domains: Vec<String> = Vec::new();
     if let Some(settings) = root.get("settings").and_then(Value::as_object) {
-        c.refuse_unbuilt(settings, UNBUILT_SETTINGS, "/settings");
+        c.refuse_unbuilt(settings, &unbuilt().settings, "/settings");
+        c.refuse_unbuilt(settings, &unbuilt().settings_file_mode, "/settings");
         for (name, value) in settings {
             if name == "workspace_base_domains" {
                 base_domains = value.as_array().into_iter().flatten().filter_map(|b| b["domain"].as_str().map(str::to_string)).collect();
@@ -259,13 +260,35 @@ fn host_covered(pattern: &str, host: &str) -> bool {
     }
 }
 
-/// Keys the schema defines but this build does not enforce yet. A document
-/// that sets one is refused, so nobody runs with a timeout, health check or
-/// balancing strategy that silently does nothing. Entries leave this list in
-/// the build phase that implements them.
-pub const UNBUILT_SERVICE_KEYS: &[&str] = &["timeouts", "retries", "health_check", "keepalive", "drain_timeout_ms"];
-pub const UNBUILT_ROUTE_KEYS: &[&str] = &["split_key", "timeout_ms", "idle_timeout_ms"];
-pub const UNBUILT_SETTINGS: &[&str] = &["workspace_resolvers", "access_log", "workspace_plugin_types"];
+/// One key the schemas define that the node does not enforce yet.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct UnbuiltKey {
+    /// Dotted path inside the resource.
+    pub path: String,
+    /// The schema default. A document may carry this value; anything else is refused.
+    #[serde(default)]
+    pub default: Option<Value>,
+}
+
+/// `schemas/unbuilt.yaml`: the keys both the file loader and the admin refuse
+/// until the node enforces them. See that file for why it exists.
+#[derive(Debug, Clone, Default, serde::Deserialize)]
+pub struct Unbuilt {
+    #[serde(default)]
+    pub service: Vec<UnbuiltKey>,
+    #[serde(default)]
+    pub route: Vec<UnbuiltKey>,
+    #[serde(default)]
+    pub settings: Vec<UnbuiltKey>,
+    #[serde(default)]
+    pub settings_file_mode: Vec<UnbuiltKey>,
+}
+
+/// The parsed list, compiled into the binary.
+pub fn unbuilt() -> &'static Unbuilt {
+    static LIST: std::sync::OnceLock<Unbuilt> = std::sync::OnceLock::new();
+    LIST.get_or_init(|| serde_yaml::from_str(include_str!("../../../schemas/unbuilt.yaml")).expect("schemas/unbuilt.yaml is valid"))
+}
 
 const UNBUILT: &str = "is not enforced by this build yet, so it is refused rather than silently ignored";
 
@@ -274,10 +297,19 @@ impl Compiler<'_> {
         self.faults.push(Fault::new(pointer, message));
     }
 
-    fn refuse_unbuilt(&mut self, obj: &Map<String, Value>, keys: &[&str], at: &str) {
+    /// Refuses any listed key the object sets to something other than its default.
+    fn refuse_unbuilt(&mut self, obj: &Map<String, Value>, keys: &[UnbuiltKey], at: &str) {
         for key in keys {
-            if obj.contains_key(*key) {
-                self.fault(format!("{at}/{key}"), format!("'{key}' {UNBUILT}"));
+            let mut value = None;
+            let mut cursor = Some(obj);
+            for part in key.path.split('.') {
+                value = cursor.and_then(|o| o.get(part));
+                cursor = value.and_then(Value::as_object);
+            }
+            if let Some(v) = value
+                && key.default.as_ref() != Some(v)
+            {
+                self.fault(format!("{at}/{}", key.path.replace('.', "/")), format!("'{}' {UNBUILT}", key.path));
             }
         }
     }
@@ -359,17 +391,13 @@ impl Compiler<'_> {
             if svc.get("shared").and_then(Value::as_bool) == Some(true) && !d.system {
                 self.fault(format!("{at}/shared"), "only a service in the system workspace can be shared");
             }
-            self.refuse_unbuilt(svc, UNBUILT_SERVICE_KEYS, &at);
-            if svc.get("http_version").and_then(Value::as_str).is_some_and(|v| v != "1.1") {
-                self.fault(format!("{at}/http_version"), format!("'http_version: \"2\"' {UNBUILT}"));
-            }
-            if let Some(lb) = svc.get("load_balancing").and_then(Value::as_object)
-                && (lb.get("strategy").and_then(Value::as_str).is_some_and(|s| s != "round_robin") || lb.contains_key("hash_key"))
-            {
-                self.fault(format!("{at}/load_balancing"), format!("any strategy other than round_robin {UNBUILT}"));
-            }
-            if let Some(tls) = svc.get("tls").and_then(Value::as_object) {
-                self.refuse_unbuilt(tls, &["ca_certificates", "client_certificate"], &format!("{at}/tls"));
+            self.refuse_unbuilt(svc, &unbuilt().service, &at);
+            // The node cannot replay a request after the upstream has answered,
+            // so retrying on a response status is refused, not ignored.
+            for (r_i, on) in svc.get("retries").and_then(|r| r.get("on")).and_then(Value::as_array).into_iter().flatten().enumerate() {
+                if on.is_number() {
+                    self.fault(format!("{at}/retries/on/{r_i}"), format!("retrying on a response status {UNBUILT}; use connect_failure and timeout"));
+                }
             }
             let mut data = svc.clone();
             data.remove("plugins");
@@ -418,7 +446,7 @@ impl Compiler<'_> {
             let at = format!("{}/routes/{i}", d.at);
             let name = route["name"].as_str().unwrap_or_default();
             let id = self.name(d, "route", &mut names.routes, name, format!("{at}/name"));
-            self.refuse_unbuilt(route, UNBUILT_ROUTE_KEYS, &at);
+            self.refuse_unbuilt(route, &unbuilt().route, &at);
             let mut data = route.clone();
             data.remove("plugins");
 
@@ -701,19 +729,33 @@ routes:
     #[test]
     fn schema_valid_keys_with_no_implementation_are_refused() {
         let svc = |extra: &str| format!("version: 1\nservices:\n  - name: s\n    backends: [{{ target: 'a:1' }}]\n    {extra}\n");
-        assert_eq!(pointers(compile_yaml(&svc("timeouts: { connect_ms: 100 }"))), ["/services/0/timeouts"]);
-        assert_eq!(pointers(compile_yaml(&svc("retries: { attempts: 3 }"))), ["/services/0/retries"]);
-        assert_eq!(pointers(compile_yaml(&svc("health_check: { active: { path: /h } }"))), ["/services/0/health_check"]);
-        assert_eq!(pointers(compile_yaml(&svc("http_version: '2'"))), ["/services/0/http_version"]);
-        assert_eq!(pointers(compile_yaml(&svc("load_balancing: { strategy: hash }"))), ["/services/0/load_balancing"]);
+        assert_eq!(pointers(compile_yaml(&svc("drain_timeout_ms: 5000"))), ["/services/0/drain_timeout_ms"]);
+        assert_eq!(pointers(compile_yaml(&svc("keepalive: { max_idle_per_backend: 8 }"))), ["/services/0/keepalive/max_idle_per_backend"]);
+        assert_eq!(pointers(compile_yaml(&svc("retries: { attempts: 2, buffer_bytes: 1024 }"))), ["/services/0/retries/buffer_bytes"]);
+        assert_eq!(pointers(compile_yaml(&svc("retries: { attempts: 2, 'on': [connect_failure, 503] }"))), ["/services/0/retries/on/1"]);
+        // a key carrying its schema default is what a GET returns, so it is not refused
+        assert!(compile_yaml(&svc("drain_timeout_ms: 30000")).is_ok());
         // what IS enforced is accepted
-        assert!(compile_yaml(&svc("load_balancing: { strategy: round_robin }")).is_ok());
+        assert!(compile_yaml(&svc("timeouts: { connect_ms: 100, read_ms: 2000 }\n    retries: { attempts: 2, 'on': [connect_failure, timeout] }")).is_ok());
+        assert!(compile_yaml(&svc("health_check: { active: { path: /h, interval_ms: 1000 }, passive: { consecutive_failures: 2 } }")).is_ok());
+        assert!(compile_yaml(&svc("load_balancing: { strategy: hash, hash_key: 'header:x-user' }\n    http_version: '2'\n    keepalive: { idle_ms: 5000 }")).is_ok());
         assert!(compile_yaml(&svc("scheme: https\n    tls: { verify: false, sni: internal.example }\n    host_header: backend")).is_ok());
 
         let route = |extra: &str| format!("version: 1\nservices:\n  - {{ name: s, backends: [{{ target: 'a:1' }}] }}\nroutes:\n  - name: r\n    service: s\n    {extra}\n");
-        assert_eq!(pointers(compile_yaml(&route("timeout_ms: 1000"))), ["/routes/0/timeout_ms"]);
         assert_eq!(pointers(compile_yaml(&route("idle_timeout_ms: 60000"))), ["/routes/0/idle_timeout_ms"]);
+        assert!(compile_yaml(&route("timeout_ms: 1000")).is_ok());
         assert!(compile_yaml(&route("strip_path: true\n    rewrite: { prefix: /v2 }\n    methods: [GET]\n    priority: 5")).is_ok());
+
+        // the list itself: every entry names a real schema property
+        let schemas: Value = serde_json::from_str(include_str!("../../../schemas/resources/service.json")).unwrap();
+        for key in &unbuilt().service {
+            let mut node = &schemas;
+            for part in key.path.split('.') {
+                node = &node["properties"][part];
+            }
+            assert!(node.is_object(), "unbuilt.yaml names '{}', which is not in service.json", key.path);
+            assert_eq!(key.default.as_ref(), node.get("default"), "default of '{}' differs from the schema", key.path);
+        }
 
         assert_eq!(pointers(compile_yaml("version: 1\nsettings: { workspace_resolvers: [host] }\n")), ["/settings/workspace_resolvers"]);
         assert!(compile_yaml("version: 1\nsettings: { identity_headers: false }\n").is_ok());

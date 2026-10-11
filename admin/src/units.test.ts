@@ -12,6 +12,7 @@ import { buildOpenApi } from "./openapi.js";
 import { PLUGIN_TYPES } from "./plugin-types.js";
 import { ENDPOINTS, registerApi } from "./routes/api.js";
 import { SchemaRegistry } from "./schemas.js";
+import { loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
 import { mergePatch } from "./store.js";
 
 const actor = (role: Actor["role"], workspaces: Actor["workspaces"]): Actor => ({ kind: "token", id: "t", name: "t", role, workspaces });
@@ -203,5 +204,34 @@ describe("OpenAPI document", () => {
   it("matches the committed admin/openapi.json (run `npm run openapi` after changing routes or schemas)", () => {
     const committed = JSON.parse(readFileSync(fileURLToPath(new URL("../openapi.json", import.meta.url)), "utf8"));
     expect(committed).toEqual(JSON.parse(JSON.stringify(document)));
+  });
+});
+
+describe("keys nodes do not enforce yet (schemas/unbuilt.yaml)", () => {
+  const list = loadUnbuilt();
+  const schemas = (file: string) => JSON.parse(readFileSync(fileURLToPath(new URL(`../../schemas/resources/${file}`, import.meta.url)), "utf8"));
+
+  it("every entry names a real schema property and repeats its default", () => {
+    for (const [file, keys] of [["service.json", [...list.service, ...list.service_database_mode]], ["route.json", list.route], ["settings.json", list.settings]] as const) {
+      for (const key of keys) {
+        let node = schemas(file);
+        for (const part of key.path.split(".")) node = node?.properties?.[part];
+        expect(node, `${file}: ${key.path}`).toBeTypeOf("object");
+        // A setting exists only once someone sets it, so it is refused whenever present.
+        if (file !== "settings.json") expect(key.default, `${file}: ${key.path}`).toEqual(node.default);
+      }
+    }
+  });
+
+  it("a key is refused unless it is absent or carries its default", () => {
+    const keys = [{ path: "drain_timeout_ms", default: 30000 }, { path: "keepalive.max_idle_per_backend", default: 64 }, { path: "tls.client_certificate" }];
+    expect(unbuiltFaults({}, keys)).toEqual([]);
+    expect(unbuiltFaults({ drain_timeout_ms: 30000, keepalive: { idle_ms: 5, max_idle_per_backend: 64 }, tls: { verify: true } }, keys)).toEqual([]);
+    expect(unbuiltFaults({ drain_timeout_ms: 1, keepalive: { max_idle_per_backend: 0 }, tls: { client_certificate: "c" } }, keys).map((f) => f.pointer)).toEqual([
+      "/drain_timeout_ms", "/keepalive/max_idle_per_backend", "/tls/client_certificate",
+    ]);
+    // A key with no default is refused whenever it is present.
+    expect(unbuiltFaults({ tls: { client_certificate: null } }, keys)).toHaveLength(1);
+    expect(unbuiltFaults({ keepalive: 5 }, keys)).toEqual([]);
   });
 });

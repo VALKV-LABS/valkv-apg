@@ -30,6 +30,21 @@ pub static UPSTREAM_FAIL_OPEN: LazyLock<IntCounter> = LazyLock::new(|| {
     register_int_counter!("apg_upstream_fail_open_total", "Requests sent to a backend although every backend's circuit was open.").unwrap()
 });
 
+pub static UPSTREAM_RETRIES: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!("apg_upstream_retries_total", "Attempts made after a failed first attempt.", &["workspace", "service"]).unwrap()
+});
+
+pub static BACKEND_HEALTHY: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    register_int_gauge_vec!("apg_backend_healthy", "1 while a backend passes its active health check, 0 while it fails.", &["workspace", "service", "backend"]).unwrap()
+});
+
+pub static BACKEND_CIRCUIT_OPEN: LazyLock<IntGaugeVec> = LazyLock::new(|| {
+    register_int_gauge_vec!("apg_backend_circuit_open", "1 while a backend's circuit is open.", &["workspace", "service", "backend"]).unwrap()
+});
+
+pub static DNS_FAILURES: LazyLock<IntCounter> =
+    LazyLock::new(|| register_int_counter!("apg_dns_failures_total", "Backend host names that failed to resolve.").unwrap());
+
 pub static CONFIG_CONVERGED: LazyLock<IntGauge> =
     LazyLock::new(|| register_int_gauge!("apg_config_converged", "1 once the node has applied a complete configuration.").unwrap());
 
@@ -66,6 +81,10 @@ pub fn init() {
     LazyLock::force(&GATEWAY_ERRORS);
     LazyLock::force(&LIMITED);
     LazyLock::force(&UPSTREAM_FAIL_OPEN);
+    LazyLock::force(&UPSTREAM_RETRIES);
+    LazyLock::force(&BACKEND_HEALTHY);
+    LazyLock::force(&BACKEND_CIRCUIT_OPEN);
+    LazyLock::force(&DNS_FAILURES);
     LazyLock::force(&CONFIG_CONVERGED);
     LazyLock::force(&CONFIG_APPLIED_SEQ);
     LazyLock::force(&CONFIG_SOURCE_AGE);

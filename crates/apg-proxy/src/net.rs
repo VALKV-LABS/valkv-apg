@@ -75,6 +75,34 @@ pub fn client_ip(peer: Option<IpAddr>, forwarded_for: Option<&str>, trusted_prox
     Some(peer)
 }
 
+/// Splits a backend target into host and port: `api.internal:8080`, `10.0.0.1:80`, `[::1]:80`.
+pub fn split_target(target: &str) -> Option<(&str, u16)> {
+    let (host, port) = target.rsplit_once(':')?;
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    (!host.is_empty()).then_some((host, port.parse().ok()?))
+}
+
+/// True when the public internet cannot route to `ip`: loopback, link-local
+/// (which includes cloud metadata endpoints), private and reserved ranges
+/// (spec SEC-4). The admin applies the same list on write.
+pub fn is_non_public(ip: IpAddr) -> bool {
+    static RANGES: std::sync::LazyLock<Vec<Cidr>> = std::sync::LazyLock::new(|| {
+        [
+            "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24",
+            "192.168.0.0/16", "198.18.0.0/15", "224.0.0.0/3", "::/127", "fc00::/7", "fe80::/10", "ff00::/8", "64:ff9b::/96",
+        ]
+        .iter()
+        .filter_map(|c| Cidr::parse(c))
+        .collect()
+    });
+    // An IPv4-mapped IPv6 address is judged as the IPv4 address it carries.
+    let ip = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    };
+    RANGES.iter().any(|c| c.contains(ip))
+}
+
 /// Lower-cases a host and removes any port. Handles bracketed IPv6 literals.
 pub fn normalize_host(raw: &str) -> String {
     let host = match raw.strip_prefix('[') {
@@ -130,6 +158,27 @@ mod tests {
         assert_eq!(client_ip(Some(ip("10.0.0.5")), Some("10.0.0.9"), &lb), Some(ip("10.0.0.5")));
         assert_eq!(client_ip(Some(ip("10.0.0.5")), Some("198.51.100.7, garbage"), &lb), Some(ip("10.0.0.5")));
         assert_eq!(client_ip(None, Some("1.2.3.4"), &lb), None);
+    }
+
+    #[test]
+    fn targets_split_into_host_and_port() {
+        assert_eq!(split_target("api.internal:8080"), Some(("api.internal", 8080)));
+        assert_eq!(split_target("10.0.0.1:80"), Some(("10.0.0.1", 80)));
+        assert_eq!(split_target("[::1]:443"), Some(("::1", 443)));
+        for bad in ["nohost", ":80", "a:port", "a:99999"] {
+            assert_eq!(split_target(bad), None, "{bad}");
+        }
+    }
+
+    // spec SEC-4
+    #[test]
+    fn non_public_addresses_are_recognised() {
+        for private in ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "fe80::1", "::ffff:10.0.0.1", "0.0.0.0"] {
+            assert!(is_non_public(ip(private)), "{private}");
+        }
+        for public in ["8.8.8.8", "203.0.113.9", "172.32.0.1", "2001:4860:4860::8888", "::ffff:8.8.8.8"] {
+            assert!(!is_non_public(ip(public)), "{public}");
+        }
     }
 
     #[test]

@@ -10391,6 +10391,11 @@
               }
             }
           },
+          "egress_restricted": {
+            "description": "When true the node refuses to connect this service to loopback, link-local and private addresses unless APG_BACKEND_ALLOW_CIDRS covers them (spec SEC-4). The admin sets it from the role of whoever wrote the service; a value sent to the Admin API is ignored.",
+            "type": "boolean",
+            "default": false
+          },
           "host_header": {
             "description": "preserve, backend, or a literal Host value.",
             "type": "string",

@@ -19,6 +19,9 @@ import type { Tx } from "./db.js";
 import { egressViolation } from "./egress.js";
 import { ApiError } from "./errors.js";
 import { type Ctx, type Json, type Row, type Store, isUuid } from "./store.js";
+import { UNBUILT_MESSAGE, type UnbuiltKey, loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
+
+const UNBUILT = loadUnbuilt();
 
 export type KindName = "domain" | "certificate" | "ca_certificate" | "service" | "route" | "consumer" | "credential" | "plugin";
 
@@ -81,6 +84,12 @@ export interface KindDef {
 
 function fail(pointer: string, message: string, code: "VALIDATION_FAILED" | "HOST_NOT_OWNED" | "EGRESS_NOT_ALLOWED" = "VALIDATION_FAILED"): never {
   throw new ApiError(code, message, [{ pointer, message }]);
+}
+
+/** Refuses keys nodes would ignore (spec property 5: everything accepted is enforced). */
+function refuseUnbuilt(body: Json, keys: UnbuiltKey[]): void {
+  const faults = unbuiltFaults(body, keys);
+  if (faults.length > 0) throw new ApiError("VALIDATION_FAILED", faults[0]!.message, faults);
 }
 
 function envelope(row: Row): Json {
@@ -379,13 +388,18 @@ const service: KindDef = {
   segment: "services",
   table: "apg_services",
   schema: "resources/service.json",
-  readOnly: [],
+  readOnly: ["egress_restricted"],
   hasMetadata: true,
   limitKey: "max_services",
 
   async prepare({ store, tx, ws, existing, body, ctx }) {
     rejectNested(body, "plugins");
     if (body["shared"] && !ws["system"]) fail("/shared", "only a service in the system workspace can be shared");
+    refuseUnbuilt(body, [...UNBUILT.service, ...UNBUILT.service_database_mode]);
+    for (const [i, on] of ((body["retries"]?.["on"] ?? []) as unknown[]).entries()) {
+      // A node cannot replay a request once the upstream has answered.
+      if (typeof on === "number") fail(`/retries/on/${i}`, `retrying on a response status ${UNBUILT_MESSAGE}; use connect_failure and timeout`);
+    }
 
     // Keep a backend's id across updates so nodes keep its health state.
     const previous = new Map<string, string>(((existing?.["spec"]?.["backends"] ?? []) as Json[]).map((b) => [b["target"], b["id"]]));
@@ -414,7 +428,9 @@ const service: KindDef = {
     }
 
     const { name: _n, labels: _l, metadata: _m, shared: _s, ...rest } = body;
-    const spec = { ...rest, backends, ...(body["tls"] !== undefined ? { tls } : {}) };
+    // Nodes check the address again on every connection for a service written
+    // by someone who may not reach private addresses (spec SEC-4).
+    const spec = { ...rest, backends, ...(body["tls"] !== undefined ? { tls } : {}), egress_restricted: !store.trusted(ctx) };
     return { columns: { shared: body["shared"] ?? false, spec: tx.json(spec) } };
   },
 
@@ -457,6 +473,7 @@ const route: KindDef = {
 
   async prepare({ store, tx, ws, id, body }) {
     rejectNested(body, "plugins");
+    refuseUnbuilt(body, UNBUILT.route);
 
     const targets: Array<{ service: string; weight: number }> = [];
     if (body["service"] !== undefined) {

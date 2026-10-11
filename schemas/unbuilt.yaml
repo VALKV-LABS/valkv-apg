@@ -1,0 +1,39 @@
+# Keys the schemas define that the node does not enforce yet.
+#
+# Both the node's file loader and the admin read this file and refuse a
+# document that sets one of these to anything but its default. That keeps the
+# rule "everything accepted is enforced" true while the gateway is being built:
+# nobody can run with a setting that silently does nothing.
+#
+# An entry is deleted in the same change that implements it. When the lists are
+# empty this file is deleted too.
+#
+# path     dotted path inside the resource
+# default  the schema default; a document may carry this value (it is what a
+#          GET returns), anything else is refused. Omitted when there is none.
+
+service:
+  - { path: drain_timeout_ms, default: 30000 }
+  - { path: keepalive.max_idle_per_backend, default: 64 }
+  - { path: retries.buffer_bytes, default: 65536 }
+
+route:
+  - { path: idle_timeout_ms, default: 300000 }
+
+# Refused by the admin only: these work from a file, where the node reads the
+# key itself, but need certificate keys delivered to nodes (build phase 2d).
+service_database_mode:
+  - { path: tls.client_certificate }
+
+# Settings refused everywhere.
+settings:
+  - { path: workspace_resolvers }
+  - { path: access_log }
+
+# Settings that only mean something to the admin, so a file-mode node refuses them.
+settings_file_mode:
+  - { path: workspace_plugin_types }
+
+# Retrying on a response status is not built: the node cannot replay a request
+# after the upstream has answered. `retries.on` accepts connect_failure and
+# timeout only. (Enforced in code on both sides; listed here for the record.)

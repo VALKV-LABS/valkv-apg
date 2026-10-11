@@ -14,7 +14,7 @@ pub const READ_VARIABLES: &[&str] = &[
     "APG_TLS_FALLBACK_CERT", "APG_TLS_FALLBACK_KEY", "APG_LOG_LEVEL", "APG_LOG_FORMAT", "APG_SHUTDOWN_GRACE_SECS",
     "APG_STUB_UPSTREAM", "APG_ALLOW_TEST_MODES", "APG_CONFIG_URL", "APG_ADMIN_URL", "APG_NODE_TOKEN",
     "APG_POLL_INTERVAL_MS", "APG_POLL_LIMIT", "APG_POLL_WAIT_MS", "APG_CONFIG_CLIENT_CERT", "APG_CONFIG_CLIENT_KEY",
-    "APG_CONFIG_CLIENT_CA",
+    "APG_CONFIG_CLIENT_CA", "APG_DNS_REFRESH_SECS", "APG_BACKEND_ALLOW_CIDRS",
 ];
 
 /// Where the node reads configuration from (spec §2.2).
@@ -69,6 +69,7 @@ pub struct Config {
     pub stub_upstream: bool,
     /// Present exactly when `source` is `ApiPoll`.
     pub api_poll: Option<ApiPoll>,
+    pub upstream: crate::upstream::Settings,
 }
 
 impl Config {
@@ -220,6 +221,10 @@ impl Config {
             shutdown_grace_secs,
             stub_upstream,
             api_poll,
+            upstream: crate::upstream::Settings {
+                dns_refresh: std::time::Duration::from_secs(number("APG_DNS_REFRESH_SECS", 30, 5, 300)?),
+                backend_allow: parse_cidr_list(&get(env, "APG_BACKEND_ALLOW_CIDRS").unwrap_or_default()).map_err(|e| anyhow::anyhow!("APG_BACKEND_ALLOW_CIDRS: {e}"))?,
+            },
         })
     }
 }
@@ -304,6 +309,11 @@ mod tests {
         assert!(err(&[("APG_SHUTDOWN_GRACE_SECS", "soon")]).contains("APG_SHUTDOWN_GRACE_SECS"));
         assert!(err(&[("APG_LOG_LEVEL", "verbose")]).contains("APG_LOG_LEVEL"));
         assert!(err(&[("APG_STUB_UPSTREAM", "yes")]).contains("true or false"));
+        assert!(err(&[("APG_DNS_REFRESH_SECS", "1")]).contains("APG_DNS_REFRESH_SECS"));
+        assert!(err(&[("APG_BACKEND_ALLOW_CIDRS", "private")]).contains("APG_BACKEND_ALLOW_CIDRS"));
+        let c = load(&[("APG_BACKEND_ALLOW_CIDRS", "10.0.0.0/8"), ("APG_DNS_REFRESH_SECS", "10")]).unwrap();
+        assert_eq!((c.upstream.backend_allow.len(), c.upstream.dns_refresh.as_secs()), (1, 10));
+        assert_eq!(load(&[]).unwrap().upstream.dns_refresh.as_secs(), 30);
     }
 
     #[test]

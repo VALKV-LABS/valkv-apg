@@ -60,8 +60,9 @@ pub fn load(path: &Path, schemas: &Schemas, env: &dyn Fn(&str) -> Option<String>
     for event in &events {
         resources.apply(event);
     }
-    let cert_faults = TlsStore::check(&resources, &|p| std::fs::read(p));
-    if cert_faults.is_empty() { Ok(resources) } else { Err(cert_faults) }
+    let mut faults = TlsStore::check(&resources, &|p| std::fs::read(p));
+    faults.extend(crate::upstream::check(&resources, &|p| std::fs::read(p)));
+    if faults.is_empty() { Ok(resources) } else { Err(faults) }
 }
 
 /// Something that changes whenever any config file changes.

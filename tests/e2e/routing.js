@@ -9,19 +9,9 @@
 // Covers spec §5 (sources), §6 (request handling) and the two limit plugins.
 
 import { writeFileSync } from "node:fs";
+import { ADMIN, CONFIG, MGMT, MODE, NODE, NODE_TLS, REDIRECT, REDIRECT_TLS, admin, apply, seq } from "./lib/driver.js";
 import { assert, http, step } from "./lib/harness.js";
 import { send, sendH2, until } from "./lib/raw.js";
-
-const MODE = process.env.MODE ?? "file";
-const NODE = process.env.NODE_HTTP ?? "http://node:8080";
-const NODE_TLS = process.env.NODE_HTTPS ?? "https://node:8443";
-const MGMT = process.env.NODE_MGMT ?? "http://node:9100";
-const REDIRECT = process.env.REDIRECT_HTTP ?? "http://node-redirect:8080";
-const REDIRECT_TLS = process.env.REDIRECT_HTTPS ?? "https://node-redirect:8443";
-const REDIRECT_MGMT = REDIRECT.replace(":8080", ":9100");
-const CONFIG = process.env.CONFIG_FILE ?? "/etc/apg/apg.yaml";
-const ADMIN = process.env.ADMIN_URL ?? "http://admin:9000";
-const admin = { authorization: `Bearer ${process.env.ADMIN_TOKEN}` };
 
 /** The configuration under test, as a document. JSON is YAML, so file mode writes it as is. */
 function baseConfig() {
@@ -85,64 +75,6 @@ function baseConfig() {
   };
 }
 
-const seq = async (mgmt) => (await http("GET", `${mgmt}/status`)).json?.applied_seq ?? 0;
-const nodes = [MGMT, REDIRECT_MGMT];
-
-// ── Drivers ──────────────────────────────────────────────────────────────────
-
-let fileGeneration = 0;
-
-/** File mode: write the document and wait until every node has reloaded it. */
-async function applyFile(doc) {
-  const before = await Promise.all(nodes.map(seq));
-  // A comment that differs every time, so an unchanged document still counts as an edit.
-  writeFileSync(CONFIG, `${JSON.stringify(doc, null, 2)}\n# generation ${++fileGeneration} ${Date.now()}\n`);
-  await until(async () => (await Promise.all(nodes.map(seq))).every((s, i) => s > before[i]), { what: "every node to reload the file" });
-}
-
-async function adminCall(method, path, body) {
-  const res = await http(method, `${ADMIN}${path}`, { headers: admin, body });
-  if (res.status >= 400 && !(method === "DELETE" && res.status === 404)) {
-    throw new Error(`${method} ${path} -> ${res.status} ${res.text}`);
-  }
-  return res;
-}
-
-/** Makes one workspace's services, routes, domains and route plugins match the document. */
-async function syncWorkspace(ws, section) {
-  const base = `/v1/workspaces/${ws}`;
-  for (const { hostname, ...rest } of section.domains ?? []) {
-    await adminCall("PUT", `${base}/domains/${hostname.replace("*.", "wildcard.")}`, { hostname, ...rest });
-  }
-  for (const { name, ...rest } of section.services ?? []) await adminCall("PUT", `${base}/services/${name}`, rest);
-  const wanted = new Set();
-  for (const { name, plugins = [], ...rest } of section.routes ?? []) {
-    wanted.add(name);
-    await adminCall("PUT", `${base}/routes/${name}`, rest);
-    for (const p of plugins) {
-      await adminCall("PUT", `${base}/plugins/${name}-${p.type.replace("_", "-")}`, { type: p.type, scope: "route", scope_ref: name, config: p.config ?? {} });
-    }
-  }
-  // Routes the document no longer has are removed, as a declarative sync would.
-  const existing = (await adminCall("GET", `${base}/routes?limit=500`)).json.data;
-  for (const r of existing) if (!wanted.has(r.name)) await adminCall("DELETE", `${base}/routes/${r.name}`);
-}
-
-/** Database mode: make the control plane match the document, then wait for every node to catch up. */
-async function applyApi(doc) {
-  for (const [name, value] of Object.entries(doc.settings ?? {})) await adminCall("PUT", `/v1/settings/${name}`, { value });
-  await syncWorkspace("default", doc);
-  for (const { name, status = "active", ...section } of doc.workspaces ?? []) {
-    const found = await http("GET", `${ADMIN}/v1/workspaces/${name}`, { headers: admin });
-    if (found.status === 404) await adminCall("POST", "/v1/workspaces", { name, status });
-    else if (found.json.status !== status) await adminCall("PATCH", `/v1/workspaces/${name}`, { status });
-    await syncWorkspace(name, section);
-  }
-  const target = (await adminCall("GET", "/v1/nodes")).json.last_seq;
-  await until(async () => (await Promise.all(nodes.map(seq))).every((s) => s >= target), { what: `every node to reach seq ${target}` });
-}
-
-const apply = MODE === "file" ? applyFile : applyApi;
 const api = (path, opts = {}) => send(NODE, { host: "api.test", path, ...opts });
 
 step("the node is ready and reports what it holds", async () => {

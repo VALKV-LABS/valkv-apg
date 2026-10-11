@@ -85,7 +85,7 @@ fn run() -> anyhow::Result<()> {
         ConfigSource::File => "file",
         ConfigSource::ApiPoll => "api_poll",
     };
-    let gateway = Gateway::new(config.node_id.clone(), source_name, config.stale_after_secs());
+    let gateway = Gateway::with_upstreams(config.node_id.clone(), source_name, config.stale_after_secs(), config.upstream.clone());
 
     // Each source is prepared here, on the main thread, so a configuration
     // problem stops the node before it listens; its long-running part is then
@@ -138,6 +138,8 @@ fn run() -> anyhow::Result<()> {
         std::thread::Builder::new().name("apg-background".into()).spawn(move || {
             let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("background runtime");
             rt.block_on(async move {
+                // Backend name resolution and active health checks.
+                tokio::spawn(gateway.upstreams.clone().run());
                 match source {
                     Source::File(file) => {
                         tokio::spawn(file.watch());

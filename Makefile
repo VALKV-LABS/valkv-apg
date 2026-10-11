@@ -50,17 +50,19 @@ unit-admin:
 # api_poll mode against the running stack (spec §21).
 integ:
 	$(COMPOSE) run --rm admin-integ
-	$(COMPOSE) run --rm e2e
+	$(COMPOSE) run --rm --use-aliases e2e
 
 STANDALONE := docker compose -f deploy/compose/standalone.yml --profile test
 
-# The routing suite in one mode. `file` uses its own stack (no control plane).
+# The routing and upstream suites in one mode. The runner hosts the upstream
+# suite's test servers, so it joins the network under its service name.
+# `file` uses its own stack (no control plane).
 e2e:
 ifeq ($(MODE),file)
 	$(STANDALONE) up -d --wait node node-redirect
-	$(STANDALONE) run --rm e2e; status=$$?; $(STANDALONE) down -v --remove-orphans; exit $$status
+	$(STANDALONE) run --rm --use-aliases e2e; status=$$?; $(STANDALONE) down -v --remove-orphans; exit $$status
 else
-	$(COMPOSE) run --rm -e MODE=$(MODE) -e SUITE=routing e2e
+	$(COMPOSE) run --rm --use-aliases -e MODE=$(MODE) -e SUITE=routing,upstream e2e
 endif
 
 # Stops and starts containers to prove serving does not depend on the control

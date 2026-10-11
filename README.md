@@ -27,7 +27,8 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 | Workspaces, host ownership, base domains | Working |
 | Plugins: `rate_limit`, `bandwidth_limit` | Working |
 | TLS with configured certificates, HTTP/2, HTTP to HTTPS redirect | Working |
-| Upstream health checks, timeouts, retries, other balancing strategies | In progress |
+| Upstreams: weighted round robin, random, least connections and consistent hashing; active health checks and a circuit breaker; timeouts, route deadlines and retries; upstream TLS with private CAs; HTTP/2 upstreams; sticky traffic splits | Working, tested end to end |
+| Upstream client certificates (mutual TLS) | Working in standalone mode; from a control plane with ACME and key delivery |
 | ACME certificates, the other 19 plugin types, usage metering, UI, CLI, Helm chart | Not built yet |
 
 ## Try it
@@ -80,7 +81,7 @@ Everything runs in Docker; you need Docker and `make`, nothing else.
 make unit             # Rust and TypeScript unit tests, shared fixtures
 make up               # control plane, Postgres, two nodes, sample upstream
 make integ            # admin integration tests, then end-to-end suites
-make e2e MODE=file    # the routing suite against a standalone node
+make e2e MODE=file    # the routing and upstream suites against a standalone node
 make e2e-resilience   # control plane down, restart from cache, resync
 make down
 make lint

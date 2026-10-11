@@ -6,7 +6,6 @@
 
 pub mod applier;
 pub mod cache;
-pub mod circuit;
 pub mod config;
 pub mod gateway;
 pub mod limits;
@@ -17,3 +16,4 @@ pub mod proxy;
 pub mod source_api;
 pub mod source_file;
 pub mod tls;
+pub mod upstream;

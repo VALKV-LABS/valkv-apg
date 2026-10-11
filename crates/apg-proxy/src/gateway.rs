@@ -11,6 +11,7 @@ use arc_swap::ArcSwap;
 use parking_lot::Mutex;
 
 use crate::metrics;
+use crate::upstream::{self, Upstreams};
 
 /// Liveness of the config source, and whether the node has ever held a
 /// complete configuration (spec §5.6).
@@ -62,6 +63,8 @@ pub struct Gateway {
     snapshot: ArcSwap<Snapshot>,
     applied_seq: AtomicU64,
     pub health: SourceHealth,
+    /// Backend health, circuits, resolved addresses and upstream trust material.
+    pub upstreams: Arc<Upstreams>,
     pub node_id: String,
     pub source: &'static str,
     started: Instant,
@@ -69,10 +72,15 @@ pub struct Gateway {
 
 impl Gateway {
     pub fn new(node_id: String, source: &'static str, stale_after_secs: u64) -> Arc<Self> {
+        Self::with_upstreams(node_id, source, stale_after_secs, upstream::Settings::default())
+    }
+
+    pub fn with_upstreams(node_id: String, source: &'static str, stale_after_secs: u64, upstreams: upstream::Settings) -> Arc<Self> {
         Arc::new(Self {
             snapshot: ArcSwap::from_pointee(Snapshot::default()),
             applied_seq: AtomicU64::new(0),
             health: SourceHealth::new(stale_after_secs),
+            upstreams: Arc::new(Upstreams::new(upstreams)),
             node_id,
             source,
             started: Instant::now(),
@@ -100,6 +108,8 @@ impl Gateway {
         if snapshot.report.undecodable > 0 {
             metrics::CHANGELOG_ERRORS.with_label_values(&["undecodable_resource"]).inc_by(snapshot.report.undecodable as u64);
         }
+        // Before the swap, so no request meets a service whose state is not there yet.
+        self.upstreams.sync(resources, &snapshot);
         self.snapshot.store(Arc::new(snapshot));
         self.applied_seq.store(seq, Ordering::Relaxed);
         metrics::CONFIG_APPLIED_SEQ.set(seq as i64);

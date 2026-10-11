@@ -5,18 +5,22 @@
 //   file      a standalone node (deploy/compose/standalone.yml)
 //   api_poll  control plane and nodes (deploy/compose/database.yml)
 //
-// SUITE, when set, runs only the named suite (used by the resilience script,
-// which stops and starts containers between suites).
+// SUITE, when set, runs only the named suites, comma-separated (used by the
+// resilience script, which stops and starts containers between suites).
 
 import { run } from "./lib/harness.js";
 
 const mode = process.env.MODE ?? "api_poll";
 const all = {
-  file: [["routing", "./routing.js"]],
+  file: [
+    ["routing", "./routing.js"],
+    ["upstream", "./upstream.js"],
+  ],
   api_poll: [
     ["smoke", "./smoke.js"],
     ["control-plane", "./control-plane.js"],
     ["routing", "./routing.js"],
+    ["upstream", "./upstream.js"],
   ],
 }[mode];
 
@@ -26,7 +30,7 @@ if (!all) {
 }
 
 const only = process.env.SUITE;
-const suites = only ? [[only, `./${only}.js`]] : all;
+const suites = only ? only.split(",").map((name) => [name, `./${name}.js`]) : all;
 
 let failed = 0;
 for (const [name, path] of suites) {

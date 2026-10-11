@@ -284,6 +284,84 @@ describe("egress guard (SEC-4)", () => {
   it("the operator may use private addresses", async () => {
     expect((await h.call("PUT", `${D}/services/internal`, { body: { backends: [{ target: "10.0.0.5:5432" }] } })).status).toBe(200);
   });
+
+  it("nodes are told whose service it is, so they check the address again on every connection", async () => {
+    const before = await h.lastSeq();
+    h.dns.set("public.example", ["203.0.113.7"]);
+    // A tenant cannot switch the check off by sending the field.
+    const mine = await h.call("PUT", `${T()}/services/restricted`, { token: editor, body: { backends: [{ target: "public.example:80" }], egress_restricted: false } });
+    expect(mine.json.egress_restricted).toBe(true);
+    const ops = await h.call("PUT", `${D}/services/unrestricted`, { body: { backends: [{ target: "10.0.0.6:80" }] } });
+    expect(ops.json.egress_restricted).toBe(false);
+    const events = (await h.events(before)).map((e) => e.data["data"]);
+    expect(events.map((d) => [d.name, d.egress_restricted])).toEqual([["restricted", true], ["unrestricted", false]]);
+    // An admin who edits the tenant's service vouches for it.
+    expect((await h.call("PUT", `${T()}/services/restricted`, { body: { backends: [{ target: "10.0.0.7:80" }] } })).json.egress_restricted).toBe(false);
+  });
+});
+
+describe("everything accepted is enforced", () => {
+  it("upstream policy the node implements is accepted and reaches nodes as written", async () => {
+    const before = await h.lastSeq();
+    const body = {
+      backends: [{ target: "10.0.1.1:80" }, { target: "10.0.1.2:80", weight: 3 }],
+      http_version: "2",
+      load_balancing: { strategy: "hash", hash_key: "header:x-user" },
+      timeouts: { connect_ms: 250, read_ms: 4000 },
+      retries: { attempts: 2, on: ["connect_failure", "timeout"], non_idempotent: true },
+      health_check: { active: { path: "/ready", interval_ms: 1000 }, passive: { consecutive_failures: 2, open_ms: 5000, statuses: [503] } },
+      keepalive: { idle_ms: 5000 },
+    };
+    const res = await h.call("PUT", `${D}/services/policy`, { body });
+    expect(res.status).toBe(200);
+    const [event] = await h.events(before);
+    expect(event!.data["data"]).toMatchObject(body);
+    // Defaults the caller left out are stored, so a node and a reader see the same policy.
+    expect(event!.data["data"].timeouts.write_ms).toBe(60000);
+    expect(event!.data["data"].health_check.active.unhealthy_threshold).toBe(3);
+
+    const route = await h.call("PUT", `${D}/routes/policy`, { body: { service: "policy", paths: ["/policy"], timeout_ms: 1500 } });
+    expect(route.status).toBe(200);
+    const split = await h.call("PUT", `${D}/routes/policy-split`, { body: { split: [{ service: "policy", weight: 1 }, { service: "internal", weight: 1 }], split_key: "cookie:session", paths: ["/policy-split"] } });
+    expect(split.status).toBe(200);
+  });
+
+  it("policy no node enforces yet is refused, not stored and ignored", async () => {
+    const base = { backends: [{ target: "10.0.1.1:80" }] };
+    const refused: Array<[Record<string, unknown>, string]> = [
+      [{ drain_timeout_ms: 5000 }, "/drain_timeout_ms"],
+      [{ keepalive: { max_idle_per_backend: 8 } }, "/keepalive/max_idle_per_backend"],
+      [{ retries: { buffer_bytes: 1024 } }, "/retries/buffer_bytes"],
+      [{ retries: { on: ["connect_failure", 503] } }, "/retries/on/1"],
+    ];
+    for (const [extra, pointer] of refused) {
+      const res = await h.call("PUT", `${D}/services/unbuilt`, { body: { ...base, ...extra } });
+      expect(res.status, pointer).toBe(422);
+      expect(res.json.error.details[0].pointer).toBe(pointer);
+      expect(res.json.error.message).toContain("not enforced by this build");
+    }
+    expect((await h.call("GET", `${D}/services/unbuilt`)).status).toBe(404);
+
+    // A value equal to the default is what a GET returns, so sending it back works.
+    const ok = await h.call("PUT", `${D}/services/unbuilt`, { body: { ...base, drain_timeout_ms: 30000, retries: { attempts: 0 } } });
+    expect(ok.status).toBe(200);
+    expect((await h.call("PUT", `${D}/services/unbuilt`, { body: ok.json, headers: { "if-match": String(ok.json.revision) } })).status).toBe(200);
+
+    const route = await h.call("PUT", `${D}/routes/unbuilt`, { body: { service: "unbuilt", paths: ["/unbuilt"], idle_timeout_ms: 1000 } });
+    expect(route.status).toBe(422);
+    expect(route.json.error.details[0].pointer).toBe("/idle_timeout_ms");
+
+    const setting = await h.call("PUT", "/v1/settings/access_log", { body: { value: { sink: "stdout" } } });
+    expect(setting.status).toBe(422);
+    expect(setting.json.error.message).toContain("not enforced by this build");
+  });
+
+  it("a client certificate towards the upstream waits for key delivery to nodes", async () => {
+    await h.call("PUT", `${D}/certificates/upstream-client`, { body: { cert_pem: fixture("test-cert.crt"), key_pem: fixture("test-cert.key") } });
+    const res = await h.call("PUT", `${D}/services/mtls`, { body: { scheme: "https", backends: [{ target: "10.0.1.1:443" }], tls: { client_certificate: "upstream-client" } } });
+    expect(res.status).toBe(422);
+    expect(res.json.error.details[0].pointer).toBe("/tls/client_certificate");
+  });
 });
 
 describe("certificates", () => {

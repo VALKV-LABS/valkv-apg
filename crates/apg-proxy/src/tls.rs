@@ -72,7 +72,7 @@ pub fn certificate_hosts(cert_pem: &[u8]) -> Result<Vec<String>, String> {
     Ok(hosts)
 }
 
-fn key_matches(cert_pem: &[u8], key_pem: &[u8]) -> Result<(), String> {
+pub(crate) fn key_matches(cert_pem: &[u8], key_pem: &[u8]) -> Result<(), String> {
     let cert = X509::from_pem(cert_pem).map_err(|_| "not a PEM-encoded certificate".to_string())?;
     let key = PKey::private_key_from_pem(key_pem).map_err(|_| "not a PEM-encoded private key".to_string())?;
     let public = cert.public_key().map_err(|_| "the certificate has no usable public key".to_string())?;

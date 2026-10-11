@@ -55,6 +55,8 @@ variables:
   - { name: APG_TRACE_SAMPLE_RATIO, component: node, type: number, default: 0, phase: "2f", description: "Sampling ratio for new traces." }
   - { name: APG_TEMPLATE_ENV_ALLOW, component: node, type: string-list, default: "", phase: "2e", description: "Names templates may read as env.<NAME>." }
   - { name: APG_SHUTDOWN_GRACE_SECS, component: node, type: integer, default: 30, phase: "2a", description: "Time in-flight requests get on SIGTERM." }
+  - { name: APG_DNS_REFRESH_SECS, component: node, type: integer, default: 30, phase: "2c", description: "How often backend host names are resolved again, 5 to 300 (UP-5)." }
+  - { name: APG_BACKEND_ALLOW_CIDRS, component: node, type: cidr-list, default: "", phase: "2c", description: "Private ranges an egress-restricted service may still reach; set it to the same value as on the admin (SEC-4)." }
   - { name: APG_STUB_UPSTREAM, component: node, type: boolean, default: false, phase: "0", description: "Tests only: answer with a description of the routing decision instead of forwarding." }
   - { name: APG_ALLOW_TEST_MODES, component: node, type: boolean, default: false, phase: "2a", description: "Must be true for APG_STUB_UPSTREAM to be accepted." }
 

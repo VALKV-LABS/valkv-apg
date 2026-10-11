@@ -24,5 +24,18 @@ the project uses [Semantic Versioning](https://semver.org/).
 - Forwarded and identity headers, request ids, one error shape with `X-Apg-Error`,
   custom error responses, a real management listener (`/healthz`, `/readyz`,
   `/metrics`, `/status`), HTTP to HTTPS redirect, HTTP/2 over TLS.
+- Upstreams: `random`, `least_connections` and `hash` (weighted rendezvous) balancing
+  next to weighted round robin; active health checks (HTTP and TCP) and a per-service
+  circuit breaker; connect, read and write timeouts; a per-route deadline; retries on
+  connection failure and on timeout that go to a different backend and never replay an
+  unsafe request; upstream TLS with SNI, private CA bundles and client certificates;
+  HTTP/2 to upstreams; idle-connection lifetime; traffic splits that are sticky for a
+  key; background resolution of backend host names (`APG_DNS_REFRESH_SECS`).
+- A second egress check on the node: a service written by a caller who may not reach
+  private addresses is checked again on every connection (`APG_BACKEND_ALLOW_CIDRS`).
+- Metrics `apg_backend_healthy`, `apg_backend_circuit_open`, `apg_upstream_retries_total`
+  and `apg_dns_failures_total`.
+- `schemas/unbuilt.yaml`: the keys no node enforces yet. The file loader and the admin
+  both refuse them, so nothing is accepted and then ignored.
 - Node sources imported from the seed and moved to the `apg` namespace
   (environment variables, metrics, crate and binary names).

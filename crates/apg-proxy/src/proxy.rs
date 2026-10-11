@@ -3,9 +3,9 @@
 //! 1. assign a request id, resolve the client address
 //! 2. match a route, attribute a workspace
 //! 3. run request-phase plugins
-//! 4. pick a backend
+//! 4. pick a backend (spec §7.1); on a retry, pick another
 //! 5. build the upstream request (path, Host, forwarded and identity headers)
-//! 6. forward
+//! 6. forward, within the service's timeouts and the route's deadline
 //! 7. response headers, body accounting
 //! 8. log phase: metrics, circuit accounting, bandwidth debit, access log
 
@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use apg_core::model::Backend;
 use apg_core::path;
 use apg_core::plugins::Site;
 use apg_core::snapshot::{CompiledRewrite, CompiledRoute, Matched, Request as MatchRequest, ServiceEntry, Snapshot};
@@ -22,16 +21,16 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_core::upstreams::peer::HttpPeer;
-use pingora_core::{Error, ErrorType};
+use pingora_core::{Error, ErrorSource, ErrorType};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 
-use crate::circuit::CircuitBreaker;
 use crate::config::HttpMode;
 use crate::gateway::Gateway;
 use crate::limits::{BandwidthConfig, Buckets, RateLimitConfig, Subject, bucket_key};
 use crate::metrics;
 use crate::net::{Cidr, client_ip, normalize_host};
+use crate::upstream::{Picked, hash_parts, weighted_pick};
 
 /// Settings the pipeline needs that do not change while the node runs.
 pub struct ProxySettings {
@@ -47,8 +46,8 @@ pub struct ApgProxy {
     pub gateway: Arc<Gateway>,
     pub settings: ProxySettings,
     pub buckets: Arc<Buckets>,
-    circuits: DashMap<String, Arc<CircuitBreaker>>,
-    round_robin: DashMap<String, AtomicUsize>,
+    /// Rotation of each split route, by route id.
+    split_rotation: DashMap<String, AtomicUsize>,
 }
 
 /// Per-request state.
@@ -65,14 +64,30 @@ pub struct Ctx {
     snapshot: Option<Arc<Snapshot>>,
     matched: Option<Matched>,
     service: Option<Arc<ServiceEntry>>,
-    backend: Option<Backend>,
+    /// The backend of the attempt in progress.
+    picked: Option<Picked>,
+    /// Target of the last backend chosen, for the access log.
+    backend_target: String,
+    /// Targets that failed for this request; a retry avoids them.
+    tried: Vec<String>,
+    /// Attempts started.
+    tries: u32,
+    /// Whether the circuit breaker has heard how the current attempt ended.
+    recorded: bool,
+    /// The route's `timeout_ms`, as a point in time.
+    deadline: Option<Instant>,
+    /// Value of the service's `hash_key` for this request.
+    hash_key: Option<String>,
+    /// Status the upstream answered with, when it answered.
+    upstream_status: Option<u16>,
+    /// The response to give when no attempt can be made: status, code, message.
+    refusal: Option<(u16, &'static str, &'static str)>,
     /// Set when the gateway itself produced the response.
     error_code: Option<&'static str>,
     bytes_in: u64,
     bytes_out: u64,
     rate: Option<(RateLimitConfig, u64)>,
     bandwidth: Option<(String, BandwidthConfig)>,
-    upstream_failed: bool,
     /// The socket peer's address, and whether it is a trusted proxy.
     peer_ip: String,
     peer_trusted: bool,
@@ -110,63 +125,89 @@ pub fn upstream_path(route: &CompiledRoute, matched_prefix: Option<&str>, path: 
     }
 }
 
-/// Picks among `(index, weight)` candidates by smooth rotation: over any window
-/// of `total weight` picks each candidate is chosen `weight` times.
-fn weighted_pick(weights: &[u32], counter: usize) -> Option<usize> {
-    let total: usize = weights.iter().map(|w| *w as usize).sum();
-    if total == 0 {
-        return None;
-    }
-    let mut slot = counter % total;
-    for (i, w) in weights.iter().enumerate() {
-        if slot < *w as usize {
-            return Some(i);
-        }
-        slot -= *w as usize;
-    }
-    None
+/// What a key selector (`hash_key`, `split_key`) evaluates to for one request.
+/// `None` when the request carries no such value.
+struct KeySource<'a> {
+    req: &'a RequestHeader,
+    host: &'a str,
+    client_ip: &'a str,
+    path: &'a str,
+    query: &'a str,
+    workspace_id: &'a str,
 }
+
+impl KeySource<'_> {
+    fn value(&self, selector: &str) -> Option<String> {
+        let found = match selector {
+            "host" => self.host,
+            "client_ip" => self.client_ip,
+            "path" => self.path,
+            "workspace" => self.workspace_id,
+            // Consumers are identified by authentication plugins, which arrive in build phase 2e.
+            "consumer" => "",
+            other => match other.split_once(':')? {
+                ("header", name) => header(self.req, name).unwrap_or(""),
+                ("cookie", name) => header(self.req, "cookie").unwrap_or("").split(';').filter_map(|pair| pair.trim().split_once('=')).find(|(k, _)| *k == name).map_or("", |(_, v)| v),
+                ("query", name) => self.query.split('&').map(|pair| pair.split_once('=').unwrap_or((pair, ""))).find(|(k, _)| *k == name).map_or("", |(_, v)| v),
+                _ => "",
+            },
+        };
+        (!found.is_empty()).then(|| found.to_string())
+    }
+}
+
+/// Methods that may be sent twice without changing the outcome (spec UP-10).
+fn idempotent(method: &str) -> bool {
+    matches!(method, "GET" | "HEAD" | "OPTIONS" | "PUT" | "DELETE")
+}
+
+const NO_BACKEND: (u16, &str, &str) = (503, "NO_HEALTHY_BACKEND", "no upstream is available for this route");
+const UPSTREAM_ERROR: (u16, &str, &str) = (502, "UPSTREAM_ERROR", "the upstream could not be reached or answered invalidly");
+const UPSTREAM_TIMEOUT: (u16, &str, &str) = (504, "UPSTREAM_TIMEOUT", "the upstream did not answer in time");
 
 impl ApgProxy {
     pub fn new(gateway: Arc<Gateway>, settings: ProxySettings) -> Self {
-        Self { gateway, settings, buckets: Arc::new(Buckets::default()), circuits: DashMap::new(), round_robin: DashMap::new() }
-    }
-
-    fn next(&self, key: &str) -> usize {
-        self.round_robin.entry(key.to_string()).or_insert_with(|| AtomicUsize::new(0)).fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn circuit(&self, backend_id: &str) -> Arc<CircuitBreaker> {
-        self.circuits.entry(backend_id.to_string()).or_insert_with(|| Arc::new(CircuitBreaker::new(3, Duration::from_secs(30)))).clone()
+        Self { gateway, settings, buckets: Arc::new(Buckets::default()), split_rotation: DashMap::new() }
     }
 
     /// Chooses the service for this request: the route's only service, or one
-    /// side of its split by weight.
-    fn pick_service(&self, snapshot: &Snapshot, route: &CompiledRoute) -> Option<Arc<ServiceEntry>> {
+    /// side of its split by weight. With a `split_key` value the choice is
+    /// the same every time for that value (spec UP-15).
+    fn pick_service(&self, snapshot: &Snapshot, route: &CompiledRoute, key: Option<&str>) -> Option<Arc<ServiceEntry>> {
         let weights: Vec<u32> = route.targets.iter().map(|(_, w)| *w).collect();
-        let i = if weights.len() == 1 { 0 } else { weighted_pick(&weights, self.next(&format!("split:{}", route.id)))? };
+        let i = if weights.len() == 1 {
+            0
+        } else {
+            let slot = match key {
+                Some(k) => hash_parts(&[k, route.id.as_str()]) as usize,
+                None => self.split_rotation.entry(route.id.clone()).or_insert_with(|| AtomicUsize::new(0)).fetch_add(1, Ordering::Relaxed),
+            };
+            weighted_pick(&weights, slot)?
+        };
         snapshot.service(&route.targets[i].0).cloned()
     }
 
-    /// Chooses a backend: active ones whose circuit is closed, by weight. If
-    /// every active backend's circuit is open, they are all tried anyway:
-    /// sending traffic to a possibly recovering backend beats a certain 503
-    /// (spec UP-2).
-    fn pick_backend(&self, snapshot: &Snapshot, service: &ServiceEntry) -> Option<Backend> {
-        let active: Vec<&Backend> = service.spec.backends.iter().filter(|b| b.status == "active" && b.weight > 0).collect();
-        if active.is_empty() {
-            return None;
+    /// The attempt in progress failed: the circuit breaker hears about it and
+    /// a retry will avoid this backend.
+    fn attempt_failed(&self, ctx: &mut Ctx) {
+        if let (Some(snapshot), Some(service), Some(picked)) = (&ctx.snapshot, &ctx.service, ctx.picked.take()) {
+            self.gateway.upstreams.record(snapshot, service, &picked, false);
+            ctx.tried.push(picked.backend.target.clone());
         }
-        let breaker_on = snapshot.flag("circuit_breaker");
-        let healthy: Vec<&Backend> = if breaker_on { active.iter().copied().filter(|b| !self.circuit(&b.id).is_open()).collect() } else { active.clone() };
-        let pool = if healthy.is_empty() {
-            metrics::UPSTREAM_FAIL_OPEN.inc();
-            active
-        } else {
-            healthy
-        };
-        let weights: Vec<u32> = pool.iter().map(|b| b.weight).collect();
-        weighted_pick(&weights, self.next(&format!("svc:{}", service.id))).map(|i| pool[i].clone())
+        ctx.recorded = true;
+    }
+
+    /// Whether the service's retry policy and the route's deadline leave room
+    /// for another attempt after a failure of kind `condition`.
+    fn may_retry(ctx: &Ctx, condition: &str) -> bool {
+        let Some(service) = &ctx.service else { return false };
+        let retries = &service.spec.retries;
+        retries.on(condition) && ctx.tries <= retries.attempts && ctx.deadline.is_none_or(|d| Instant::now() < d)
+    }
+
+    fn refuse<T>(ctx: &mut Ctx, refusal: (u16, &'static str, &'static str)) -> pingora_core::Result<T> {
+        ctx.refusal = Some(refusal);
+        Err(Error::explain(ErrorType::Custom(refusal.1), refusal.2))
     }
 
     /// Sends a gateway-generated error (spec §6.7): the standard JSON shape,
@@ -338,11 +379,19 @@ impl ProxyHttp for ApgProxy {
             return Ok(true);
         }
 
-        let Some(service) = self.pick_service(&snapshot, &matched.route) else {
-            self.respond_error(session, ctx, 503, "NO_HEALTHY_BACKEND", "no upstream is available for this route").await?;
+        let split_key = matched.route.split_key.as_deref().and_then(|selector| {
+            KeySource { req: session.req_header(), host: &ctx.host, client_ip: &ctx.client_ip, path: &ctx.path, query: &query, workspace_id: &matched.workspace_id }.value(selector)
+        });
+        let Some(service) = self.pick_service(&snapshot, &matched.route, split_key.as_deref()) else {
+            self.respond_error(session, ctx, NO_BACKEND.0, NO_BACKEND.1, NO_BACKEND.2).await?;
             return Ok(true);
         };
         ctx.service = Some(service.clone());
+        if service.spec.load_balancing.strategy == "hash" {
+            ctx.hash_key = KeySource { req: session.req_header(), host: &ctx.host, client_ip: &ctx.client_ip, path: &ctx.path, query: &query, workspace_id: &matched.workspace_id }
+                .value(&service.spec.load_balancing.hash_key);
+        }
+        ctx.deadline = matched.route.timeout_ms.zip(ctx.started).map(|(ms, started)| started + Duration::from_millis(ms));
 
         // ── Request-phase plugins ────────────────────────────────────────────
         let site = Site { route_id: &matched.route.id, service_id: &service.id, workspace_id: &matched.workspace_id, consumer_id: None };
@@ -386,11 +435,12 @@ impl ProxyHttp for ApgProxy {
         }
 
         // ── Backend ──────────────────────────────────────────────────────────
-        let Some(backend) = self.pick_backend(&snapshot, &service) else {
-            self.respond_error(session, ctx, 503, "NO_HEALTHY_BACKEND", "no upstream is available for this route").await?;
+        let Some(picked) = self.gateway.upstreams.select(&snapshot, &service, ctx.hash_key.as_deref(), &[]) else {
+            self.respond_error(session, ctx, NO_BACKEND.0, NO_BACKEND.1, NO_BACKEND.2).await?;
             return Ok(true);
         };
-        ctx.backend = Some(backend.clone());
+        ctx.backend_target = picked.backend.target.clone();
+        ctx.picked = Some(picked);
 
         if self.settings.stub_upstream {
             // Test mode: describe the routing decision instead of forwarding.
@@ -398,7 +448,7 @@ impl ProxyHttp for ApgProxy {
                 "stub": true,
                 "route": matched.route.name,
                 "service": service.spec.name,
-                "backend": backend.target,
+                "backend": ctx.backend_target,
                 "workspace": matched.workspace_id,
                 "upstream_path": upstream_path(&matched.route, matched.matched_prefix.as_deref(), &ctx.path),
                 "client_ip": ctx.client_ip,
@@ -416,22 +466,53 @@ impl ProxyHttp for ApgProxy {
         Ok(false)
     }
 
+    /// Called once per attempt. The first attempt uses the backend chosen in
+    /// the request phase; a retry chooses again, away from what already failed.
     async fn upstream_peer(&self, _session: &mut Session, ctx: &mut Self::CTX) -> pingora_core::Result<Box<HttpPeer>> {
-        let (Some(service), Some(backend)) = (&ctx.service, &ctx.backend) else {
-            return Err(Error::explain(ErrorType::InternalError, "no backend was selected"));
+        let (Some(snapshot), Some(service)) = (ctx.snapshot.clone(), ctx.service.clone()) else {
+            return Err(Error::explain(ErrorType::InternalError, "no service was selected"));
         };
-        let tls = service.spec.scheme == "https";
-        // SNI defaults to the backend's host name (spec UP-13); the seed sent none.
-        let host = backend.target.rsplit_once(':').map_or(backend.target.as_str(), |(h, _)| h).trim_matches(|c| c == '[' || c == ']');
-        let sni = service.spec.tls.sni.clone().unwrap_or_else(|| host.to_string());
-        let mut peer = HttpPeer::new(backend.target.as_str(), tls, sni);
-        peer.options.verify_cert = service.spec.tls.verify;
-        peer.options.verify_hostname = service.spec.tls.verify;
-        Ok(Box::new(peer))
+        let upstreams = &self.gateway.upstreams;
+        loop {
+            if ctx.picked.is_none() {
+                let Some(picked) = upstreams.select(&snapshot, &service, ctx.hash_key.as_deref(), &ctx.tried) else {
+                    return Self::refuse(ctx, NO_BACKEND);
+                };
+                ctx.backend_target = picked.backend.target.clone();
+                ctx.picked = Some(picked);
+            }
+            ctx.tries += 1;
+            ctx.recorded = false;
+            ctx.upstream_status = None;
+            if ctx.tries > 1 {
+                metrics::UPSTREAM_RETRIES.with_label_values(&[&service.workspace_id, &service.spec.name]).inc();
+            }
+
+            // The route's deadline covers every attempt (spec UP-8).
+            let budget = match ctx.deadline.map(|d| d.saturating_duration_since(Instant::now())) {
+                Some(left) if left.is_zero() => return Self::refuse(ctx, UPSTREAM_TIMEOUT),
+                left => left,
+            };
+
+            let backend = &ctx.picked.as_ref().expect("chosen above").backend;
+            let reason = match upstreams.address(&service, backend, ctx.hash_key.as_deref()).await {
+                Ok(addr) => match upstreams.peer(&service, backend, addr, budget) {
+                    Ok(peer) => return Ok(Box::new(peer)),
+                    Err(reason) => reason,
+                },
+                Err(reason) => reason.to_string(),
+            };
+            // A backend that cannot even be dialled counts as a connection failure.
+            tracing::warn!(service = %service.spec.name, backend = %backend.target, %reason, "backend cannot be used");
+            self.attempt_failed(ctx);
+            if !Self::may_retry(ctx, "connect_failure") {
+                return Self::refuse(ctx, UPSTREAM_ERROR);
+            }
+        }
     }
 
     async fn upstream_request_filter(&self, _session: &mut Session, upstream: &mut RequestHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
-        let (Some(matched), Some(service), Some(backend)) = (&ctx.matched, &ctx.service, &ctx.backend) else { return Ok(()) };
+        let (Some(matched), Some(service), Some(backend)) = (&ctx.matched, &ctx.service, ctx.picked.as_ref().map(|p| &p.backend)) else { return Ok(()) };
 
         // Path: strip_path, then rewrite, keeping the query string.
         let new_path = upstream_path(&matched.route, matched.matched_prefix.as_deref(), &ctx.path);
@@ -491,6 +572,7 @@ impl ProxyHttp for ApgProxy {
     }
 
     async fn response_filter(&self, _session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
+        ctx.upstream_status = Some(upstream_response.status.as_u16());
         upstream_response.insert_header(REQUEST_ID_HEADER, ctx.request_id.as_str())?;
         if let Some((cfg, remaining)) = &ctx.rate
             && cfg.response_headers
@@ -501,27 +583,58 @@ impl ProxyHttp for ApgProxy {
         Ok(())
     }
 
-    fn response_body_filter(&self, _session: &mut Session, body: &mut Option<Bytes>, _end_of_stream: bool, ctx: &mut Self::CTX) -> pingora_core::Result<Option<Duration>> {
+    fn response_body_filter(&self, _session: &mut Session, body: &mut Option<Bytes>, end_of_stream: bool, ctx: &mut Self::CTX) -> pingora_core::Result<Option<Duration>> {
         if let Some(b) = body {
             ctx.bytes_out += b.len() as u64;
+        }
+        // A response still streaming when the route's deadline passes is cut
+        // off: the status is already sent, so the connection is closed (spec UP-8).
+        if !end_of_stream && ctx.deadline.is_some_and(|d| Instant::now() > d) {
+            return Err(Error::explain(ErrorType::ReadTimedout, "the route's timeout expired while the response was streaming"));
         }
         Ok(None)
     }
 
-    fn fail_to_connect(&self, _session: &mut Session, _peer: &HttpPeer, ctx: &mut Self::CTX, e: Box<Error>) -> Box<Error> {
-        ctx.upstream_failed = true;
+    /// No connection was made, so nothing was sent and another backend may
+    /// always be tried (spec UP-10).
+    fn fail_to_connect(&self, session: &mut Session, _peer: &HttpPeer, ctx: &mut Self::CTX, mut e: Box<Error>) -> Box<Error> {
+        self.attempt_failed(ctx);
+        let timed_out = matches!(e.etype(), ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout);
+        let again = (Self::may_retry(ctx, "connect_failure") || (timed_out && Self::may_retry(ctx, "timeout"))) && !session.as_ref().retry_buffer_truncated();
+        e.set_retry(again);
         e
     }
 
-    fn error_while_proxy(&self, _peer: &HttpPeer, _session: &mut Session, e: Box<Error>, ctx: &mut Self::CTX, _client_reused: bool) -> Box<Error> {
-        ctx.upstream_failed = true;
+    /// A failure after a connection was made. The request may already be with
+    /// the upstream, so it is sent again only when that is safe (spec UP-10).
+    fn error_while_proxy(&self, peer: &HttpPeer, session: &mut Session, e: Box<Error>, ctx: &mut Self::CTX, client_reused: bool) -> Box<Error> {
+        let mut e = e.more_context(format!("Peer: {peer}"));
+        if !matches!(e.esource(), ErrorSource::Upstream) {
+            // The client went away or sent something invalid: not the backend's doing.
+            e.set_retry(false);
+            return e;
+        }
+        let non_idempotent = ctx.service.as_ref().is_some_and(|s| s.spec.retries.non_idempotent);
+        let replayable = (idempotent(&ctx.method) || non_idempotent) && !session.as_ref().retry_buffer_truncated() && session.response_written().is_none();
+
+        // A pooled connection the upstream had already closed says nothing
+        // about the backend: the same backend gets the request on a fresh one.
+        e.retry.decide_reuse(client_reused);
+        if e.retry() {
+            e.set_retry(replayable);
+            return e;
+        }
+
+        self.attempt_failed(ctx);
+        let timed_out = matches!(e.etype(), ErrorType::ReadTimedout | ErrorType::WriteTimedout);
+        e.set_retry(timed_out && replayable && Self::may_retry(ctx, "timeout"));
         e
     }
 
     /// Upstream failures answer in the standard error shape too.
     async fn fail_to_proxy(&self, session: &mut Session, e: &Error, ctx: &mut Self::CTX) -> FailToProxy {
-        let timeout = matches!(e.etype(), ErrorType::ConnectTimedout | ErrorType::ReadTimedout | ErrorType::WriteTimedout);
-        let (status, code, message) = if timeout { (504, "UPSTREAM_TIMEOUT", "the upstream did not answer in time") } else { (502, "UPSTREAM_ERROR", "the upstream could not be reached or answered invalidly") };
+        let timeout = matches!(e.etype(), ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout | ErrorType::ReadTimedout | ErrorType::WriteTimedout);
+        let (status, code, message) = ctx.refusal.take().unwrap_or(if timeout { UPSTREAM_TIMEOUT } else { UPSTREAM_ERROR });
         // If the response has already started there is nothing left to say.
         if session.response_written().is_none() {
             let _ = self.respond_error(session, ctx, status, code, message).await;
@@ -536,17 +649,18 @@ impl ProxyHttp for ApgProxy {
         metrics::REQUESTS.with_label_values(&[class]).inc();
         metrics::DURATION.with_label_values(&[class]).observe(elapsed);
 
-        // Circuit accounting: a connection failure or a gateway-class status
-        // from the upstream counts against the backend.
-        if let Some(backend) = &ctx.backend
-            && !self.settings.stub_upstream
+        // Circuit accounting for an attempt the upstream answered: a status in
+        // the service's `passive.statuses` counts against the backend, any
+        // other answer for it. Attempts that failed outright were recorded
+        // when they failed.
+        if let (Some(snapshot), Some(service), Some(picked), Some(upstream_status)) = (&ctx.snapshot, &ctx.service, &ctx.picked, ctx.upstream_status)
+            && !ctx.recorded
         {
-            let failed = ctx.upstream_failed || (ctx.error_code.is_none() && matches!(status, 502..=504));
-            if failed {
-                self.circuit(&backend.id).record_failure();
-            } else if ctx.error_code.is_none() && e.is_none() {
-                self.circuit(&backend.id).record_success();
-            }
+            let failed = service.spec.health_check.passive.statuses.contains(&upstream_status);
+            self.gateway.upstreams.record(snapshot, service, picked, !failed);
+        }
+        if let Some(e) = e {
+            tracing::debug!(request_id = %ctx.request_id, error = %e, "request ended with an error");
         }
 
         if let Some((key, cfg)) = &ctx.bandwidth {
@@ -569,7 +683,8 @@ impl ProxyHttp for ApgProxy {
             duration_ms = (elapsed * 1000.0) as u64,
             route = ctx.matched.as_ref().map_or("", |m| m.route.name.as_str()),
             service = ctx.service.as_ref().map_or("", |s| s.spec.name.as_str()),
-            backend = ctx.backend.as_ref().map_or("", |b| b.target.as_str()),
+            backend = %ctx.backend_target,
+            attempts = ctx.tries,
             workspace = ctx.matched.as_ref().map_or("", |m| m.workspace_id.as_str()),
             "request"
         );
@@ -630,16 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn weighted_pick_honours_weights_exactly_over_a_cycle() {
-        let weights = [3, 1, 0];
-        let picks: Vec<usize> = (0..8).map(|i| weighted_pick(&weights, i).unwrap()).collect();
-        assert_eq!(picks, [0, 0, 0, 1, 0, 0, 0, 1]);
-        assert_eq!(weighted_pick(&[0, 0], 5), None);
-        assert_eq!(weighted_pick(&[], 5), None);
-        assert_eq!(weighted_pick(&[1], 12345), Some(0));
-    }
-
-    #[test]
     fn request_ids_are_accepted_only_when_well_formed() {
         assert!(valid_request_id("req-123_abc.DEF"));
         assert!(!valid_request_id(""));
@@ -648,56 +753,98 @@ mod tests {
         assert!(!valid_request_id(&"a".repeat(129)));
     }
 
-    fn proxy_with(services: serde_json::Value) -> (ApgProxy, Arc<Snapshot>) {
+    #[test]
+    fn key_selectors_read_the_request() {
+        let mut req = RequestHeader::build("GET", b"/orders?tenant=acme&flag&empty=", None).unwrap();
+        req.insert_header("x-user", "u-7").unwrap();
+        req.insert_header("cookie", "theme=dark; session=abc123").unwrap();
+        let source = KeySource { req: &req, host: "api.example.com", client_ip: "203.0.113.9", path: "/orders", query: "tenant=acme&flag&empty=", workspace_id: "w1" };
+        let value = |selector: &str| source.value(selector);
+        assert_eq!(value("host").as_deref(), Some("api.example.com"));
+        assert_eq!(value("client_ip").as_deref(), Some("203.0.113.9"));
+        assert_eq!(value("path").as_deref(), Some("/orders"));
+        assert_eq!(value("workspace").as_deref(), Some("w1"));
+        assert_eq!(value("header:x-user").as_deref(), Some("u-7"));
+        assert_eq!(value("cookie:session").as_deref(), Some("abc123"));
+        assert_eq!(value("query:tenant").as_deref(), Some("acme"));
+        // Absent or empty: the request has no key, and the caller falls back to rotation.
+        for absent in ["header:x-missing", "cookie:missing", "query:missing", "query:flag", "query:empty", "consumer", "nonsense"] {
+            assert_eq!(value(absent), None, "{absent}");
+        }
+        let anonymous = KeySource { req: &req, host: "h", client_ip: "", path: "/", query: "", workspace_id: "w" };
+        assert_eq!(anonymous.value("client_ip"), None);
+    }
+
+    #[test]
+    fn only_idempotent_methods_are_replayed_by_default() {
+        for m in ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"] {
+            assert!(idempotent(m), "{m}");
+        }
+        for m in ["POST", "PATCH", "CONNECT"] {
+            assert!(!idempotent(m), "{m}");
+        }
+    }
+
+    fn split_proxy(route: serde_json::Value) -> (ApgProxy, Arc<Snapshot>, Arc<CompiledRoute>) {
         let gateway = Gateway::new("n".into(), "file", 30);
         let mut r = Resources::new();
         r.apply(&ChangeEvent::upsert("workspace", "w", None, json!({ "name": "default", "slug": "default", "system": true })));
-        for (i, svc) in services.as_array().unwrap().iter().enumerate() {
-            r.apply(&ChangeEvent::upsert("service", format!("s{i}"), Some("w".into()), svc.clone()));
+        for name in ["stable", "canary"] {
+            r.apply(&ChangeEvent::upsert("service", name, Some("w".into()), json!({ "name": name, "backends": [{ "target": "a:1" }] })));
         }
+        r.apply(&ChangeEvent::upsert("route", "r", Some("w".into()), route));
         gateway.install(&r, 1);
         let snap = gateway.snapshot();
+        assert_eq!(snap.report, Default::default());
+        let route = snap.match_request(&MatchRequest { host: "h", path: "/", method: "GET", query: "", header: &|_| None }).unwrap().route;
         let settings = ProxySettings { http_mode: HttpMode::Proxy, traffic_health_path: None, trusted_proxies: vec![], stub_upstream: false, https_port: None };
-        (ApgProxy::new(gateway, settings), snap)
+        (ApgProxy::new(gateway, settings), snap, route)
     }
 
+    // spec UP-15
     #[test]
-    fn backends_are_chosen_by_weight_and_only_when_active() {
-        let (p, snap) = proxy_with(json!([{ "name": "s", "backends": [
-            { "id": "a", "target": "a:1", "weight": 2 },
-            { "id": "b", "target": "b:1" },
-            { "id": "c", "target": "c:1", "status": "draining" },
-            { "id": "d", "target": "d:1", "status": "down" },
-            { "id": "e", "target": "e:1", "weight": 0 }
-        ] }]));
-        let svc = snap.service("s0").unwrap();
-        let picks: Vec<String> = (0..6).map(|_| p.pick_backend(&snap, svc).unwrap().target).collect();
-        assert_eq!(picks, ["a:1", "a:1", "b:1", "a:1", "a:1", "b:1"]);
-    }
+    fn a_split_follows_its_weights_and_is_sticky_for_a_key() {
+        let (p, snap, route) = split_proxy(json!({ "name": "r", "split": [{ "service": "stable", "weight": 9 }, { "service": "canary", "weight": 1 }], "split_key": "header:x-user" }));
+        let side = |key: Option<&str>| p.pick_service(&snap, &route, key).unwrap().spec.name.clone();
 
-    #[test]
-    fn a_service_with_no_active_backend_has_none() {
-        let (p, snap) = proxy_with(json!([{ "name": "s", "backends": [{ "id": "a", "target": "a:1", "status": "down" }] }]));
-        assert!(p.pick_backend(&snap, snap.service("s0").unwrap()).is_none());
-    }
+        // Without a key: exactly by weight over a cycle.
+        let canary = (0..100).filter(|_| side(None) == "canary").count();
+        assert_eq!(canary, 10);
 
-    // spec UP-2
-    #[test]
-    fn an_open_circuit_is_skipped_but_all_open_fails_open() {
-        let (p, snap) = proxy_with(json!([{ "name": "s", "backends": [{ "id": "a", "target": "a:1" }, { "id": "b", "target": "b:1" }] }]));
-        let svc = snap.service("s0").unwrap();
-        for _ in 0..3 {
-            p.circuit("a").record_failure();
+        // With a key: always the same side, and about a tenth of keys on the canary.
+        let mut on_canary = 0;
+        for i in 0..2000 {
+            let key = format!("user-{i}");
+            let first = side(Some(&key));
+            assert_eq!(first, side(Some(&key)));
+            if first == "canary" {
+                on_canary += 1;
+            }
         }
-        let picks: Vec<String> = (0..4).map(|_| p.pick_backend(&snap, svc).unwrap().target).collect();
-        assert_eq!(picks, ["b:1", "b:1", "b:1", "b:1"], "the failing backend is skipped");
-        for _ in 0..3 {
-            p.circuit("b").record_failure();
-        }
-        let before = metrics::UPSTREAM_FAIL_OPEN.get();
-        assert!(p.pick_backend(&snap, svc).is_some(), "with every circuit open a backend is still tried");
-        assert!(metrics::UPSTREAM_FAIL_OPEN.get() > before);
-        p.circuit("a").record_success();
-        assert_eq!(p.pick_backend(&snap, svc).unwrap().target, "a:1");
+        assert!((140..=260).contains(&on_canary), "about 10 % of keys; got {on_canary}");
+
+        // A side with weight 0 gets nothing, keyed or not.
+        let (p, snap, route) = split_proxy(json!({ "name": "r", "split": [{ "service": "stable", "weight": 1 }, { "service": "canary", "weight": 0 }] }));
+        assert!((0..50).all(|i| p.pick_service(&snap, &route, Some(&format!("k{i}"))).unwrap().spec.name == "stable"));
+        assert!((0..50).all(|_| p.pick_service(&snap, &route, None).unwrap().spec.name == "stable"));
+    }
+
+    #[test]
+    fn retries_stop_at_the_policy_and_at_the_deadline() {
+        let (_p, snap, _route) = split_proxy(json!({ "name": "r", "service": "stable" }));
+        let mut service = (**snap.service("stable").unwrap()).clone();
+        service.spec.retries.attempts = 2;
+        service.spec.retries.on = vec!["connect_failure".into()];
+        let mut ctx = Ctx { service: Some(Arc::new(service)), tries: 1, ..Default::default() };
+        assert!(ApgProxy::may_retry(&ctx, "connect_failure"));
+        assert!(!ApgProxy::may_retry(&ctx, "timeout"), "only the listed conditions are retried");
+        ctx.tries = 2;
+        assert!(ApgProxy::may_retry(&ctx, "connect_failure"));
+        ctx.tries = 3;
+        assert!(!ApgProxy::may_retry(&ctx, "connect_failure"), "two extra tries were allowed and made");
+        ctx.tries = 1;
+        ctx.deadline = Some(Instant::now() - Duration::from_millis(1));
+        assert!(!ApgProxy::may_retry(&ctx, "connect_failure"), "the route's deadline has passed");
+        assert!(!ApgProxy::may_retry(&Ctx::default(), "connect_failure"));
     }
 }

@@ -547,6 +547,11 @@ impl Snapshot {
         self.services.get(id)
     }
 
+    /// Every service, in no particular order.
+    pub fn services(&self) -> impl Iterator<Item = &Arc<ServiceEntry>> {
+        self.services.values()
+    }
+
     /// True when the workspace exists and is suspended (spec §4.2).
     pub fn is_suspended(&self, workspace_id: &str) -> bool {
         self.workspaces.get(workspace_id).is_some_and(|w| w.spec.status == "suspended")

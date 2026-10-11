@@ -14,6 +14,9 @@ import type { Resolver } from "./egress.js";
 import { ApiError, type ErrorDetail } from "./errors.js";
 import { KINDS, type KindDef, type KindName } from "./kinds.js";
 import type { SchemaRegistry } from "./schemas.js";
+import { loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
+
+const UNBUILT_SETTINGS = loadUnbuilt().settings;
 
 /** A database row, loosely typed: each kind's definition knows its columns. */
 export type Row = Record<string, any>;
@@ -418,6 +421,10 @@ export class Store {
     const faults = this.deps.schemas.validate("resources/settings.json", { [name]: input["value"] });
     if (faults.length > 0) {
       throw new ApiError("VALIDATION_FAILED", `invalid setting '${name}'`, faults.map((f) => ({ pointer: f.pointer.replace(`/${name}`, "/value"), message: f.message })));
+    }
+    const unbuilt = unbuiltFaults({ [name]: input["value"] }, UNBUILT_SETTINGS);
+    if (unbuilt.length > 0) {
+      throw new ApiError("VALIDATION_FAILED", unbuilt[0]!.message, [{ pointer: "/value", message: unbuilt[0]!.message }]);
     }
     return this.transact(opts, async (tx) => {
       const [before] = await tx<Row[]>`SELECT name, value, revision FROM apg_settings WHERE name = ${name} FOR UPDATE`;
