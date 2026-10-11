@@ -48,5 +48,16 @@ the project uses [Semantic Versioning](https://semver.org/).
   `APG_ACME_DNS_PROVIDER` and the webhook settings; metrics `apg_certs_expiring`,
   `apg_acme_issuances_total` and `apg_acme_failures_total`.
 - Upstream client certificates now work from a control plane as well as from a file.
+- Plugins: a runtime that builds each instance once and runs them in priority order,
+  and twenty plugin types: `key_auth`, `basic_auth`, `jwt_auth`, `mtls_auth`,
+  `forward_auth`, `acl`, `ip_restriction`, `cors`, `request_size_limit`, `rate_limit`,
+  `quota`, `bandwidth_limit`, `redirect`, `static_response`, `request_transformer`,
+  `response_transformer`, `response_cache`, `compression`, `http_callout` and
+  `access_log`. Kill switches per type; per-consumer and per-tenant overrides.
+- Consumers and credentials. Nodes hold hashes only; a credential works in its own
+  workspace and on operator routes.
+- Templates in plugin configuration, checked when written; secret-typed values read
+  from the node's environment or a file, or sealed by the control plane.
+- The TLS listener asks for a client certificate on names where `mtls_auth` applies.
 - Node sources imported from the seed and moved to the `apg` namespace
   (environment variables, metrics, crate and binary names).

@@ -17,7 +17,7 @@ pub const READ_VARIABLES: &[&str] = &[
     "APG_CONFIG_CLIENT_CA", "APG_DNS_REFRESH_SECS", "APG_BACKEND_ALLOW_CIDRS",
     "APG_SECRET_KEY", "APG_SECRET_KEY_FILE", "APG_SECRET_KEY_PREVIOUS", "APG_TLS_MIN_VERSION", "APG_ACME_EMAIL",
     "APG_ACME_DIRECTORY_URL", "APG_ACME_DNS_PROVIDER", "APG_ACME_DNS_WEBHOOK_URL", "APG_ACME_DNS_WEBHOOK_SECRET",
-    "APG_ACME_DNS_PROPAGATION_SECS", "APG_ACME_INSECURE_DIRECTORY", "APG_TEMPLATE_ENV_ALLOW",
+    "APG_ACME_DNS_PROPAGATION_SECS", "APG_ACME_INSECURE_DIRECTORY", "APG_TEMPLATE_ENV_ALLOW", "APG_CACHE_MEMORY_BYTES",
 ];
 
 /// Where the node reads configuration from (spec §2.2).
@@ -80,6 +80,8 @@ pub struct Config {
     pub acme: crate::acme::Settings,
     /// Environment variable names templates may read as `env.NAME`.
     pub template_env_allow: Vec<String>,
+    /// Memory budget of the response cache.
+    pub cache_bytes: usize,
 }
 
 impl Config {
@@ -279,6 +281,7 @@ impl Config {
             secrets,
             tls13_only,
             acme,
+            cache_bytes: number("APG_CACHE_MEMORY_BYTES", 268_435_456, 0, 1 << 40)? as usize,
             template_env_allow: get(env, "APG_TEMPLATE_ENV_ALLOW").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         })
     }

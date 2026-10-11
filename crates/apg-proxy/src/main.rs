@@ -135,6 +135,7 @@ fn run() -> anyhow::Result<()> {
 
     // Plugin state that outlives a restart: quota counters.
     gateway.plugins.allow_env(config.template_env_allow.clone());
+    gateway.plugins.cache.set_budget(config.cache_bytes);
     let quota_file = PathBuf::from(&config.data_dir).join("quota.json");
     let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     gateway.plugins.quotas.load(&quota_file, now());

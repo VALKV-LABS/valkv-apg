@@ -22,6 +22,7 @@ use crate::template::Template;
 /// project exists to avoid (spec property 5).
 pub const ENFORCED_PLUGIN_TYPES: &[&str] = &["rate_limit", "bandwidth_limit", "key_auth", "basic_auth", "jwt_auth", "acl", "ip_restriction", "request_size_limit", "cors",
     "quota", "redirect", "static_response", "request_transformer", "response_transformer", "compression", "access_log",
+    "forward_auth", "http_callout", "mtls_auth", "response_cache",
 ];
 
 /// Replaces `${VAR}` and `${VAR:-default}`. An unset variable with no default
@@ -639,7 +640,7 @@ impl Compiler<'_> {
             if scope == "global" && !d.system {
                 self.fault(format!("{at}/scope"), "a global plugin belongs to the system workspace");
             }
-            let config = p.get("config").cloned().unwrap_or_else(|| json!({}));
+            let mut config = p.get("config").cloned().unwrap_or_else(|| json!({}));
             for f in self.schemas.validate(&format!("plugins/{kind}.json"), &config) {
                 let suffix = if f.pointer == "/" { String::new() } else { f.pointer };
                 self.faults.push(Fault::new(format!("{at}/config{suffix}"), f.message));
@@ -654,6 +655,18 @@ impl Compiler<'_> {
             if holds_clear_secret(&config) {
                 // Only a control plane can seal a value; a node given `$secret` from a file could not open it.
                 self.fault(format!("{at}/config"), "$secret is for the Admin API; in a file give the value as $env or $file");
+            }
+            if kind == "mtls_auth"
+                && let Some(Value::Array(cas)) = config.get_mut("ca_certificates")
+            {
+                // Written by name in a file; nodes look CA certificates up by id.
+                for (c_i, ca) in cas.iter_mut().enumerate() {
+                    let reference = ca.as_str().unwrap_or_default().to_string();
+                    match names.ca_certificates.get(&reference) {
+                        Some(id) => *ca = json!(id),
+                        None => self.faults.push(Fault::new(format!("{at}/config/ca_certificates/{c_i}"), format!("CA certificate '{reference}' is not defined in this workspace"))),
+                    }
+                }
             }
             let consumer_id = match p.get("consumer").and_then(Value::as_str) {
                 None => None,

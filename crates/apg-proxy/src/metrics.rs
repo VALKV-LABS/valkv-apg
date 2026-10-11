@@ -32,6 +32,11 @@ pub static PLUGIN_ERRORS: LazyLock<IntCounterVec> =
 pub static TRANSFORM_SKIPPED: LazyLock<IntCounter> =
     LazyLock::new(|| register_int_counter!("apg_transform_skipped_total", "Bodies passed through unchanged because they were too large to rewrite.").unwrap());
 
+pub static CACHE_REQUESTS: LazyLock<IntCounterVec> =
+    LazyLock::new(|| register_int_counter_vec!("apg_cache_requests_total", "Requests seen by the response cache, by result.", &["result"]).unwrap());
+
+pub static CACHE_BYTES: LazyLock<IntGauge> = LazyLock::new(|| register_int_gauge!("apg_cache_bytes", "Memory held by cached responses.").unwrap());
+
 pub static UPSTREAM_FAIL_OPEN: LazyLock<IntCounter> = LazyLock::new(|| {
     register_int_counter!("apg_upstream_fail_open_total", "Requests sent to a backend although every backend's circuit was open.").unwrap()
 });
@@ -97,6 +102,10 @@ pub fn init() {
     LazyLock::force(&LIMITED);
     LazyLock::force(&PLUGIN_ERRORS);
     LazyLock::force(&TRANSFORM_SKIPPED);
+    LazyLock::force(&CACHE_BYTES);
+    for result in ["hit", "miss", "bypass"] {
+        CACHE_REQUESTS.with_label_values(&[result]).inc_by(0);
+    }
     LazyLock::force(&UPSTREAM_FAIL_OPEN);
     LazyLock::force(&UPSTREAM_RETRIES);
     LazyLock::force(&BACKEND_HEALTHY);

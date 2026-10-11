@@ -125,7 +125,7 @@ impl Gateway {
         }
         // Before the swap, so no request meets a service whose state is not there yet.
         self.upstreams.sync(resources, &snapshot);
-        self.plugins.sync(&snapshot);
+        self.plugins.sync(resources, &snapshot);
         let challenges: HashMap<String, String> = resources
             .kind("acme_challenge")
             .filter_map(|(token, stored)| Some((token.clone(), stored.data.get("key_authorization")?.as_str()?.to_string())))

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/response_cache.json",
+  "title": "response_cache",
+  "description": "Caches responses in memory, per node. Adds X-Apg-Cache: HIT, MISS or BYPASS (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "ttl_secs": { "description": "How long a response is kept when its Cache-Control does not say.", "type": "integer", "minimum": 1, "maximum": 86400, "default": 60 },
+    "respect_cache_control": { "description": "Honour no-store, private, no-cache, max-age and s-maxage, and never store a response that sets a cookie.", "type": "boolean", "default": true },
+    "methods": { "type": "array", "minItems": 1, "uniqueItems": true, "default": ["GET", "HEAD"], "items": { "enum": ["GET", "HEAD"] } },
+    "statuses": { "type": "array", "minItems": 1, "uniqueItems": true, "default": [200, 301, 404], "items": { "type": "integer", "minimum": 200, "maximum": 599 } },
+    "vary_headers": { "description": "Request headers whose values are part of the cache key.", "type": "array", "maxItems": 16, "uniqueItems": true, "default": [], "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" } },
+    "max_object_bytes": { "description": "A larger response is not stored.", "type": "integer", "minimum": 1, "maximum": 67108864, "default": 1048576 },
+    "cache_authenticated": { "description": "Cache for authenticated callers too, each consumer apart.", "type": "boolean", "default": false }
+  }
+}

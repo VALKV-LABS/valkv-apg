@@ -7,14 +7,21 @@
 // node; through the Admin API they are hashed by the control plane.
 
 import { createSign, generateKeyPairSync } from "node:crypto";
+import { readFileSync } from "node:fs";
 import http from "node:http";
-import { MODE, NODE, apply } from "./lib/driver.js";
+import https from "node:https";
+import { MODE, NODE, NODE_TLS, adminCall, apply } from "./lib/driver.js";
 import { assert, step } from "./lib/harness.js";
-import { send } from "./lib/raw.js";
+import { send, until } from "./lib/raw.js";
 
 const RUN = `${Date.now()}`;
 const HOST = process.env.UPSTREAM_HOST ?? "e2e";
 const JWKS_PORT = 9050;
+const AUTH_PORT = 9060;
+const HOOK_PORT = 9061;
+const fixture = (name) => readFileSync(new URL(`../../admin/test/fixtures/${name}`, import.meta.url), "utf8");
+const CERT = fixture("test-cert.crt");
+const CERT_KEY = fixture("test-cert.key");
 const ISSUER = "https://idp.plug.test";
 
 const KEYS = { alice: "apg_k_alice_0123456789abcdef", bob: "apg_k_bob_0123456789abcdefgh", tenant: "apg_k_tenant_0123456789abcde" };
@@ -45,6 +52,51 @@ function startJwks() {
   return new Promise((resolve, reject) => jwksServer.once("error", reject).listen(JWKS_PORT, "0.0.0.0", resolve));
 }
 
+// ── Services the gateway asks ────────────────────────────────────────────────
+
+const listen = (server, port) => new Promise((resolve, reject) => server.once("error", reject).listen(port, "0.0.0.0", resolve));
+const reply = (res, status, headers, body) => {
+  res.writeHead(status, { "content-length": Buffer.byteLength(body), ...headers });
+  res.end(body);
+};
+const authCalls = [];
+const hookCalls = [];
+
+/** Allows `Bearer ok`, and says who it is; refuses everything else in its own words. */
+function startAuthService() {
+  return listen(
+    http.createServer((req, res) => {
+      authCalls.push({ method: req.method, url: req.url, headers: req.headers });
+      if (req.headers.authorization === "Bearer ok") return reply(res, 200, { "x-auth-user": "carol" }, "");
+      return reply(res, 401, { "www-authenticate": 'Bearer realm="svc"', "content-type": "text/plain" }, "nope");
+    }),
+    AUTH_PORT,
+  );
+}
+
+/** A callout service: tags requests and responses, and blocks or replaces on request. */
+function startHookService() {
+  return listen(
+    http.createServer((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const call = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        hookCalls.push(call);
+        const asked = call.request.headers;
+        let answer = {};
+        if (call.phase === "request") {
+          answer = asked["x-block"] ? { action: "respond", status: 451, headers: { "content-type": "text/plain" }, body: "blocked" } : { set_headers: { "x-callout": call.request.path }, remove_headers: ["x-strip"] };
+        } else {
+          answer = asked["x-replace"] ? { action: "respond", status: 418, headers: { "content-type": "text/plain" }, body: "replaced" } : { set_headers: { "x-callout-response": String(call.response.status) } };
+        }
+        reply(res, 200, { "content-type": "application/json" }, JSON.stringify(answer));
+      });
+    }),
+    HOOK_PORT,
+  );
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const jwt = (extra = {}) => ({ issuer: ISSUER, jwks: { keys: [JWK] }, algorithms: ["ES256"], ...extra });
@@ -66,7 +118,10 @@ function config({ keyAuthOn = true } = {}) {
       },
       { name: "bob", groups: ["suspended"], credentials: [{ type: "key", name: "main", key: KEYS.bob }] },
       { name: "guest" },
+      // Known by the name in its client certificate.
+      { name: "svc", credentials: [{ type: "mtls", name: "cert", identity: "api.example.com" }] },
     ],
+    ca_certificates: [{ name: "plug-ca", cert_pem: CERT }],
     services: [
       { name: "echo", shared: true, backends: [{ target: "echo:8080" }] },
       // Two services on one upstream, told apart by the Host they send.
@@ -115,6 +170,12 @@ function config({ keyAuthOn = true } = {}) {
       route("quota", [{ type: "quota", config: { limit: 2, window: "hour", scope: "header:x-run" } }]),
       route("gzip", [{ type: "compression", config: { min_bytes: 10, algorithms: ["gzip"] } }]),
       route("gzipbig", [{ type: "compression", config: { min_bytes: 10000000 } }]),
+      route("fwd", [{ type: "forward_auth", config: { url: `http://${HOST}:${AUTH_PORT}/verify`, response_headers: ["X-Auth-User"] } }]),
+      route("fwdclosed", [{ type: "forward_auth", config: { url: `http://${HOST}:9069/`, timeout_ms: 500 } }]),
+      route("fwdopen", [{ type: "forward_auth", config: { url: `http://${HOST}:9069/`, timeout_ms: 500, fail_open: true } }]),
+      route("hook", [{ type: "http_callout", config: { url: `http://${HOST}:${HOOK_PORT}/hook`, phases: ["request", "response"], timeout_ms: 2000 } }]),
+      route("mtls", [{ type: "mtls_auth", config: { ca_certificates: ["plug-ca"] } }]),
+      route("cache", [{ type: "response_cache", config: { ttl_secs: 30 } }]),
       { name: "pl-split", hosts: ["split.plug.test"], split: [{ service: "pl-side-a", weight: 1 }, { service: "pl-side-b", weight: 1 }], split_key: "consumer", plugins: [{ type: "key_auth" }] },
     ],
     workspaces: [
@@ -143,6 +204,8 @@ function assertRefused(res, status, code) {
 
 step("the plugin configuration is accepted and served", async () => {
   await startJwks();
+  await startAuthService();
+  await startHookService();
   await apply(config());
   assert.equal((await call("key", withKey(KEYS.alice))).status, 200);
 });
@@ -390,6 +453,100 @@ step("compression: negotiated with the client, and skipped for small responses",
   assert.equal((await call("gzip")).headers["content-encoding"], undefined, "the client did not ask for it");
   assert.equal((await call("gzip", { headers: { "accept-encoding": "br" } })).headers["content-encoding"], undefined, "only gzip is switched on");
   assert.equal((await call("gzipbig", gz)).headers["content-encoding"], undefined, "below min_bytes");
+});
+
+step("forward_auth: another service decides; its refusal is the client's answer", async () => {
+  const ok = await call("fwd", { path: "/thing?x=1", headers: { authorization: "Bearer ok", cookie: "a=b", "x-private": "not shared" } });
+  assert.equal(ok.status, 200, ok.text);
+  assert.equal(ok.json.headers["x-auth-user"], "carol", "a header of the service's answer is passed on");
+  const asked = authCalls.at(-1);
+  assert.equal(asked.url, "/verify");
+  assert.equal(asked.headers["x-forwarded-uri"], "/thing?x=1");
+  assert.equal(asked.headers["x-forwarded-method"], "GET");
+  assert.equal(asked.headers["x-forwarded-host"], "fwd.plug.test");
+  assert.equal(asked.headers.cookie, "a=b");
+  assert.equal(asked.headers["x-private"], undefined, "only the listed headers are sent");
+
+  const refused = await call("fwd", { headers: { authorization: "Bearer wrong" } });
+  assert.equal(refused.status, 401);
+  assert.equal(refused.text, "nope");
+  assert.equal(refused.headers["www-authenticate"], 'Bearer realm="svc"');
+
+  // The service cannot be reached: closed unless the operator chose otherwise.
+  assertRefused(await call("fwdclosed"), 503, "AUTH_UNAVAILABLE");
+  assert.equal((await call("fwdopen")).status, 200);
+});
+
+step("http_callout: a service changes, blocks or replaces what passes through", async () => {
+  const res = await call("hook", { path: "/thing", headers: { "x-strip": "remove me", authorization: "Bearer secret-token" } });
+  assert.equal(res.status, 200, res.text);
+  assert.equal(res.json.headers["x-callout"], "/thing");
+  assert.equal(res.json.headers["x-strip"], undefined);
+  assert.equal(res.headers["x-callout-response"], "200");
+  const told = hookCalls.find((c) => c.phase === "request" && c.request.path === "/thing");
+  assert.equal(told.request.host, "hook.plug.test");
+  assert.equal(told.route.name, "pl-hook");
+  assert.equal(told.request.headers.authorization, undefined, "credentials are not shown to the service");
+  assert.ok(hookCalls.some((c) => c.phase === "response" && c.response.status === 200));
+
+  const blocked = await call("hook", { headers: { "x-block": "1" } });
+  assert.equal(blocked.status, 451);
+  assert.equal(blocked.text, "blocked");
+
+  const replaced = await call("hook", { headers: { "x-replace": "1" } });
+  assert.equal(replaced.status, 418);
+  assert.equal(replaced.text, "replaced");
+});
+
+step("mtls_auth: a client certificate from a trusted CA names its consumer (TLS-3)", async () => {
+  const request = (options) =>
+    new Promise((resolve, reject) => {
+      const url = new URL(NODE_TLS);
+      const req = https.request({ hostname: url.hostname, port: url.port, path: "/", servername: "mtls.plug.test", setHost: false, headers: { host: "mtls.plug.test" }, rejectUnauthorized: false, agent: false, ...options }, (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          resolve({ status: res.statusCode, headers: res.headers, json: JSON.parse(text) });
+        });
+      });
+      req.on("error", reject);
+      req.end();
+    });
+  const ok = await request({ cert: CERT, key: CERT_KEY });
+  assert.equal(ok.status, 200, JSON.stringify(ok.json));
+  assert.equal(ok.json.headers["x-apg-consumer-name"], "svc");
+  const none = await request({});
+  assert.equal(none.status, 401);
+  assert.equal(none.json.error.code, "UNAUTHENTICATED");
+  // Over plain HTTP there is no certificate either.
+  assertRefused(await call("mtls"), 401, "UNAUTHENTICATED");
+});
+
+step("response_cache: a stored response is served again; credentials and other queries are kept apart", async () => {
+  const path = `/cached-${RUN}?a=1&b=2`;
+  const first = await call("cache", { path });
+  assert.equal(first.status, 200, first.text);
+  assert.equal(first.headers["x-apg-cache"], "MISS");
+  // The upstream echoes the request id it was sent, so a served copy shows the first request's.
+  const again = await call("cache", { path: `/cached-${RUN}?b=2&a=1` });
+  assert.equal(again.headers["x-apg-cache"], "HIT");
+  assert.equal(again.json.headers["x-request-id"], first.json.headers["x-request-id"]);
+  assert.notEqual(again.headers["x-request-id"], first.headers["x-request-id"], "the response still carries its own request id");
+
+  assert.equal((await call("cache", { path: `/cached-${RUN}?a=2` })).headers["x-apg-cache"], "MISS");
+  assert.equal((await call("cache", { path, headers: { authorization: "Bearer someone" } })).headers["x-apg-cache"], "BYPASS");
+  assert.equal((await call("cache", { path, method: "POST" })).headers["x-apg-cache"], undefined, "only GET and HEAD are cached");
+  const head = await call("cache", { path, method: "HEAD" });
+  assert.equal(head.headers["x-apg-cache"], "HIT");
+  assert.equal(head.text, "");
+
+  if (MODE !== "file") {
+    // Purging the route reaches every node through the changelog.
+    await adminCall("POST", "/v1/workspaces/default/routes/pl-cache/cache/purge");
+    await until(async () => (await call("cache", { path })).headers["x-apg-cache"] === "MISS", { what: "the purge to reach the node" });
+    assert.equal((await call("cache", { path })).headers["x-apg-cache"], "HIT", "and the route caches again afterwards");
+  }
 });
 
 step("the kill switch stops a plugin type everywhere, and brings it back (PL-3)", async () => {

@@ -83,6 +83,8 @@ pub struct CompiledRoute {
     pub timeout_ms: Option<u64>,
     pub idle_timeout_ms: u64,
     pub error_responses: HashMap<String, CompiledErrorResponse>,
+    /// Changes whenever anything about the route does. Cached responses carry it.
+    pub cache_tag: u64,
     methods: Vec<String>,
     headers: Vec<CompiledPredicate>,
     query: Vec<CompiledPredicate>,
@@ -406,7 +408,8 @@ impl Snapshot {
                 snap.report.undecodable += 1;
                 continue;
             };
-            snap.add_route(id, ws, spec);
+            let tag = u64::from_str_radix(&crate::consumers::sha256_hex(s.data.to_string().as_bytes())[..16], 16).unwrap_or(0);
+            snap.add_route(id, ws, spec, tag);
         }
         snap.system_routes.sort();
         for ix in snap.workspace_routes.values_mut() {
@@ -423,7 +426,7 @@ impl Snapshot {
         snap
     }
 
-    fn add_route(&mut self, id: &str, workspace_id: &str, spec: Route) {
+    fn add_route(&mut self, id: &str, workspace_id: &str, spec: Route, cache_tag: u64) {
         if !spec.enabled {
             return;
         }
@@ -488,6 +491,7 @@ impl Snapshot {
             timeout_ms: spec.timeout_ms,
             idle_timeout_ms: spec.idle_timeout_ms,
             error_responses: compile_error_responses(&spec.error_responses),
+            cache_tag,
             methods: spec.methods.clone(),
             headers,
             query,

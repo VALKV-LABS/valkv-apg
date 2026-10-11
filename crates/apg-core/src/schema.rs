@@ -20,6 +20,8 @@ const FILES: &[(&str, &str)] = schema_files![
     "common.json",
     "apg-config.json",
     "changelog-event.json",
+    "callout-request.json",
+    "callout-response.json",
     "resources/workspace.json",
     "resources/domain.json",
     "resources/certificate.json",
@@ -48,6 +50,10 @@ const FILES: &[(&str, &str)] = schema_files![
     "plugins/response_transformer.json",
     "plugins/compression.json",
     "plugins/access_log.json",
+    "plugins/forward_auth.json",
+    "plugins/http_callout.json",
+    "plugins/mtls_auth.json",
+    "plugins/response_cache.json",
 ];
 
 /// One validation fault, located by JSON pointer.

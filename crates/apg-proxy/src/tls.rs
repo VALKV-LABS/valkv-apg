@@ -20,7 +20,7 @@ use pingora_core::listeners::TlsAccept;
 use pingora_core::protocols::tls::TlsRef;
 use pingora_core::tls::ext::{ssl_add_chain_cert, ssl_use_certificate, ssl_use_private_key};
 use pingora_core::tls::pkey::PKey;
-use pingora_core::tls::ssl::NameType;
+use pingora_core::tls::ssl::{NameType, SslVerifyMode};
 use pingora_core::tls::x509::X509;
 
 use crate::metrics;
@@ -81,6 +81,59 @@ pub struct TlsStore {
     issued: ArcSwap<Table>,
     fallback: Arc<CertPair>,
     secrets: Option<Arc<SecretBox>>,
+    /// Names on which the handshake asks the client for a certificate.
+    client_auth: ArcSwap<ClientAuth>,
+}
+
+/// Where an `mtls_auth` plugin may apply.
+#[derive(Debug, Default, PartialEq)]
+struct ClientAuth {
+    everywhere: bool,
+    exact: std::collections::HashSet<String>,
+    /// Suffixes of wildcard hosts, with their dot.
+    wildcard: std::collections::HashSet<String>,
+}
+
+impl ClientAuth {
+    /// Reads the configuration: a plugin on a route covers that route's hosts;
+    /// at any wider scope, or on a route with no hosts, it may apply anywhere.
+    fn of(resources: &Resources) -> Self {
+        let mut out = Self::default();
+        for (_, stored) in resources.kind("plugin") {
+            let data = &stored.data;
+            if data.get("type").and_then(|t| t.as_str()) != Some("mtls_auth") || data.get("enabled").and_then(|e| e.as_bool()) == Some(false) {
+                continue;
+            }
+            let hosts: Vec<String> = data
+                .get("route_id")
+                .and_then(|r| r.as_str())
+                .filter(|_| data.get("scope").and_then(|s| s.as_str()) == Some("route"))
+                .and_then(|id| resources.get("route", id))
+                .and_then(|route| route.data.get("hosts").and_then(|h| h.as_array()).cloned())
+                .unwrap_or_default()
+                .iter()
+                .filter_map(|h| h.as_str().map(str::to_ascii_lowercase))
+                .collect();
+            if hosts.is_empty() {
+                out.everywhere = true;
+            }
+            for host in hosts {
+                match host.strip_prefix('*') {
+                    Some(suffix) => out.wildcard.insert(suffix.to_string()),
+                    None => out.exact.insert(host),
+                };
+            }
+        }
+        out
+    }
+
+    fn covers(&self, sni: Option<&str>) -> bool {
+        if self.everywhere {
+            return true;
+        }
+        let Some(name) = sni.map(str::to_ascii_lowercase) else { return false };
+        self.exact.contains(&name) || name.find('.').is_some_and(|i| self.wildcard.contains(&name[i..]))
+    }
 }
 
 /// DNS names a certificate is valid for, from its subject alternative names.
@@ -148,7 +201,7 @@ impl TlsStore {
             }
             None => self_signed()?,
         };
-        Ok(Self { table: ArcSwap::from_pointee(Table::default()), issued: ArcSwap::from_pointee(Table::default()), fallback: Arc::new(fallback), secrets: None })
+        Ok(Self { table: ArcSwap::from_pointee(Table::default()), issued: ArcSwap::from_pointee(Table::default()), fallback: Arc::new(fallback), secrets: None, client_auth: ArcSwap::from_pointee(ClientAuth::default()) })
     }
 
     /// Gives the store the key that opens certificate keys sealed by a control plane.
@@ -197,8 +250,14 @@ impl TlsStore {
         }
         let names = table.exact.len() + table.wildcard.len();
         self.table.store(Arc::new(table));
+        self.client_auth.store(Arc::new(ClientAuth::of(resources)));
         self.export_expiry();
         names
+    }
+
+    /// Whether a handshake for this name should ask the client for a certificate (spec TLS-3).
+    pub fn requests_client_certificate(&self, sni: Option<&str>) -> bool {
+        self.client_auth.load().covers(sni)
     }
 
     /// Adds a certificate this node issued itself. It serves the names it
@@ -267,6 +326,11 @@ impl TlsAccept for SniAcceptor {
     async fn certificate_callback(&self, ssl: &mut TlsRef) {
         let sni = ssl.servername(NameType::HOST_NAME).map(str::to_owned);
         let pair = self.store.select(sni.as_deref());
+        if self.store.requests_client_certificate(sni.as_deref()) {
+            // Ask, do not require, and accept whatever is presented: whether
+            // it is trusted is decided per route by the mtls_auth plugin.
+            ssl.set_verify_callback(SslVerifyMode::PEER, |_, _| true);
+        }
 
         // The PEM holds the leaf first, then any intermediates.
         let mut chain = match X509::stack_from_pem(&pair.cert_pem) {
@@ -290,6 +354,11 @@ impl TlsAccept for SniAcceptor {
         if let Err(e) = PKey::private_key_from_pem(&pair.key_pem).and_then(|key| ssl_use_private_key(ssl, &key)) {
             tracing::error!(?sni, %e, "failed to install the private key");
         }
+    }
+
+    /// Keeps the certificate the client presented, for the mtls_auth plugin.
+    async fn handshake_complete_callback(&self, ssl: &TlsRef) -> Option<Arc<dyn std::any::Any + Send + Sync>> {
+        crate::mtls::presented(ssl).map(|cert| cert as Arc<dyn std::any::Any + Send + Sync>)
     }
 }
 

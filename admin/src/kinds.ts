@@ -739,6 +739,12 @@ const plugin: KindDef = {
       throw new ApiError("VALIDATION_FAILED", `invalid ${type} configuration`, faults.map((f) => ({ pointer: `/config${f.pointer === "/" ? "" : f.pointer}`, message: f.message })));
     }
     let config = store.deps.schemas.withDefaults(configSchema, body["config"] ?? {}) as Json;
+    if (type === "mtls_auth") {
+      // Written by name or id; nodes look CA certificates up by id.
+      config["ca_certificates"] = await Promise.all(
+        (config["ca_certificates"] as string[]).map(async (ref, i) => (await resolveRef(tx, "apg_ca_certificates", ws, ref, "CA certificate", `/config/ca_certificates/${i}`))["id"]),
+      );
+    }
     // What no node enforces is refused, and a template that cannot compile is a validation error (spec TPL-1).
     const refused = [...unbuiltFaults(config, UNBUILT.plugins[type] ?? []), ...pluginTemplateFaults(type, config)].map((f) => ({ pointer: `/config${f.pointer}`, message: f.message }));
     if (refused.length > 0) throw new ApiError("VALIDATION_FAILED", refused[0]!.message, refused);

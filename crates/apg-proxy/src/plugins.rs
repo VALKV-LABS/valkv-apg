@@ -10,7 +10,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use apg_core::model::CaCertificate;
 use apg_core::plugins::Instance;
+use apg_core::resources::Resources;
 use apg_core::snapshot::Snapshot;
 use arc_swap::ArcSwap;
 use http::HeaderMap;
@@ -18,6 +20,9 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::auth::{BasicAuth, JwtAuth, KeyAuth, VerifiedCache};
+use crate::callout::{ForwardAuth, HttpCallout};
+use crate::mtls::MtlsAuth;
+use crate::response_cache::{CacheConfig, ResponseCache};
 use crate::limits::{BandwidthConfig, RateLimitConfig};
 use crate::net::Cidr;
 use crate::secrets::SecretBox;
@@ -63,7 +68,7 @@ pub enum Verdict {
     /// Refuse with a gateway error (spec §6.7).
     Deny { status: u16, code: &'static str, message: &'static str },
     /// Answer the request here, without an upstream.
-    Respond { status: u16, headers: Vec<(String, String)>, body: String },
+    Respond { status: u16, headers: Vec<(String, String)>, body: bytes::Bytes },
 }
 
 // ── ip_restriction ───────────────────────────────────────────────────────────
@@ -226,6 +231,11 @@ pub enum Built {
     ResponseTransformer(Transformer),
     Compression(Compression),
     AccessLog(AccessLog),
+    MtlsAuth(MtlsAuth),
+    ForwardAuth(ForwardAuth),
+    HttpCallout(HttpCallout),
+    /// The configuration, and a tag that changes with it (cached responses carry it).
+    ResponseCache(CacheConfig, u64),
     /// The configuration could not be turned into a working plugin.
     Broken(String),
 }
@@ -244,13 +254,20 @@ pub struct Runtime {
     secrets: Option<Arc<SecretBox>>,
     pub verified_passwords: VerifiedCache,
     pub quotas: Quotas,
+    pub cache: ResponseCache,
+    /// For the plugins that call other services.
+    pub http: reqwest::Client,
     /// Environment variable names templates may read (`APG_TEMPLATE_ENV_ALLOW`).
     env_allow: std::sync::OnceLock<Vec<String>>,
 }
 
 impl Runtime {
     pub fn new(secrets: Option<Arc<SecretBox>>) -> Self {
-        Self { built: ArcSwap::from_pointee(HashMap::new()), secrets, verified_passwords: VerifiedCache::default(), quotas: Quotas::default(), env_allow: std::sync::OnceLock::new() }
+        Self { built: ArcSwap::from_pointee(HashMap::new()), secrets, verified_passwords: VerifiedCache::default(), quotas: Quotas::default(),
+            cache: ResponseCache::new(268_435_456),
+            http: reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(3)).build().unwrap_or_default(),
+            env_allow: std::sync::OnceLock::new(),
+        }
     }
 
     /// Sets, once, which environment variables templates may read.
@@ -262,7 +279,7 @@ impl Runtime {
         self.env_allow.get().map_or(&[], Vec::as_slice)
     }
 
-    fn build(&self, instance: &Instance) -> Built {
+    fn build(&self, instance: &Instance, resources: &Resources) -> Built {
         let config = &instance.plugin.config;
         let parse = |what: Result<Built, String>| what.unwrap_or_else(Built::Broken);
         let typed = |e: serde_json::Error| e.to_string();
@@ -286,6 +303,24 @@ impl Runtime {
             "response_transformer" => parse(Transformer::build(config).map(Built::ResponseTransformer)),
             "compression" => parse(serde_json::from_value(config.clone()).map(Built::Compression).map_err(typed)),
             "access_log" => parse(AccessLog::build(config).map(Built::AccessLog)),
+            "mtls_auth" => {
+                let ca_pem = |id: &str| -> Result<Vec<u8>, String> {
+                    let stored = resources.get("ca_certificate", id).ok_or_else(|| format!("CA certificate '{id}' is not in the configuration"))?;
+                    let ca: CaCertificate = serde_json::from_value(stored.data.clone()).map_err(|e| e.to_string())?;
+                    match (ca.cert_pem, ca.cert_file) {
+                        (Some(pem), _) => Ok(pem.into_bytes()),
+                        (None, Some(path)) => std::fs::read(&path).map_err(|e| format!("cannot read '{path}': {e}")),
+                        (None, None) => Err(format!("CA certificate '{id}' has no certificate")),
+                    }
+                };
+                parse(MtlsAuth::build(config, &ca_pem).map(Built::MtlsAuth))
+            }
+            "forward_auth" => parse(ForwardAuth::build(config).map(Built::ForwardAuth)),
+            "http_callout" => {
+                let aad = format!("plugin:{}", instance.id);
+                parse(HttpCallout::build(config, &|value| crate::secrets::resolve(value, &aad, self.secrets.as_deref())).map(Built::HttpCallout))
+            }
+            "response_cache" => parse(serde_json::from_value(config.clone()).map(|c| Built::ResponseCache(c, crate::upstream::hash_parts(&[&config.to_string()]))).map_err(typed)),
             other => Built::Broken(format!("plugin type '{other}' is not available in this build")),
         }
     }
@@ -293,21 +328,28 @@ impl Runtime {
     /// Builds every instance of a new configuration. An instance whose
     /// configuration did not change keeps its built form, and with it any
     /// state it holds (fetched signing keys, for example).
-    pub fn sync(&self, snapshot: &Snapshot) {
+    pub fn sync(&self, resources: &Resources, snapshot: &Snapshot) {
         let previous = self.built.load();
         let mut next: BuiltMap = HashMap::new();
         for instance in snapshot.plugins.instances() {
+            // What the built form depends on: the configuration, and for
+            // mtls_auth the CA certificates it names.
+            let mut basis = instance.plugin.config.clone();
+            if instance.plugin.kind == "mtls_auth" {
+                let revisions: Vec<u64> = basis.get("ca_certificates").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(|id| resources.get("ca_certificate", id).map_or(0, |s| s.revision)).collect();
+                basis = serde_json::json!({ "config": basis, "ca_revisions": revisions });
+            }
             let built = match previous.get(&instance.id) {
-                Some((config, built)) if *config == instance.plugin.config => built.clone(),
+                Some((kept, built)) if *kept == basis => built.clone(),
                 _ => {
-                    let built = self.build(instance);
+                    let built = self.build(instance, resources);
                     if let Built::Broken(reason) = &built {
                         tracing::error!(plugin = %instance.id, kind = %instance.plugin.kind, %reason, "plugin instance could not be built");
                     }
                     Arc::new(built)
                 }
             };
-            next.insert(instance.id.clone(), (instance.plugin.config.clone(), built));
+            next.insert(instance.id.clone(), (basis, built));
         }
         self.built.store(Arc::new(next));
     }
@@ -435,7 +477,7 @@ mod tests {
         r.apply(&plugin("p-acl", "acl", json!({ "allow": ["staff"] }), 1));
         r.apply(&plugin("p-bad", "ip_restriction", json!({ "deny": ["nonsense"] }), 1));
         let runtime = Runtime::new(None);
-        runtime.sync(&Snapshot::build(&r));
+        runtime.sync(&r, &Snapshot::build(&r));
         let ip_before = runtime.get("p-ip").unwrap();
         assert!(matches!(*ip_before, Built::IpRestriction(_)));
         assert!(matches!(*runtime.get("p-bad").unwrap(), Built::Broken(_)));
@@ -443,11 +485,11 @@ mod tests {
 
         // Another instance changes: this one is not rebuilt.
         r.apply(&plugin("p-acl", "acl", json!({ "allow": ["partners"] }), 2));
-        runtime.sync(&Snapshot::build(&r));
+        runtime.sync(&r, &Snapshot::build(&r));
         assert!(Arc::ptr_eq(&ip_before, &runtime.get("p-ip").unwrap()));
         // Its own configuration changes: it is.
         r.apply(&plugin("p-ip", "ip_restriction", json!({ "deny": ["192.168.0.0/16"] }), 2));
-        runtime.sync(&Snapshot::build(&r));
+        runtime.sync(&r, &Snapshot::build(&r));
         assert!(!Arc::ptr_eq(&ip_before, &runtime.get("p-ip").unwrap()));
         // Removed instances are forgotten.
         let mut gone = ChangeEvent::upsert("plugin", "p-acl", Some("w".into()), json!({}));
@@ -455,7 +497,7 @@ mod tests {
         gone.revision = Some(3);
         gone.data = None;
         r.apply(&gone);
-        runtime.sync(&Snapshot::build(&r));
+        runtime.sync(&r, &Snapshot::build(&r));
         assert!(runtime.get("p-acl").is_none());
     }
 }

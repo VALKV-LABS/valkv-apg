@@ -29,12 +29,15 @@ use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 
 use crate::auth::{AuthEffects, AuthOutcome};
+use crate::callout::{Answer, Forwarded};
 use crate::config::HttpMode;
 use crate::gateway::Gateway;
 use crate::limits::{BandwidthConfig, Buckets, RateLimitConfig, Subject, bucket_key};
 use crate::plugins::{AUTH_TYPES, Built, FAIL_CLOSED, Req, Verdict};
 use crate::metrics;
+use crate::mtls::ClientCert;
 use crate::net::{Cidr, client_ip, normalize_host};
+use crate::response_cache::{self, Pending, lifetime, storable_headers};
 use crate::transform::{BodyRewrite, Compression, Rendered, Vars, is_json};
 use crate::upstream::{Picked, hash_parts, weighted_pick};
 
@@ -126,6 +129,14 @@ pub struct Ctx {
     log_suppressed: bool,
     /// Custom access-log fields, as a JSON object.
     log_fields: Option<String>,
+    /// An `http_callout` instance to ask again when the response arrives, and what it was told about the request.
+    callout: Option<Arc<Built>>,
+    callout_payload: Option<serde_json::Value>,
+    /// A body that replaces the upstream's, and whether the upstream's is being dropped.
+    response_replace: Option<Bytes>,
+    response_swallow: bool,
+    /// A response being collected for the cache.
+    cache_pending: Option<Pending>,
 }
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -343,6 +354,7 @@ impl ApgProxy {
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         let req = Req { method: &method, host: &host, path: &path, query, client_ip: &client_ip, headers: &headers, workspace_id: &matched.workspace_id, system_route: matched.route.system, now };
 
+        let scheme = if ctx.is_tls { "https" } else { "http" };
         let mut done: Vec<&str> = Vec::new();
         let mut outcomes: Vec<AuthOutcome> = Vec::new();
         let mut effects = AuthEffects::default();
@@ -395,7 +407,7 @@ impl ApgProxy {
                     let result = plugin.check(&req);
                     ctx.response_headers.extend(result.response_headers);
                     match result.preflight {
-                        Some(headers) => Verdict::Respond { status: 204, headers, body: String::new() },
+                        Some(headers) => Verdict::Respond { status: 204, headers, body: Bytes::new() },
                         None => Verdict::Continue,
                     }
                 }
@@ -405,11 +417,15 @@ impl ApgProxy {
                     if declared.is_some_and(|n| n > *max_bytes) { Verdict::Deny { status: PAYLOAD_TOO_LARGE.0, code: PAYLOAD_TOO_LARGE.1, message: PAYLOAD_TOO_LARGE.2 } } else { Verdict::Continue }
                 }
                 Some(Built::Acl(plugin)) => plugin.check(ctx.consumer.as_ref().map(|c| c.groups.as_slice())),
-                Some(Built::KeyAuth(_) | Built::BasicAuth(_) | Built::JwtAuth(_)) => {
+                Some(Built::KeyAuth(_) | Built::BasicAuth(_) | Built::JwtAuth(_) | Built::MtlsAuth(_)) => {
                     let outcome = match built.as_deref() {
                         Some(Built::KeyAuth(plugin)) => plugin.check(&req, snapshot, &mut effects),
                         Some(Built::BasicAuth(plugin)) => plugin.check(&req, snapshot, &self.gateway.plugins.verified_passwords, &mut effects).await,
                         Some(Built::JwtAuth(plugin)) => plugin.check(&req, snapshot, &mut effects).await,
+                        Some(Built::MtlsAuth(plugin)) => {
+                            let presented = session.digest().and_then(|d| d.ssl_digest.as_ref()).and_then(|s| s.extension.get::<ClientCert>());
+                            plugin.check(presented, &req, snapshot)
+                        }
                         _ => unreachable!("matched just above"),
                     };
                     match outcome {
@@ -437,6 +453,81 @@ impl ApgProxy {
                         Verdict::Deny { status: 429, code: "RATE_LIMITED", message: "rate limit exceeded" }
                     }
                 }
+                Some(Built::ForwardAuth(plugin)) => match plugin.check(&self.gateway.plugins.http, &req, scheme).await {
+                    Forwarded::Allow(headers) => {
+                        ctx.set_headers.extend(headers);
+                        Verdict::Continue
+                    }
+                    Forwarded::Respond { status, headers, body } => Verdict::Respond { status, headers, body: body.into() },
+                    Forwarded::Unavailable => Verdict::Deny { status: 503, code: "AUTH_UNAVAILABLE", message: "authentication is temporarily unavailable" },
+                },
+                Some(Built::HttpCallout(plugin)) => {
+                    let consumer = ctx.consumer.as_ref().map(|c| (c.id.as_str(), c.name.as_str()));
+                    let payload = plugin.describe("request", &req, &ctx.request_id, scheme, (&matched.route.id, &matched.route.name), consumer);
+                    let verdict = if !plugin.on_request {
+                        Verdict::Continue
+                    } else {
+                        match plugin.call(&self.gateway.plugins.http, &payload, now).await {
+                            Ok(answer) if answer.respond => Verdict::Respond { status: answer.status.unwrap_or(200), headers: answer.headers, body: answer.body.unwrap_or_default().into() },
+                            Ok(answer) => {
+                                ctx.strip_headers.extend(answer.remove_headers);
+                                ctx.set_headers.extend(answer.set_headers);
+                                Verdict::Continue
+                            }
+                            Err(error) => {
+                                metrics::PLUGIN_ERRORS.with_label_values(&[kind]).inc();
+                                tracing::warn!(plugin = %instance.id, %error, fail_open = plugin.fail_open, "the callout service could not be asked");
+                                if plugin.fail_open { Verdict::Continue } else { Verdict::Deny { status: 500, code: "PLUGIN_ERROR", message: "a service this route depends on could not be asked" } }
+                            }
+                        }
+                    };
+                    if plugin.on_response {
+                        ctx.callout = built.clone();
+                        ctx.callout_payload = Some(payload);
+                    }
+                    verdict
+                }
+                Some(Built::ResponseCache(config, tag)) => {
+                    let cacheable = config.methods.iter().any(|m| m == req.method);
+                    let authenticated = req.header("authorization").is_some() || ctx.consumer.is_some();
+                    if !cacheable {
+                        Verdict::Continue
+                    } else if authenticated && !config.cache_authenticated {
+                        metrics::CACHE_REQUESTS.with_label_values(&["bypass"]).inc();
+                        ctx.response_headers.push(("x-apg-cache".into(), "BYPASS".into()));
+                        Verdict::Continue
+                    } else {
+                        let vary: Vec<(String, String)> = config.vary_headers.iter().map(|h| (h.to_ascii_lowercase(), req.header(h).unwrap_or("").to_string())).collect();
+                        let key = response_cache::key(
+                            &format!("{}:{tag}", instance.id),
+                            matched.route.cache_tag,
+                            &matched.workspace_id,
+                            req.method,
+                            req.host,
+                            req.path,
+                            query,
+                            &vary,
+                            consumer_id.as_deref().filter(|_| config.cache_authenticated),
+                        );
+                        match self.gateway.plugins.cache.get(&key) {
+                            Some(hit) => {
+                                metrics::CACHE_REQUESTS.with_label_values(&["hit"]).inc();
+                                let mut headers = hit.headers;
+                                headers.push(("x-apg-cache".into(), "HIT".into()));
+                                Verdict::Respond { status: hit.status, headers, body: if req.method == "HEAD" { Bytes::new() } else { hit.body } }
+                            }
+                            None => {
+                                metrics::CACHE_REQUESTS.with_label_values(&["miss"]).inc();
+                                ctx.response_headers.push(("x-apg-cache".into(), "MISS".into()));
+                                // A HEAD response has no body to keep.
+                                if req.method == "GET" {
+                                    ctx.cache_pending = Some(Pending::new(key, config.clone()));
+                                }
+                                Verdict::Continue
+                            }
+                        }
+                    }
+                }
                 Some(Built::Quota(quota)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
                     let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
@@ -454,11 +545,11 @@ impl ApgProxy {
                 }
                 Some(Built::Redirect(plugin)) => {
                     let (status, location) = plugin.target(&self.vars(ctx, &req, snapshot, matched));
-                    Verdict::Respond { status, headers: vec![("location".into(), location)], body: String::new() }
+                    Verdict::Respond { status, headers: vec![("location".into(), location)], body: Bytes::new() }
                 }
                 Some(Built::StaticResponse(plugin)) => {
                     let (status, headers, body) = plugin.respond(&self.vars(ctx, &req, snapshot, matched));
-                    Verdict::Respond { status, headers, body }
+                    Verdict::Respond { status, headers, body: body.into() }
                 }
                 Some(Built::RequestTransformer(plugin)) => {
                     let rendered = plugin.render(&self.vars(ctx, &req, snapshot, matched));
@@ -548,7 +639,7 @@ impl ApgProxy {
     }
 
     /// Sends a response a plugin produced (a preflight answer, a redirect, a static body).
-    async fn respond_from_plugin(&self, session: &mut Session, ctx: &mut Ctx, status: u16, headers: Vec<(String, String)>, body: String) -> pingora_core::Result<()> {
+    async fn respond_from_plugin(&self, session: &mut Session, ctx: &mut Ctx, status: u16, headers: Vec<(String, String)>, body: Bytes) -> pingora_core::Result<()> {
         let mut head = ResponseHeader::build(status, None)?;
         head.insert_header("content-length", body.len().to_string())?;
         head.insert_header(REQUEST_ID_HEADER, ctx.request_id.as_str())?;
@@ -558,7 +649,7 @@ impl ApgProxy {
         ctx.bytes_out = body.len() as u64;
         session.write_response_header(Box::new(head), body.is_empty()).await?;
         if !body.is_empty() {
-            session.write_response_body(Some(Bytes::from(body)), true).await?;
+            session.write_response_body(Some(body), true).await?;
         }
         Ok(())
     }
@@ -983,9 +1074,6 @@ impl ProxyHttp for ApgProxy {
 
     async fn response_filter(&self, session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
         ctx.upstream_status = Some(upstream_response.status.as_u16());
-        for (name, value) in &ctx.response_headers {
-            upstream_response.append_header(name.clone(), value.clone())?;
-        }
         let content_type = upstream_response.headers.get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
         let content_length = upstream_response.headers.get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
         let encoded = upstream_response.headers.contains_key("content-encoding");
@@ -1008,6 +1096,63 @@ impl ProxyHttp for ApgProxy {
         {
             module.adjust_level(0);
         }
+        if let (Some(built), Some(mut payload)) = (ctx.callout.clone(), ctx.callout_payload.take())
+            && let Built::HttpCallout(plugin) = &*built
+        {
+            payload["phase"] = "response".into();
+            payload["response"] = serde_json::json!({ "status": upstream_response.status.as_u16(), "headers": plugin.visible_headers(&upstream_response.headers) });
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let answer = match plugin.call(&self.gateway.plugins.http, &payload, now).await {
+                Ok(answer) => Some(answer),
+                Err(error) => {
+                    metrics::PLUGIN_ERRORS.with_label_values(&["http_callout"]).inc();
+                    tracing::warn!(%error, fail_open = plugin.fail_open, "the callout service could not be asked about the response");
+                    (!plugin.fail_open).then(|| Answer {
+                        respond: true,
+                        status: Some(500),
+                        headers: vec![("content-type".into(), "application/json".into()), ("x-apg-error".into(), "PLUGIN_ERROR".into())],
+                        body: Some(serde_json::json!({ "error": { "code": "PLUGIN_ERROR", "message": "a service this route depends on could not be asked", "request_id": ctx.request_id } }).to_string()),
+                        ..Default::default()
+                    })
+                }
+            };
+            match answer {
+                Some(answer) if answer.respond => {
+                    if let Some(status) = answer.status {
+                        upstream_response.set_status(status)?;
+                    }
+                    for (name, value) in &answer.headers {
+                        upstream_response.insert_header(name.clone(), value.clone())?;
+                    }
+                    // The upstream's body is dropped and this one sent in its place.
+                    upstream_response.remove_header("content-length");
+                    upstream_response.insert_header("transfer-encoding", "chunked")?;
+                    ctx.response_replace = Some(Bytes::from(answer.body.unwrap_or_default()));
+                    ctx.response_rewrite = None;
+                    ctx.cache_pending = None;
+                }
+                Some(answer) => {
+                    for name in &answer.remove_headers {
+                        upstream_response.remove_header(name.as_str());
+                    }
+                    for (name, value) in &answer.set_headers {
+                        upstream_response.insert_header(name.clone(), value.clone())?;
+                    }
+                }
+                None => {}
+            }
+        }
+        if let Some(pending) = &mut ctx.cache_pending {
+            let status = upstream_response.status.as_u16();
+            let cache_control = upstream_response.headers.get("cache-control").and_then(|v| v.to_str().ok());
+            // An encoded body is only right for clients that asked for that encoding, so it is not kept.
+            if pending.config.statuses.contains(&status)
+                && !encoded
+                && let Some(ttl) = lifetime(&pending.config, cache_control, upstream_response.headers.contains_key("set-cookie"))
+            {
+                pending.store = Some((status, storable_headers(&upstream_response.headers), ttl));
+            }
+        }
         upstream_response.insert_header(REQUEST_ID_HEADER, ctx.request_id.as_str())?;
         if let Some((cfg, remaining)) = &ctx.rate
             && cfg.response_headers
@@ -1015,16 +1160,31 @@ impl ProxyHttp for ApgProxy {
             upstream_response.insert_header("ratelimit-limit", (cfg.burst as u64).to_string())?;
             upstream_response.insert_header("ratelimit-remaining", remaining.to_string())?;
         }
+        // Headers from plugins go on last, so they are never stored with a cached response.
+        for (name, value) in &ctx.response_headers {
+            upstream_response.append_header(name.clone(), value.clone())?;
+        }
         Ok(())
     }
 
     fn response_body_filter(&self, _session: &mut Session, body: &mut Option<Bytes>, end_of_stream: bool, ctx: &mut Self::CTX) -> pingora_core::Result<Option<Duration>> {
+        if let Some(replacement) = ctx.response_replace.take() {
+            *body = Some(replacement);
+            ctx.response_swallow = true;
+        } else if ctx.response_swallow {
+            *body = Some(Bytes::new());
+        }
         if let Some(rewrite) = &mut ctx.response_rewrite {
             let mut skipped = false;
             *body = rewrite.feed(body.take(), end_of_stream, &mut skipped);
             if skipped {
                 metrics::TRANSFORM_SKIPPED.inc();
             }
+        }
+        if let Some(pending) = &mut ctx.cache_pending
+            && let Some((cached, ttl)) = pending.feed(body.as_ref(), end_of_stream)
+        {
+            self.gateway.plugins.cache.put(pending.key.clone(), cached, ttl);
         }
         if let Some(b) = body {
             ctx.bytes_out += b.len() as u64;

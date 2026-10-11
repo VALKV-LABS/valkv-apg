@@ -25,11 +25,12 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 | Nodes polling the control plane, local cache, resync | Working, tested end to end including control-plane outages |
 | Routing: hosts, paths (prefix, exact, regex), methods, headers, query, priorities, rewrites, traffic split by weight | Working |
 | Workspaces, host ownership, base domains | Working |
-| Plugins: `rate_limit`, `bandwidth_limit` | Working |
+| Plugins, 20 types: authentication (`key_auth`, `basic_auth`, `jwt_auth`, `mtls_auth`, `forward_auth`), `acl`, `ip_restriction`, `cors`, `request_size_limit`, `rate_limit`, `quota`, `bandwidth_limit`, `redirect`, `static_response`, request and response transformers, `response_cache`, `compression`, `http_callout`, `access_log` | Working, tested end to end |
+| Consumers and credentials (API keys, passwords, client certificates), stored and distributed as hashes | Working |
 | TLS with configured certificates, HTTP/2, HTTP to HTTPS redirect | Working |
 | Upstreams: weighted round robin, random, least connections and consistent hashing; active health checks and a circuit breaker; timeouts, route deadlines and retries; upstream TLS with private CAs; HTTP/2 upstreams; sticky traffic splits | Working, tested end to end |
 | Certificates from an ACME authority (HTTP-01, and DNS-01 through a webhook), issued by one node and served by all; renewal; private keys encrypted at rest and in transit between control plane and nodes | Working, tested end to end against a test authority |
-| DNS-01 through Cloudflare or Route 53 directly, the other 19 plugin types, usage metering, UI, CLI, Helm chart | Not built yet |
+| DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, usage metering, UI, CLI, Helm chart | Not built yet |
 
 ## Try it
 

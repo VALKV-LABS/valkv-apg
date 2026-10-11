@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/callout-response.json",
+  "title": "CalloutResponse",
+  "description": "What the service of an http_callout plugin answers (spec §9.4). An empty object means: continue, change nothing.",
+  "type": "object",
+  "properties": {
+    "action": { "description": "continue forwards the request (or the response); respond answers the client with status, headers and body.", "enum": ["continue", "respond"], "default": "continue" },
+    "set_headers": { "description": "With continue: headers to set on the forwarded request, or in the response phase on the response.", "type": "object", "additionalProperties": { "type": "string" } },
+    "remove_headers": { "description": "With continue: headers to remove.", "type": "array", "items": { "type": "string" } },
+    "status": { "description": "With respond.", "type": "integer", "minimum": 100, "maximum": 599 },
+    "headers": { "description": "With respond.", "type": "object", "additionalProperties": { "type": "string" } },
+    "body": { "description": "With respond.", "type": "string" }
+  }
+}

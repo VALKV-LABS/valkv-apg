@@ -31,6 +31,9 @@ plugins:
     - { path: store, default: local }
   quota:
     - { path: store, default: local }
+  # Showing the request body to a callout service is not built.
+  http_callout:
+    - { path: include_body_bytes, default: 0 }
 
 # Settings refused everywhere.
 settings:
