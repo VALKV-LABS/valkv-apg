@@ -41,6 +41,13 @@ const FILES: &[(&str, &str)] = schema_files![
     "plugins/ip_restriction.json",
     "plugins/request_size_limit.json",
     "plugins/cors.json",
+    "plugins/quota.json",
+    "plugins/redirect.json",
+    "plugins/static_response.json",
+    "plugins/request_transformer.json",
+    "plugins/response_transformer.json",
+    "plugins/compression.json",
+    "plugins/access_log.json",
 ];
 
 /// One validation fault, located by JSON pointer.

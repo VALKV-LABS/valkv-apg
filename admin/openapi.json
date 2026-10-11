@@ -9079,6 +9079,39 @@
           }
         }
       },
+      "PluginConfigAccessLog": {
+        "title": "access_log",
+        "description": "Changes access logging for the requests in its scope (spec §9.4, §12.2). The access log never includes header values, so there is nothing to redact.",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "description": "When false, requests in this scope are not logged.",
+            "type": "boolean",
+            "default": true
+          },
+          "sample_rate": {
+            "description": "The share of requests logged, from 0 to 1.",
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "default": 1
+          },
+          "custom_fields": {
+            "description": "Field name to a template (spec §9.5). Written as one JSON object in the line's custom field.",
+            "type": "object",
+            "maxProperties": 32,
+            "default": {},
+            "propertyNames": {
+              "pattern": "^[A-Za-z0-9_]{1,64}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          }
+        }
+      },
       "PluginConfigAcl": {
         "title": "acl",
         "description": "Allows or denies authenticated consumers by group. deny wins (spec §9.4).",
@@ -9147,6 +9180,55 @@
           "anonymous": {
             "description": "A consumer name to run as when no credentials are presented.",
             "$ref": "#/components/schemas/Common/$defs/name"
+          }
+        }
+      },
+      "PluginConfigCompression": {
+        "title": "compression",
+        "description": "Compresses responses when the client accepts it. Responses that are already encoded are left alone (spec §9.4).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "algorithms": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "default": [
+              "br",
+              "gzip"
+            ],
+            "items": {
+              "enum": [
+                "br",
+                "gzip",
+                "zstd"
+              ]
+            }
+          },
+          "min_bytes": {
+            "description": "Responses declared smaller than this are not compressed.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 1073741824,
+            "default": 1024
+          },
+          "content_types": {
+            "description": "Media types to compress. A family is written text/*.",
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 64,
+            "uniqueItems": true,
+            "default": [
+              "text/*",
+              "application/json",
+              "application/javascript",
+              "application/xml",
+              "image/svg+xml"
+            ],
+            "items": {
+              "type": "string",
+              "pattern": "^[a-z0-9.+-]+/([a-z0-9.+-]+|\\*)$"
+            }
           }
         }
       },
@@ -9459,6 +9541,47 @@
           }
         }
       },
+      "PluginConfigQuota": {
+        "title": "quota",
+        "description": "A request allowance per calendar hour, day or month, UTC (spec §9.4). Counted per node.",
+        "type": "object",
+        "required": [
+          "limit"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "description": "Requests allowed per window.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000000000
+          },
+          "window": {
+            "enum": [
+              "hour",
+              "day",
+              "month"
+            ],
+            "default": "hour"
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Common/$defs/limitScope",
+            "default": "workspace"
+          },
+          "store": {
+            "enum": [
+              "local",
+              "redis"
+            ],
+            "default": "local"
+          },
+          "fail_open": {
+            "description": "On a store error, let the request through.",
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
       "PluginConfigRateLimit": {
         "title": "rate_limit",
         "description": "Token-bucket request rate limit (spec §9.4).",
@@ -9499,6 +9622,47 @@
           }
         }
       },
+      "PluginConfigRedirect": {
+        "title": "redirect",
+        "description": "Answers with a redirect. Parts left out are taken from the request (spec §9.4).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              301,
+              302,
+              307,
+              308
+            ],
+            "default": 308
+          },
+          "scheme": {
+            "enum": [
+              "http",
+              "https"
+            ]
+          },
+          "host": {
+            "$ref": "#/components/schemas/Common/$defs/hostname"
+          },
+          "port": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "path": {
+            "description": "A template (spec §9.5).",
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "preserve_query": {
+            "type": "boolean",
+            "default": true
+          }
+        }
+      },
       "PluginConfigRequestSizeLimit": {
         "title": "request_size_limit",
         "description": "Refuses request bodies over a size (spec §9.4).",
@@ -9510,6 +9674,166 @@
             "minimum": 0,
             "maximum": 1099511627776,
             "default": 10485760
+          }
+        }
+      },
+      "PluginConfigRequestTransformer": {
+        "title": "request_transformer",
+        "description": "Changes headers, query parameters and JSON body fields of the forwarded request. Operations run in the order rename, remove, set, add. Values are templates (spec §9.4, §9.5).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "headers": {
+            "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/ops"
+          },
+          "query": {
+            "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/ops"
+          },
+          "body": {
+            "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/bodyOps"
+          },
+          "max_body_bytes": {
+            "description": "A larger body passes through unchanged.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16777216,
+            "default": 1048576
+          }
+        },
+        "$defs": {
+          "fieldName": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+          },
+          "templated": {
+            "type": "object",
+            "maxProperties": 64,
+            "propertyNames": {
+              "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/fieldName"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "ops": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "set": {
+                "description": "Replace the value, or create it.",
+                "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/templated"
+              },
+              "add": {
+                "description": "Add another value, keeping what is there.",
+                "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/templated"
+              },
+              "remove": {
+                "type": "array",
+                "maxItems": 64,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/fieldName"
+                }
+              },
+              "rename": {
+                "type": "object",
+                "maxProperties": 64,
+                "propertyNames": {
+                  "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/fieldName"
+                },
+                "additionalProperties": {
+                  "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/fieldName"
+                }
+              }
+            }
+          },
+          "pointer": {
+            "description": "A JSON Pointer (RFC 6901).",
+            "type": "string",
+            "pattern": "^(/[^/]*)*$",
+            "maxLength": 512
+          },
+          "bodyOps": {
+            "description": "Applies to JSON bodies only.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "set": {
+                "description": "JSON Pointer to the value to put there. A string value is a template.",
+                "type": "object",
+                "maxProperties": 64,
+                "propertyNames": {
+                  "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/pointer"
+                }
+              },
+              "remove": {
+                "type": "array",
+                "maxItems": 64,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/pointer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "PluginConfigResponseTransformer": {
+        "title": "response_transformer",
+        "description": "Changes headers and JSON body fields of the upstream's response. Operations run in the order rename, remove, set, add. Values are templates (spec §9.4, §9.5).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "headers": {
+            "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/ops"
+          },
+          "body": {
+            "$ref": "#/components/schemas/PluginConfigRequestTransformer/$defs/bodyOps"
+          },
+          "max_body_bytes": {
+            "description": "A larger body passes through unchanged.",
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 16777216,
+            "default": 1048576
+          }
+        }
+      },
+      "PluginConfigStaticResponse": {
+        "title": "static_response",
+        "description": "Answers without an upstream: maintenance pages and mocks (spec §9.4).",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "integer",
+            "minimum": 200,
+            "maximum": 599,
+            "default": 200
+          },
+          "content_type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "default": "application/json"
+          },
+          "headers": {
+            "type": "object",
+            "maxProperties": 32,
+            "default": {},
+            "propertyNames": {
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            },
+            "additionalProperties": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          },
+          "body": {
+            "description": "A template (spec §9.5).",
+            "type": "string",
+            "maxLength": 262144
           }
         }
       },

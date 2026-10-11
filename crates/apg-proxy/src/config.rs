@@ -17,7 +17,7 @@ pub const READ_VARIABLES: &[&str] = &[
     "APG_CONFIG_CLIENT_CA", "APG_DNS_REFRESH_SECS", "APG_BACKEND_ALLOW_CIDRS",
     "APG_SECRET_KEY", "APG_SECRET_KEY_FILE", "APG_SECRET_KEY_PREVIOUS", "APG_TLS_MIN_VERSION", "APG_ACME_EMAIL",
     "APG_ACME_DIRECTORY_URL", "APG_ACME_DNS_PROVIDER", "APG_ACME_DNS_WEBHOOK_URL", "APG_ACME_DNS_WEBHOOK_SECRET",
-    "APG_ACME_DNS_PROPAGATION_SECS", "APG_ACME_INSECURE_DIRECTORY",
+    "APG_ACME_DNS_PROPAGATION_SECS", "APG_ACME_INSECURE_DIRECTORY", "APG_TEMPLATE_ENV_ALLOW",
 ];
 
 /// Where the node reads configuration from (spec §2.2).
@@ -78,6 +78,8 @@ pub struct Config {
     /// Refuse TLS 1.2 clients (spec TLS-2).
     pub tls13_only: bool,
     pub acme: crate::acme::Settings,
+    /// Environment variable names templates may read as `env.NAME`.
+    pub template_env_allow: Vec<String>,
 }
 
 impl Config {
@@ -277,6 +279,7 @@ impl Config {
             secrets,
             tls13_only,
             acme,
+            template_env_allow: get(env, "APG_TEMPLATE_ENV_ALLOW").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         })
     }
 }

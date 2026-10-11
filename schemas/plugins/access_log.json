@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/access_log.json",
+  "title": "access_log",
+  "description": "Changes access logging for the requests in its scope (spec §9.4, §12.2). The access log never includes header values, so there is nothing to redact.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "enabled": { "description": "When false, requests in this scope are not logged.", "type": "boolean", "default": true },
+    "sample_rate": { "description": "The share of requests logged, from 0 to 1.", "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+    "custom_fields": { "description": "Field name to a template (spec §9.5). Written as one JSON object in the line's custom field.", "type": "object", "maxProperties": 32, "default": {},
+                       "propertyNames": { "pattern": "^[A-Za-z0-9_]{1,64}$" }, "additionalProperties": { "type": "string", "maxLength": 1024 } }
+  }
+}

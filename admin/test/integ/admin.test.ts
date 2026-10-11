@@ -503,6 +503,18 @@ describe("plugins", () => {
     await h.call("DELETE", `${D}/plugins/jwt-hs`);
   });
 
+  it("refuses plugin settings no node enforces and templates that do not compile", async () => {
+    const redis = await h.call("POST", `${D}/plugins`, { body: { name: "rl-redis", type: "rate_limit", scope: "workspace", enabled: false, consumer: "mobile", config: { store: "redis" } } });
+    expect(redis.status).toBe(422);
+    expect(redis.json.error.details[0].pointer).toBe("/config/store");
+    const template = await h.call("POST", `${D}/plugins`, { body: { name: "static-bad", type: "static_response", scope: "workspace", enabled: false, config: { body: "hello {{ nobody.home }}" } } });
+    expect(template.status).toBe(422);
+    expect(template.json.error.details[0]).toMatchObject({ pointer: "/config/body" });
+    const ok = await h.call("POST", `${D}/plugins`, { body: { name: "static-ok", type: "static_response", scope: "workspace", enabled: false, config: { body: "hello {{ request.host }}" } } });
+    expect(ok.status).toBe(201);
+    await h.call("DELETE", `${D}/plugins/static-ok`);
+  });
+
   it("allows one instance per type at each exact attachment point", async () => {
     const dup = await h.call("POST", `${D}/plugins`, { body: { type: "rate_limit", scope: "route", scope_ref: "plug" } });
     expect(dup.status).toBe(409);

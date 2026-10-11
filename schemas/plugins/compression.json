@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/compression.json",
+  "title": "compression",
+  "description": "Compresses responses when the client accepts it. Responses that are already encoded are left alone (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "algorithms": { "type": "array", "minItems": 1, "uniqueItems": true, "default": ["br", "gzip"], "items": { "enum": ["br", "gzip", "zstd"] } },
+    "min_bytes": { "description": "Responses declared smaller than this are not compressed.", "type": "integer", "minimum": 0, "maximum": 1073741824, "default": 1024 },
+    "content_types": { "description": "Media types to compress. A family is written text/*.", "type": "array", "minItems": 1, "maxItems": 64, "uniqueItems": true,
+                       "default": ["text/*", "application/json", "application/javascript", "application/xml", "image/svg+xml"],
+                       "items": { "type": "string", "pattern": "^[a-z0-9.+-]+/([a-z0-9.+-]+|\\*)$" } }
+  }
+}

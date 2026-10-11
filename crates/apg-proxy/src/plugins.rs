@@ -21,6 +21,7 @@ use crate::auth::{BasicAuth, JwtAuth, KeyAuth, VerifiedCache};
 use crate::limits::{BandwidthConfig, RateLimitConfig};
 use crate::net::Cidr;
 use crate::secrets::SecretBox;
+use crate::transform::{AccessLog, Compression, Quota, Quotas, Redirect, StaticResponse, Transformer};
 
 /// What a plugin may read of a request.
 pub struct Req<'a> {
@@ -218,6 +219,13 @@ pub enum Built {
     Acl(Acl),
     RateLimit(RateLimitConfig),
     Bandwidth(BandwidthConfig),
+    Quota(Quota),
+    Redirect(Redirect),
+    StaticResponse(StaticResponse),
+    RequestTransformer(Transformer),
+    ResponseTransformer(Transformer),
+    Compression(Compression),
+    AccessLog(AccessLog),
     /// The configuration could not be turned into a working plugin.
     Broken(String),
 }
@@ -235,11 +243,23 @@ pub struct Runtime {
     built: ArcSwap<BuiltMap>,
     secrets: Option<Arc<SecretBox>>,
     pub verified_passwords: VerifiedCache,
+    pub quotas: Quotas,
+    /// Environment variable names templates may read (`APG_TEMPLATE_ENV_ALLOW`).
+    env_allow: std::sync::OnceLock<Vec<String>>,
 }
 
 impl Runtime {
     pub fn new(secrets: Option<Arc<SecretBox>>) -> Self {
-        Self { built: ArcSwap::from_pointee(HashMap::new()), secrets, verified_passwords: VerifiedCache::default() }
+        Self { built: ArcSwap::from_pointee(HashMap::new()), secrets, verified_passwords: VerifiedCache::default(), quotas: Quotas::default(), env_allow: std::sync::OnceLock::new() }
+    }
+
+    /// Sets, once, which environment variables templates may read.
+    pub fn allow_env(&self, names: Vec<String>) {
+        let _ = self.env_allow.set(names);
+    }
+
+    pub fn env_allow(&self) -> &[String] {
+        self.env_allow.get().map_or(&[], Vec::as_slice)
     }
 
     fn build(&self, instance: &Instance) -> Built {
@@ -259,6 +279,13 @@ impl Runtime {
             "acl" => parse(serde_json::from_value(config.clone()).map(Built::Acl).map_err(typed)),
             "rate_limit" => Built::RateLimit(RateLimitConfig::from_json(config)),
             "bandwidth_limit" => Built::Bandwidth(BandwidthConfig::from_json(config)),
+            "quota" => parse(Quota::build(config).map(Built::Quota)),
+            "redirect" => parse(Redirect::build(config).map(Built::Redirect)),
+            "static_response" => parse(StaticResponse::build(config).map(Built::StaticResponse)),
+            "request_transformer" => parse(Transformer::build(config).map(Built::RequestTransformer)),
+            "response_transformer" => parse(Transformer::build(config).map(Built::ResponseTransformer)),
+            "compression" => parse(serde_json::from_value(config.clone()).map(Built::Compression).map_err(typed)),
+            "access_log" => parse(AccessLog::build(config).map(Built::AccessLog)),
             other => Built::Broken(format!("plugin type '{other}' is not available in this build")),
         }
     }

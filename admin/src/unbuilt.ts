@@ -25,6 +25,8 @@ export interface Unbuilt {
   settings: UnbuiltKey[];
   /** Refused by the admin only. */
   service_database_mode: UnbuiltKey[];
+  /** Plugin type to the keys of its configuration. */
+  plugins: Record<string, UnbuiltKey[]>;
 }
 
 export function loadUnbuilt(dir: string = defaultSchemasDir()): Unbuilt {
@@ -34,6 +36,7 @@ export function loadUnbuilt(dir: string = defaultSchemasDir()): Unbuilt {
     route: doc.route ?? [],
     settings: doc.settings ?? [],
     service_database_mode: doc.service_database_mode ?? [],
+    plugins: doc.plugins ?? {},
   };
 }
 

@@ -21,6 +21,8 @@ use apg_core::snapshot::{CompiledRewrite, CompiledRoute, Matched, Request as Mat
 use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
+use pingora_core::modules::http::compression::ResponseCompression;
+use pingora_core::protocols::http::compression::Algorithm;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::{Error, ErrorSource, ErrorType};
 use pingora_http::{RequestHeader, ResponseHeader};
@@ -33,6 +35,7 @@ use crate::limits::{BandwidthConfig, Buckets, RateLimitConfig, Subject, bucket_k
 use crate::plugins::{AUTH_TYPES, Built, FAIL_CLOSED, Req, Verdict};
 use crate::metrics;
 use crate::net::{Cidr, client_ip, normalize_host};
+use crate::transform::{BodyRewrite, Compression, Rendered, Vars, is_json};
 use crate::upstream::{Picked, hash_parts, weighted_pick};
 
 /// Settings the pipeline needs that do not change while the node runs.
@@ -112,6 +115,17 @@ pub struct Ctx {
     set_headers: Vec<(String, String)>,
     /// Largest request body a plugin allows.
     max_body: Option<u64>,
+    /// What `request_transformer` and `response_transformer` asked for, values filled in.
+    request_transform: Option<Rendered>,
+    response_transform: Option<Rendered>,
+    /// Bodies being collected for a rewrite.
+    request_rewrite: Option<BodyRewrite>,
+    response_rewrite: Option<BodyRewrite>,
+    compression: Option<Compression>,
+    /// Set by an `access_log` plugin: do not write this request's line.
+    log_suppressed: bool,
+    /// Custom access-log fields, as a JSON object.
+    log_fields: Option<String>,
 }
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -172,6 +186,43 @@ impl KeySource<'_> {
         };
         (!found.is_empty()).then(|| found.to_string())
     }
+}
+
+/// Applies header operations in the order rename, remove, set, add.
+fn apply_header_ops(head: &mut RequestHeader, ops: &crate::transform::RenderedOps) -> pingora_core::Result<()> {
+    for (from, to) in &ops.rename {
+        if let Some(value) = head.remove_header(from.as_str()) {
+            head.insert_header(to.clone(), value)?;
+        }
+    }
+    for name in &ops.remove {
+        head.remove_header(name.as_str());
+    }
+    for (name, value) in &ops.set {
+        head.insert_header(name.clone(), value.clone())?;
+    }
+    for (name, value) in &ops.add {
+        head.append_header(name.clone(), value.clone())?;
+    }
+    Ok(())
+}
+
+fn apply_response_header_ops(head: &mut ResponseHeader, ops: &crate::transform::RenderedOps) -> pingora_core::Result<()> {
+    for (from, to) in &ops.rename {
+        if let Some(value) = head.remove_header(from.as_str()) {
+            head.insert_header(to.clone(), value)?;
+        }
+    }
+    for name in &ops.remove {
+        head.remove_header(name.as_str());
+    }
+    for (name, value) in &ops.set {
+        head.insert_header(name.clone(), value.clone())?;
+    }
+    for (name, value) in &ops.add {
+        head.append_header(name.clone(), value.clone())?;
+    }
+    Ok(())
 }
 
 /// Methods that may be sent twice without changing the outcome (spec UP-10).
@@ -386,6 +437,62 @@ impl ApgProxy {
                         Verdict::Deny { status: 429, code: "RATE_LIMITED", message: "rate limit exceeded" }
                     }
                 }
+                Some(Built::Quota(quota)) => {
+                    let lookup = |name: &str| req.header(name).map(str::to_string);
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let decision = self.gateway.plugins.quotas.take(&bucket_key(&quota.scope, &subject), quota, now);
+                    ctx.response_headers.push(("x-quota-limit".into(), quota.limit.to_string()));
+                    ctx.response_headers.push(("x-quota-remaining".into(), decision.remaining.to_string()));
+                    ctx.response_headers.push(("x-quota-reset".into(), decision.reset.to_string()));
+                    if decision.allowed {
+                        Verdict::Continue
+                    } else {
+                        metrics::LIMITED.with_label_values(&["quota"]).inc();
+                        ctx.retry_after = Some((decision.reset - now).max(1) as u64);
+                        Verdict::Deny { status: 429, code: "QUOTA_EXCEEDED", message: "the quota for this period is used up" }
+                    }
+                }
+                Some(Built::Redirect(plugin)) => {
+                    let (status, location) = plugin.target(&self.vars(ctx, &req, snapshot, matched));
+                    Verdict::Respond { status, headers: vec![("location".into(), location)], body: String::new() }
+                }
+                Some(Built::StaticResponse(plugin)) => {
+                    let (status, headers, body) = plugin.respond(&self.vars(ctx, &req, snapshot, matched));
+                    Verdict::Respond { status, headers, body }
+                }
+                Some(Built::RequestTransformer(plugin)) => {
+                    let rendered = plugin.render(&self.vars(ctx, &req, snapshot, matched));
+                    // A body is rewritten only when it is JSON and not declared larger than the limit.
+                    let fits = req.header("content-length").and_then(|v| v.parse::<usize>().ok()).is_none_or(|n| n <= rendered.max_body_bytes);
+                    if rendered.has_body_ops() && is_json(req.header("content-type")) {
+                        if fits {
+                            ctx.request_rewrite = Some(BodyRewrite::new(rendered.clone()));
+                        } else {
+                            metrics::TRANSFORM_SKIPPED.inc();
+                        }
+                    }
+                    ctx.request_transform = Some(rendered);
+                    Verdict::Continue
+                }
+                Some(Built::ResponseTransformer(plugin)) => {
+                    ctx.response_transform = Some(plugin.render(&self.vars(ctx, &req, snapshot, matched)));
+                    Verdict::Continue
+                }
+                Some(Built::Compression(plugin)) => {
+                    if let Some(module) = session.downstream_modules_ctx.get_mut::<ResponseCompression>() {
+                        // Level 0 switches an algorithm off; the client's Accept-Encoding chooses among the rest.
+                        for (name, algorithm) in [("gzip", Algorithm::Gzip), ("br", Algorithm::Brotli), ("zstd", Algorithm::Zstd)] {
+                            module.adjust_algorithm_level(algorithm, if plugin.algorithms.iter().any(|a| a == name) { 5 } else { 0 });
+                        }
+                    }
+                    ctx.compression = Some(plugin.clone());
+                    Verdict::Continue
+                }
+                Some(Built::AccessLog(plugin)) => {
+                    ctx.log_suppressed = !plugin.writes((crate::upstream::random() >> 11) as f64 / (1u64 << 53) as f64);
+                    ctx.log_fields = plugin.fields(&self.vars(ctx, &req, snapshot, matched));
+                    Verdict::Continue
+                }
                 Some(Built::Bandwidth(cfg)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
                     let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
@@ -400,6 +507,16 @@ impl ApgProxy {
                     }
                 }
             };
+            if verdict != Verdict::Continue
+                && kind != "access_log"
+                && kinds.contains(&"access_log")
+                && let Some(log) = snapshot.plugins.effective("access_log", &site)
+                && let Some(Built::AccessLog(plugin)) = self.gateway.plugins.get(&log.id).as_deref()
+            {
+                // The request ends here, but its log line still follows the scope's override (spec PL-8).
+                ctx.log_suppressed = !plugin.writes((crate::upstream::random() >> 11) as f64 / (1u64 << 53) as f64);
+                ctx.log_fields = plugin.fields(&self.vars(ctx, &req, snapshot, matched));
+            }
             match verdict {
                 Verdict::Continue => {}
                 Verdict::Deny { status, code, message } => {
@@ -413,6 +530,21 @@ impl ApgProxy {
             }
         }
         Ok(false)
+    }
+
+    /// The values templates may use for this request.
+    fn vars<'a>(&'a self, ctx: &'a Ctx, req: &'a Req<'a>, snapshot: &'a Snapshot, matched: &'a Matched) -> Vars<'a> {
+        Vars {
+            req,
+            request_id: &ctx.request_id,
+            scheme: if ctx.is_tls { "https" } else { "http" },
+            snapshot,
+            route: &matched.route,
+            service_name: ctx.service.as_ref().map_or("", |s| s.spec.name.as_str()),
+            consumer: ctx.consumer.as_deref(),
+            claims: ctx.jwt_claims.as_ref(),
+            env_allow: self.gateway.plugins.env_allow(),
+        }
     }
 
     /// Sends a response a plugin produced (a preflight answer, a redirect, a static body).
@@ -523,8 +655,24 @@ impl ProxyHttp for ApgProxy {
         Ctx::default()
     }
 
+    /// Runs before the engine reads `Accept-Encoding`. Compression has to be
+    /// switched on by then for the header to be noted at all; whether this
+    /// request is compressed is decided later, by the `compression` plugin.
+    async fn early_request_filter(&self, session: &mut Session, _ctx: &mut Self::CTX) -> pingora_core::Result<()> {
+        if self.gateway.snapshot().plugins.types().any(|kind| kind == "compression")
+            && let Some(module) = session.downstream_modules_ctx.get_mut::<ResponseCompression>()
+        {
+            module.adjust_level(5);
+        }
+        Ok(())
+    }
+
     async fn request_filter(&self, session: &mut Session, ctx: &mut Self::CTX) -> pingora_core::Result<bool> {
         ctx.started = Some(Instant::now());
+        // Off again until a `compression` plugin that applies to this request says otherwise.
+        if let Some(module) = session.downstream_modules_ctx.get_mut::<ResponseCompression>() {
+            module.adjust_level(0);
+        }
         ctx.is_tls = session.digest().is_some_and(|d| d.ssl_digest.is_some());
 
         let (raw_path, query, method, host, inbound_id, forwarded_for) = {
@@ -774,6 +922,22 @@ impl ProxyHttp for ApgProxy {
             upstream.insert_header(name.clone(), value.clone())?;
         }
 
+        if let Some(transform) = &ctx.request_transform {
+            apply_header_ops(upstream, &transform.headers)?;
+            if !transform.query.is_empty() {
+                let query = transform.query.apply_to_query(upstream.uri.query().unwrap_or(""));
+                let rebuilt = if query.is_empty() { upstream.uri.path().to_string() } else { format!("{}?{query}", upstream.uri.path()) };
+                if let Ok(uri) = rebuilt.parse::<http::Uri>() {
+                    upstream.set_uri(uri);
+                }
+            }
+        }
+        if ctx.request_rewrite.is_some() {
+            // The rewritten body has another length, which is not known yet.
+            upstream.remove_header("content-length");
+            upstream.insert_header("transfer-encoding", "chunked")?;
+        }
+
         if ctx.snapshot.as_ref().is_some_and(|s| s.identity_headers) {
             upstream.insert_header("x-apg-workspace", matched.workspace_id.as_str())?;
             if let Some(consumer) = &ctx.consumer {
@@ -798,10 +962,17 @@ impl ProxyHttp for ApgProxy {
         Ok(())
     }
 
-    async fn request_body_filter(&self, _session: &mut Session, body: &mut Option<Bytes>, _end_of_stream: bool, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
+    async fn request_body_filter(&self, _session: &mut Session, body: &mut Option<Bytes>, end_of_stream: bool, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
         // Bytes actually transferred, including chunked bodies (spec USG-3).
         if let Some(b) = body {
             ctx.bytes_in += b.len() as u64;
+        }
+        if let Some(rewrite) = &mut ctx.request_rewrite {
+            let mut skipped = false;
+            *body = rewrite.feed(body.take(), end_of_stream, &mut skipped);
+            if skipped {
+                metrics::TRANSFORM_SKIPPED.inc();
+            }
         }
         // A body with no declared length is measured as it streams.
         if ctx.max_body.is_some_and(|max| ctx.bytes_in > max) {
@@ -810,10 +981,32 @@ impl ProxyHttp for ApgProxy {
         Ok(())
     }
 
-    async fn response_filter(&self, _session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
+    async fn response_filter(&self, session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
         ctx.upstream_status = Some(upstream_response.status.as_u16());
         for (name, value) in &ctx.response_headers {
             upstream_response.append_header(name.clone(), value.clone())?;
+        }
+        let content_type = upstream_response.headers.get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let content_length = upstream_response.headers.get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
+        let encoded = upstream_response.headers.contains_key("content-encoding");
+        if let Some(transform) = ctx.response_transform.clone() {
+            apply_response_header_ops(upstream_response, &transform.headers)?;
+            // A body is rewritten only when it is plain JSON of a size that can be held.
+            if transform.has_body_ops() && is_json(content_type.as_deref()) && !encoded {
+                if content_length.is_none_or(|n| n as usize <= transform.max_body_bytes) {
+                    upstream_response.remove_header("content-length");
+                    upstream_response.insert_header("transfer-encoding", "chunked")?;
+                    ctx.response_rewrite = Some(BodyRewrite::new(transform));
+                } else {
+                    metrics::TRANSFORM_SKIPPED.inc();
+                }
+            }
+        }
+        if let Some(compression) = &ctx.compression
+            && !compression.applies(content_type.as_deref(), content_length, encoded)
+            && let Some(module) = session.downstream_modules_ctx.get_mut::<ResponseCompression>()
+        {
+            module.adjust_level(0);
         }
         upstream_response.insert_header(REQUEST_ID_HEADER, ctx.request_id.as_str())?;
         if let Some((cfg, remaining)) = &ctx.rate
@@ -826,6 +1019,13 @@ impl ProxyHttp for ApgProxy {
     }
 
     fn response_body_filter(&self, _session: &mut Session, body: &mut Option<Bytes>, end_of_stream: bool, ctx: &mut Self::CTX) -> pingora_core::Result<Option<Duration>> {
+        if let Some(rewrite) = &mut ctx.response_rewrite {
+            let mut skipped = false;
+            *body = rewrite.feed(body.take(), end_of_stream, &mut skipped);
+            if skipped {
+                metrics::TRANSFORM_SKIPPED.inc();
+            }
+        }
         if let Some(b) = body {
             ctx.bytes_out += b.len() as u64;
         }
@@ -909,6 +1109,9 @@ impl ProxyHttp for ApgProxy {
             self.buckets.debit_bytes(key, cfg, ctx.bytes_in + ctx.bytes_out);
         }
 
+        if ctx.log_suppressed {
+            return;
+        }
         // Structured access line. Authorization, Cookie and the query string are never logged here.
         tracing::info!(
             target: "apg::access",
@@ -929,6 +1132,7 @@ impl ProxyHttp for ApgProxy {
             attempts = ctx.tries,
             workspace = ctx.matched.as_ref().map_or("", |m| m.workspace_id.as_str()),
             consumer = ctx.consumer.as_ref().map_or("", |c| c.name.as_str()),
+            custom = ctx.log_fields.as_deref().unwrap_or(""),
             "request"
         );
     }

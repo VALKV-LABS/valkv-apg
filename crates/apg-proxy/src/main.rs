@@ -133,6 +133,12 @@ fn run() -> anyhow::Result<()> {
         }
     };
 
+    // Plugin state that outlives a restart: quota counters.
+    gateway.plugins.allow_env(config.template_env_allow.clone());
+    let quota_file = PathBuf::from(&config.data_dir).join("quota.json");
+    let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    gateway.plugins.quotas.load(&quota_file, now());
+
     // Certificate issuance. With a control plane the fleet is coordinated
     // through it; from a file this node is on its own (spec TLS-12).
     let coordination = match &source {
@@ -156,6 +162,21 @@ fn run() -> anyhow::Result<()> {
                 // Backend name resolution and active health checks.
                 tokio::spawn(gateway.upstreams.clone().run());
                 tokio::spawn(certificates.run());
+                {
+                    // Quota counters are written out every ten seconds (spec §9.4).
+                    let plugins = gateway.plugins.clone();
+                    tokio::spawn(async move {
+                        let mut tick = tokio::time::interval(Duration::from_secs(10));
+                        loop {
+                            tick.tick().await;
+                            if !plugins.quotas.is_empty()
+                                && let Err(e) = plugins.quotas.save(&quota_file, now())
+                            {
+                                tracing::warn!(error = %e, "quota counters could not be written");
+                            }
+                        }
+                    });
+                }
                 match source {
                     Source::File(file) => {
                         tokio::spawn(file.watch());

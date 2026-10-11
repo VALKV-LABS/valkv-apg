@@ -97,6 +97,24 @@ function config({ keyAuthOn = true } = {}) {
         // Narrower than the route's own limit, for one consumer only (spec PL-1).
         { type: "rate_limit", consumer: "bob", config: { per_second: 0.001, burst: 1, scope: "header:x-run" } },
       ]),
+      route("redirect", [{ type: "redirect", config: { status: 301, host: "new.plug.test", path: "/v2{{ request.path }}" } }]),
+      route("static", [{ type: "static_response", config: { status: 503, content_type: "text/plain", headers: { "Retry-After": "120" }, body: "maintenance on {{ request.host }}" } }]),
+      route("reqtx", [
+        {
+          type: "request_transformer",
+          config: {
+            headers: { set: { "x-set": "{{ request.method }}" }, add: { "x-added": "{{ route.name }}" }, remove: ["x-remove"], rename: { "x-old": "x-new" } },
+            query: { set: { page: "1" }, remove: ["drop"], add: { via: "gateway" } },
+            body: { set: { "/added": "{{ request.host }}", "/n": 5 }, remove: ["/secret"] },
+          },
+        },
+      ]),
+      route("resptx", [
+        { type: "response_transformer", config: { headers: { set: { "x-served-by": "apg" }, remove: ["x-powered-by"] }, body: { set: { "/gateway": "{{ route.name }}" }, remove: ["/headers"] } } },
+      ]),
+      route("quota", [{ type: "quota", config: { limit: 2, window: "hour", scope: "header:x-run" } }]),
+      route("gzip", [{ type: "compression", config: { min_bytes: 10, algorithms: ["gzip"] } }]),
+      route("gzipbig", [{ type: "compression", config: { min_bytes: 10000000 } }]),
       { name: "pl-split", hosts: ["split.plug.test"], split: [{ service: "pl-side-a", weight: 1 }, { service: "pl-side-b", weight: 1 }], split_key: "consumer", plugins: [{ type: "key_auth" }] },
     ],
     workspaces: [
@@ -308,6 +326,70 @@ step("credentials work in their own workspace and on operator routes, never in a
   assertRefused(await tenant(KEYS.alice), 401, "UNAUTHENTICATED");
   // On an operator route, a tenant's consumer is recognised.
   assert.equal((await call("key", withKey(KEYS.tenant))).json.headers["x-apg-consumer-name"], "tenant-user");
+});
+
+step("redirect and static_response answer without an upstream, with templates filled in", async () => {
+  const moved = await call("redirect", { path: "/old/page?x=1" });
+  assert.equal(moved.status, 301);
+  assert.equal(moved.headers.location, "http://new.plug.test/v2/old/page?x=1");
+  const down = await call("static");
+  assert.equal(down.status, 503);
+  assert.equal(down.text, "maintenance on static.plug.test");
+  assert.equal(down.headers["content-type"], "text/plain");
+  assert.equal(down.headers["retry-after"], "120");
+});
+
+step("request_transformer rewrites headers, query and a JSON body before the upstream sees them", async () => {
+  const res = await call("reqtx", {
+    method: "POST",
+    path: "/submit?page=9&drop=me&keep=yes",
+    body: JSON.stringify({ secret: "hunter2", keep: true }),
+    headers: { "content-type": "application/json", "x-remove": "gone", "x-old": "moved" },
+  });
+  assert.equal(res.status, 200, res.text);
+  const h = res.json.headers;
+  assert.equal(h["x-set"], "POST");
+  assert.equal(h["x-added"], "pl-reqtx");
+  assert.equal(h["x-remove"], undefined);
+  assert.equal(h["x-new"], "moved");
+  assert.equal(h["x-old"], undefined);
+  assert.deepEqual(res.json.query, { keep: "yes", page: "1", via: "gateway" });
+  const body = typeof res.json.body === "string" ? JSON.parse(res.json.body) : res.json.body;
+  assert.deepEqual(body, { keep: true, added: "reqtx.plug.test", n: 5 });
+  // A body that is not JSON passes through untouched.
+  const text = await call("reqtx", { method: "POST", body: "plain words", headers: { "content-type": "text/plain" } });
+  assert.equal(text.json.body, "plain words");
+});
+
+step("response_transformer rewrites the upstream's headers and JSON body", async () => {
+  const res = await call("resptx");
+  assert.equal(res.status, 200, res.text);
+  assert.equal(res.headers["x-served-by"], "apg");
+  assert.equal(res.headers["x-powered-by"], undefined);
+  assert.equal(res.json.gateway, "pl-resptx");
+  assert.equal(res.json.headers, undefined);
+  assert.equal(res.json.method, "GET", "the rest of the body is intact");
+});
+
+step("quota: the allowance counts down, then 429 until the window ends", async () => {
+  const run = { headers: { "x-run": `quota-${RUN}` } };
+  const first = await call("quota", run);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers["x-quota-limit"], "2");
+  assert.equal(first.headers["x-quota-remaining"], "1");
+  assert.equal((await call("quota", run)).headers["x-quota-remaining"], "0");
+  const over = await call("quota", run);
+  assertRefused(over, 429, "QUOTA_EXCEEDED");
+  assert.ok(Number(over.headers["retry-after"]) >= 1 && Number(over.headers["retry-after"]) <= 3600);
+  assert.ok(Number(over.headers["x-quota-reset"]) > Date.now() / 1000);
+});
+
+step("compression: negotiated with the client, and skipped for small responses", async () => {
+  const gz = { headers: { "accept-encoding": "gzip" } };
+  assert.equal((await call("gzip", gz)).headers["content-encoding"], "gzip");
+  assert.equal((await call("gzip")).headers["content-encoding"], undefined, "the client did not ask for it");
+  assert.equal((await call("gzip", { headers: { "accept-encoding": "br" } })).headers["content-encoding"], undefined, "only gzip is switched on");
+  assert.equal((await call("gzipbig", gz)).headers["content-encoding"], undefined, "below min_bytes");
 });
 
 step("the kill switch stops a plugin type everywhere, and brings it back (PL-3)", async () => {

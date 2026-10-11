@@ -12,6 +12,7 @@ import { buildOpenApi } from "./openapi.js";
 import { PLUGIN_TYPES } from "./plugin-types.js";
 import { ENDPOINTS, registerApi } from "./routes/api.js";
 import { SchemaRegistry } from "./schemas.js";
+import { pluginTemplateFaults, templateFault } from "./template.js";
 import { loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
 import { mergePatch } from "./store.js";
 
@@ -233,5 +234,35 @@ describe("keys nodes do not enforce yet (schemas/unbuilt.yaml)", () => {
     // A key with no default is refused whenever it is present.
     expect(unbuiltFaults({ tls: { client_certificate: null } }, keys)).toHaveLength(1);
     expect(unbuiltFaults({ keepalive: 5 }, keys)).toEqual([]);
+  });
+});
+
+describe("templates are checked on write, by the node's rules (TPL-1)", () => {
+  it("accepts variables with a known root and the default filter", () => {
+    for (const ok of ["plain", "", "{{ request.id }}", "a {{request.header.x-tenant}} b", "{{ consumer.name | default(\"anonymous\") }}", "{{ jwt.claim.sub | default('none') }}", "{{ env.REGION }}"]) {
+      expect(templateFault(ok), ok).toBeNull();
+    }
+  });
+
+  it("refuses what the node would refuse", () => {
+    const cases: Array<[string, RegExp]> = [
+      ["{{ unclosed", /unclosed/],
+      ["{{ }}", /empty placeholder/],
+      ["{{ nobody.home }}", /unknown variable 'nobody.home'/],
+      ["{{ request }}", /unknown variable/],
+      ["{{ request..id }}", /unknown variable/],
+      ["{{ request.id | upper }}", /unsupported filter/],
+      ["{{ request.id | default(x) }}", /unsupported filter/],
+    ];
+    for (const [source, message] of cases) expect(templateFault(source), source).toMatch(message);
+  });
+
+  it("finds every template in a plugin configuration, with its pointer", () => {
+    expect(pluginTemplateFaults("static_response", { body: "{{ oops" }).map((f) => f.pointer)).toEqual(["/body"]);
+    expect(pluginTemplateFaults("request_transformer", { headers: { set: { "x-a": "{{ request.id }}", "x-b": "{{ bad.root }}" } }, body: { set: { "/a/b": "{{ nope", "/n": 5 } } }).map((f) => f.pointer)).toEqual([
+      "/headers/set/x-b", "/body/set/~1a~1b",
+    ]);
+    expect(pluginTemplateFaults("access_log", { custom_fields: { tenant: "{{ workspace.slug }}" } })).toEqual([]);
+    expect(pluginTemplateFaults("rate_limit", { scope: "{{ not a template field }}" })).toEqual([]);
   });
 });

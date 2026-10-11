@@ -19,6 +19,7 @@ import type { Tx } from "./db.js";
 import { egressViolation } from "./egress.js";
 import { ApiError } from "./errors.js";
 import { type Ctx, type Json, type Row, type Store, isUuid } from "./store.js";
+import { pluginTemplateFaults } from "./template.js";
 import { UNBUILT_MESSAGE, type UnbuiltKey, loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
 
 const UNBUILT = loadUnbuilt();
@@ -738,6 +739,9 @@ const plugin: KindDef = {
       throw new ApiError("VALIDATION_FAILED", `invalid ${type} configuration`, faults.map((f) => ({ pointer: `/config${f.pointer === "/" ? "" : f.pointer}`, message: f.message })));
     }
     let config = store.deps.schemas.withDefaults(configSchema, body["config"] ?? {}) as Json;
+    // What no node enforces is refused, and a template that cannot compile is a validation error (spec TPL-1).
+    const refused = [...unbuiltFaults(config, UNBUILT.plugins[type] ?? []), ...pluginTemplateFaults(type, config)].map((f) => ({ pointer: `/config${f.pointer}`, message: f.message }));
+    if (refused.length > 0) throw new ApiError("VALIDATION_FAILED", refused[0]!.message, refused);
 
     if (!store.trusted(ctx)) {
       for (const { pointer, url } of configUrls(config)) {

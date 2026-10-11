@@ -20,7 +20,9 @@ use crate::template::Template;
 /// Plugin types this build can enforce. A document that uses any other type is
 /// rejected: accepting configuration nothing enforces is the failure this
 /// project exists to avoid (spec property 5).
-pub const ENFORCED_PLUGIN_TYPES: &[&str] = &["rate_limit", "bandwidth_limit", "key_auth", "basic_auth", "jwt_auth", "acl", "ip_restriction", "request_size_limit", "cors"];
+pub const ENFORCED_PLUGIN_TYPES: &[&str] = &["rate_limit", "bandwidth_limit", "key_auth", "basic_auth", "jwt_auth", "acl", "ip_restriction", "request_size_limit", "cors",
+    "quota", "redirect", "static_response", "request_transformer", "response_transformer", "compression", "access_log",
+];
 
 /// Replaces `${VAR}` and `${VAR:-default}`. An unset variable with no default
 /// is an error (spec DEC-2), reported with the line it is on.
@@ -282,6 +284,40 @@ pub struct Unbuilt {
     pub settings: Vec<UnbuiltKey>,
     #[serde(default)]
     pub settings_file_mode: Vec<UnbuiltKey>,
+    /// Plugin type to the keys of its configuration.
+    #[serde(default)]
+    pub plugins: std::collections::HashMap<String, Vec<UnbuiltKey>>,
+}
+
+/// Where templates sit in a plugin's configuration: single values, and maps whose string values are templates.
+pub fn plugin_template_fields(kind: &str) -> (&'static [&'static str], &'static [&'static str]) {
+    match kind {
+        "redirect" => (&["/path"], &[]),
+        "static_response" => (&["/body"], &[]),
+        "request_transformer" => (&[], &["/headers/set", "/headers/add", "/query/set", "/query/add", "/body/set"]),
+        "response_transformer" => (&[], &["/headers/set", "/headers/add", "/body/set"]),
+        "access_log" => (&[], &["/custom_fields"]),
+        _ => (&[], &[]),
+    }
+}
+
+/// Every template in a plugin configuration that does not compile, with its pointer (spec TPL-1).
+pub fn plugin_template_faults(kind: &str, config: &Value) -> Vec<(String, String)> {
+    let (single, maps) = plugin_template_fields(kind);
+    let mut found: Vec<(String, &str)> = Vec::new();
+    for pointer in single {
+        if let Some(text) = config.pointer(pointer).and_then(Value::as_str) {
+            found.push((pointer.to_string(), text));
+        }
+    }
+    for pointer in maps {
+        for (key, value) in config.pointer(pointer).and_then(Value::as_object).into_iter().flatten() {
+            if let Some(text) = value.as_str() {
+                found.push((format!("{pointer}/{}", key.replace('~', "~0").replace('/', "~1")), text));
+            }
+        }
+    }
+    found.into_iter().filter_map(|(pointer, text)| crate::template::Template::compile(text).err().map(|e| (pointer, e.to_string()))).collect()
 }
 
 /// The parsed list, compiled into the binary.
@@ -608,6 +644,13 @@ impl Compiler<'_> {
                 let suffix = if f.pointer == "/" { String::new() } else { f.pointer };
                 self.faults.push(Fault::new(format!("{at}/config{suffix}"), f.message));
             }
+            if let Some(config) = config.as_object() {
+                let keys = unbuilt().plugins.get(&kind).cloned().unwrap_or_default();
+                self.refuse_unbuilt(config, &keys, &format!("{at}/config"));
+            }
+            for (pointer, message) in plugin_template_faults(&kind, &config) {
+                self.fault(format!("{at}/config{pointer}"), message);
+            }
             if holds_clear_secret(&config) {
                 // Only a control plane can seal a value; a node given `$secret` from a file could not open it.
                 self.fault(format!("{at}/config"), "$secret is for the Admin API; in a file give the value as $env or $file");
@@ -790,6 +833,20 @@ routes:
         let base = "version: 1\nservices:\n  - { name: s, backends: [{ target: 'a:1' }] }\n";
         assert_eq!(pointers(compile_yaml(&format!("{base}plugins:\n  - {{ type: rate_limit, scope: workspace, config: {{ per_sec: 1 }} }}\n"))), ["/plugins/0/config"]);
         assert_eq!(pointers(compile_yaml(&format!("{base}flags: {{ make_it_fast: true }}\n"))), ["/flags/make_it_fast"]);
+        // A shared store for limits is not built: the default is accepted, anything else refused.
+        assert_eq!(pointers(compile_yaml(&format!("{base}plugins:\n  - {{ type: rate_limit, scope: workspace, config: {{ store: redis }} }}\n"))), ["/plugins/0/config/store"]);
+        assert!(compile_yaml(&format!("{base}plugins:\n  - {{ type: quota, scope: workspace, config: {{ limit: 5, store: local }} }}\n")).is_ok());
+        // A template that does not compile is a fault where it is written (spec TPL-1).
+        assert_eq!(
+            pointers(compile_yaml(&format!("{base}plugins:\n  - {{ type: static_response, scope: workspace, config: {{ body: 'hello {{{{ nobody.home }}}}' }} }}\n"))),
+            ["/plugins/0/config/body"]
+        );
+        assert_eq!(
+            pointers(compile_yaml(&format!(
+                "{base}plugins:\n  - {{ type: request_transformer, scope: workspace, config: {{ headers: {{ set: {{ x-a: '{{{{ request.id }}}}', x-b: '{{{{ unclosed' }} }} }} }}\n"
+            ))),
+            ["/plugins/0/config/headers/set/x-b"]
+        );
     }
 
     // Schema-valid keys that nothing enforces yet must be refused too, each with its own pointer.

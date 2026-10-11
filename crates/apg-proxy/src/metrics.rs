@@ -29,6 +29,9 @@ pub static LIMITED: LazyLock<IntCounterVec> =
 pub static PLUGIN_ERRORS: LazyLock<IntCounterVec> =
     LazyLock::new(|| register_int_counter_vec!("apg_plugin_errors_total", "Plugin instances that could not run, by type.", &["type"]).unwrap());
 
+pub static TRANSFORM_SKIPPED: LazyLock<IntCounter> =
+    LazyLock::new(|| register_int_counter!("apg_transform_skipped_total", "Bodies passed through unchanged because they were too large to rewrite.").unwrap());
+
 pub static UPSTREAM_FAIL_OPEN: LazyLock<IntCounter> = LazyLock::new(|| {
     register_int_counter!("apg_upstream_fail_open_total", "Requests sent to a backend although every backend's circuit was open.").unwrap()
 });
@@ -93,6 +96,7 @@ pub fn init() {
     LazyLock::force(&GATEWAY_ERRORS);
     LazyLock::force(&LIMITED);
     LazyLock::force(&PLUGIN_ERRORS);
+    LazyLock::force(&TRANSFORM_SKIPPED);
     LazyLock::force(&UPSTREAM_FAIL_OPEN);
     LazyLock::force(&UPSTREAM_RETRIES);
     LazyLock::force(&BACKEND_HEALTHY);

@@ -24,6 +24,14 @@ route:
 # control plane. Empty at present.
 service_database_mode: []
 
+# Plugin configuration keys, by plugin type. Limits are counted per node; a
+# shared store is not built.
+plugins:
+  rate_limit:
+    - { path: store, default: local }
+  quota:
+    - { path: store, default: local }
+
 # Settings refused everywhere.
 settings:
   - { path: workspace_resolvers }
