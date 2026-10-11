@@ -35,6 +35,13 @@ the project uses [Semantic Versioning](https://semver.org/).
   private addresses is checked again on every connection (`APG_BACKEND_ALLOW_CIDRS`).
 - Metrics `apg_backend_healthy`, `apg_backend_circuit_open`, `apg_upstream_retries_total`
   and `apg_dns_failures_total`.
+- Packaging: a Helm chart (`deploy/helm/valkv-apg`) with autoscaling, disruption
+  budgets, a network policy, a ServiceMonitor and a canary track; a systemd unit; a
+  Terraform reference for AWS with a cost estimate; a release workflow that publishes
+  signed images for amd64 and arm64 with a bill of materials, binary tarballs and the
+  packaged chart.
+- `valkv-apg --upgrade`: a new process takes over the listening sockets of a running
+  standalone node, which then drains and exits. No request is dropped.
 - `schemas/unbuilt.yaml`: the keys no node enforces yet. The file loader and the admin
   both refuse them, so nothing is accepted and then ignored.
 - Certificates: nodes open keys the control plane sealed (`APG_SECRET_KEY`) and serve

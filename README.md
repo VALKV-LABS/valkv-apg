@@ -32,7 +32,8 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 | Certificates from an ACME authority (HTTP-01, and DNS-01 through a webhook), issued by one node and served by all; renewal; private keys encrypted at rest and in transit between control plane and nodes | Working, tested end to end against a test authority |
 | Usage metering by workspace, service, route and consumer, with hourly and daily rollups and a usage API | Working, tested end to end |
 | Observability: Prometheus metrics by route and service, JSON access log, trace-context propagation, a Grafana dashboard and alert rules | Working |
-| DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook, UI, CLI, Helm chart | Not built yet |
+| Packaging: images for amd64 and arm64, a Helm chart with a canary track, a systemd unit with zero-downtime binary upgrade, a Terraform reference for AWS, signed releases | Working; the chart and the Terraform reference are linted and validated, not applied by CI |
+| DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook, UI, CLI | Not built yet |
 
 ## Try it
 
@@ -64,6 +65,17 @@ the node keeps serving the previous one. Check a file without starting anything:
 docker run --rm -v "$PWD/deploy/compose/standalone:/cfg:ro" valkv-labs/valkv-apg:dev validate --config /cfg/apg.yaml
 ```
 
+## Deploy it
+
+| Where | How |
+|---|---|
+| Docker Compose | [`deploy/compose/standalone.yml`](deploy/compose/standalone.yml) for one node and a file; [`deploy/compose/database.yml`](deploy/compose/database.yml) for a control plane, Postgres and two nodes |
+| Kubernetes | `helm install apg deploy/helm/valkv-apg -f my-values.yaml`. It expects a Postgres you provide. See [`values.yaml`](deploy/helm/valkv-apg/values.yaml) |
+| A Linux host | The release tarball holds the binary, [`valkv-apg.service`](deploy/systemd/valkv-apg.service) and its environment file. `systemctl reload valkv-apg` swaps in a new binary without dropping a connection (standalone mode) |
+| AWS | [`deploy/terraform/aws`](deploy/terraform/aws/README.md): load balancers, auto-scaling groups, managed Postgres, with a [cost estimate](deploy/terraform/aws/COST.md) |
+
+Upgrade the control plane first, then the nodes. A node keeps serving from its cache while the control plane is away.
+
 ## Layout
 
 | Path | What |
@@ -74,7 +86,7 @@ docker run --rm -v "$PWD/deploy/compose/standalone:/cfg:ro" valkv-labs/valkv-apg
 | `admin/` | Control plane (TypeScript): Admin API and the config API nodes poll |
 | `schemas/` | JSON Schemas: the single source of truth for resources, `apg.yaml` and the change event |
 | `tests/` | Shared fixtures, end-to-end suites, benchmarks |
-| `deploy/compose/` | `standalone.yml` (file mode) and `database.yml` (control plane, Postgres, two nodes) |
+| `deploy/` | Compose files, the Helm chart, the systemd unit, the Terraform reference, a Grafana dashboard and alert rules |
 
 ## Development
 
@@ -86,6 +98,8 @@ make up               # control plane, Postgres, two nodes, sample upstream
 make integ            # admin integration tests, then end-to-end suites
 make e2e MODE=file    # the routing and upstream suites against a standalone node
 make e2e-resilience   # control plane down, restart from cache, resync
+make e2e-upgrade      # a new binary takes over the listeners; no request fails
+make lint-helm lint-terraform
 make down
 make lint
 ```

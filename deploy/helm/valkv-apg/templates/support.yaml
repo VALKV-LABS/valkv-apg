@@ -1,0 +1,112 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "apg.serviceAccountName" . }}
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+  {{- with .Values.serviceAccount.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+# The gateway never calls the Kubernetes API.
+automountServiceAccountToken: false
+---
+{{- end }}
+{{- if not .Values.secrets.existingSecret }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ include "apg.fullname" . }}-secrets
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+type: Opaque
+stringData:
+  secret-key: {{ required "secrets.secretKey is required (32 random bytes, base64), or set secrets.existingSecret" .Values.secrets.secretKey | quote }}
+  database-url: {{ required "secrets.databaseUrl is required, or set secrets.existingSecret" .Values.secrets.databaseUrl | quote }}
+  admin-token: {{ required "secrets.adminToken is required, or set secrets.existingSecret" .Values.secrets.adminToken | quote }}
+  node-token: {{ required "secrets.nodeToken is required, or set secrets.existingSecret" .Values.secrets.nodeToken | quote }}
+---
+{{- end }}
+{{- if .Values.networkPolicy.enabled }}
+# Nodes: traffic ports open to all; the management port only to this release
+# and the namespaces listed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "apg.fullname" . }}-node
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: node
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: https }
+        - { port: http }
+    - ports:
+        - { port: mgmt }
+      from:
+        - podSelector:
+            matchLabels:
+              {{- include "apg.selector" . | nindent 14 }}
+        {{- range .Values.networkPolicy.allowFrom }}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+---
+# The admin: only this release's pods (the nodes) and the namespaces listed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "apg.fullname" . }}-admin
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: admin
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - { port: http }
+      from:
+        - podSelector:
+            matchLabels:
+              {{- include "apg.selector" . | nindent 14 }}
+        {{- range .Values.networkPolicy.allowFrom }}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml . | nindent 14 }}
+        {{- end }}
+---
+{{- end }}
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "apg.fullname" . }}-node
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: node-mgmt
+  endpoints:
+    - port: mgmt
+      path: /metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+      relabelings:
+        # So canary and stable can be compared (see docs/ops/rollout.md).
+        - sourceLabels: [__meta_kubernetes_pod_label_apg_track]
+          targetLabel: track
+{{- end }}

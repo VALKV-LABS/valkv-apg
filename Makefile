@@ -13,7 +13,7 @@ NODE_DOCKER  := crates/apg-proxy/Dockerfile
 ADMIN_DOCKER := admin/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin integ e2e e2e-resilience bench-propagation lint lint-rust lint-debrand build logs ps help
+.PHONY: up down unit unit-rust unit-admin integ e2e e2e-resilience e2e-upgrade bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -72,6 +72,11 @@ endif
 e2e-resilience:
 	sh tests/e2e/resilience.sh
 
+# A new process takes over a running node's listeners; no request may fail
+# (spec PKG-7). Runs inside the node image, so it needs `make build` first.
+e2e-upgrade:
+	docker run --rm -v "$(CURDIR)/tests/e2e/upgrade.sh:/upgrade.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /upgrade.sh
+
 # Time from a committed change to a node serving it (spec NFR-3).
 bench-propagation:
 	$(COMPOSE) run --rm -w /repo/tests/bench e2e node propagation.js
@@ -80,6 +85,19 @@ lint: lint-rust
 
 lint-rust:
 	docker build --progress=plain -f $(NODE_DOCKER) --target lint -t valkv-apg:lint .
+
+HELM      := docker run --rm -v "$(CURDIR)/deploy/helm:/charts:ro" alpine/helm:3.16.2
+TERRAFORM := docker run --rm -v "$(CURDIR)/deploy/terraform:/tf" -w /tf/aws/environments/dev --entrypoint sh hashicorp/terraform:1.9 -c
+
+# The chart with its defaults, and with every optional part switched on.
+lint-helm:
+	$(HELM) lint --strict /charts/valkv-apg
+	$(HELM) template apg /charts/valkv-apg --set secrets.existingSecret=apg > /dev/null
+	$(HELM) template apg /charts/valkv-apg --set secrets.existingSecret=apg --set canary.enabled=true --set canary.image.tag=next --set serviceMonitor.enabled=true --set networkPolicy.enabled=true > /dev/null
+
+# Formatting and validity of the AWS reference. No account and no credentials are used.
+lint-terraform:
+	$(TERRAFORM) 'terraform fmt -check -recursive /tf && terraform init -backend=false -input=false > /dev/null && terraform validate; status=$$?; rm -rf .terraform .terraform.lock.hcl; exit $$status'
 
 # Maintainers only: checks that nothing from the code's origin leaked into the
 # tree. The script and its list are not published; the target is a no-op without them.

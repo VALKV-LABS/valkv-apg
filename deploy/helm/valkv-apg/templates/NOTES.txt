@@ -1,0 +1,15 @@
+valkv-apg {{ .Chart.AppVersion }} is installed as "{{ .Release.Name }}".
+
+Traffic enters through the Service {{ include "apg.fullname" . }}-node
+({{ .Values.node.service.type }}, ports {{ .Values.node.service.httpsPort }} and {{ .Values.node.service.httpPort }}).
+
+The Admin API is the Service {{ include "apg.fullname" . }}-admin, inside the cluster only:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "apg.fullname" . }}-admin 9000:{{ .Values.admin.service.port }}
+  curl -H "Authorization: Bearer <admin token>" http://localhost:9000/v1/nodes
+
+Each node pod should appear there within a few seconds, with lag 0.
+{{- if .Values.canary.enabled }}
+
+A canary track is running on image tag {{ .Values.canary.image.tag }} ({{ .Values.canary.replicas }} pod(s)).
+{{- end }}

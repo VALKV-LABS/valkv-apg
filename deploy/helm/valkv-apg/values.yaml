@@ -1,0 +1,113 @@
+# Values for the valkv-apg chart.
+#
+# The chart runs the gateway in database mode: nodes poll the admin, the admin
+# keeps configuration in Postgres. Postgres is not part of the chart; point
+# `admin.database` at one you run.
+
+image:
+  node:
+    repository: valkv-labs/valkv-apg
+    # Defaults to the chart's appVersion.
+    tag: ""
+  admin:
+    repository: valkv-labs/valkv-apg-admin
+    tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Secrets the gateway needs. Either name an existing Secret holding these keys,
+# or let the chart create one from the values below (convenient for a first
+# try, not for production: the values end up in the release's history).
+#
+#   secret-key         32 random bytes, base64 (APG_SECRET_KEY)
+#   database-url       postgres://user:password@host:5432/dbname
+#   admin-token        the first admin token (APG_BOOTSTRAP_ADMIN_TOKEN)
+#   node-token         the token nodes present to the admin
+secrets:
+  existingSecret: ""
+  secretKey: ""
+  databaseUrl: ""
+  adminToken: ""
+  nodeToken: ""
+
+node:
+  # Deployment, or DaemonSet to run one node on every (selected) host.
+  kind: Deployment
+  replicas: 2
+  # Extra environment for the node: see docs/reference/configuration.md.
+  env: {}
+  #   APG_TRUSTED_PROXIES: 10.0.0.0/8
+  #   APG_ACME_EMAIL: ops@example.com
+  httpMode: redirect
+  region: ""
+  resources:
+    requests: { cpu: 250m, memory: 256Mi }
+    limits: { memory: 1Gi }
+  # The node's cache of the configuration. Losing it is safe: the node asks
+  # the admin for a snapshot. An emptyDir is therefore enough.
+  cache:
+    sizeLimit: 1Gi
+  service:
+    type: LoadBalancer
+    annotations: {}
+    httpsPort: 443
+    httpPort: 80
+    # Keep the client's address: needed for ip_restriction and rate limits by address.
+    externalTrafficPolicy: Local
+  terminationGracePeriodSeconds: 60
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  topologySpreadConstraints: []
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    maxUnavailable: 1
+
+# A second set of nodes on another image tag, behind the same Service, for a
+# staged rollout (see docs/ops/rollout.md). They receive traffic in proportion
+# to their share of all node pods.
+canary:
+  enabled: false
+  replicas: 1
+  image:
+    tag: ""
+
+admin:
+  replicas: 2
+  env: {}
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits: { memory: 512Mi }
+  service:
+    type: ClusterIP
+    port: 9000
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# Restricts who may reach what: anyone may reach the nodes' traffic ports;
+# only the namespaces listed may reach the management port and the admin.
+networkPolicy:
+  enabled: true
+  # Namespace labels allowed to scrape metrics and call the admin, in addition
+  # to this release's own pods.
+  allowFrom: []
+  #   - kubernetes.io/metadata.name: monitoring
+
+# Needs the Prometheus Operator's CRDs.
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}

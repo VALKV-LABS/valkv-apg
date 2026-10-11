@@ -2,6 +2,7 @@
 //!
 //!   valkv-apg                       run the node (configuration from the environment)
 //!   valkv-apg validate --config P   check a config file or directory and exit
+//!   valkv-apg --upgrade               take over the listeners of a running node (file mode)
 //!   valkv-apg --version
 
 use std::path::PathBuf;
@@ -24,7 +25,7 @@ use pingora_core::tls::ssl::SslVersion;
 use pingora_core::server::configuration::ServerConf;
 use pingora_proxy::http_proxy_service;
 
-const USAGE: &str = "usage:\n  valkv-apg                         run the node\n  valkv-apg validate --config PATH  check a config file or directory\n  valkv-apg --version";
+const USAGE: &str = "usage:\n  valkv-apg                         run the node\n  valkv-apg --upgrade               start, taking over the listeners of the running node\n  valkv-apg validate --config PATH  check a config file or directory\n  valkv-apg --version";
 
 /// Validates configuration without starting anything (spec CFG-19). Exit code 0 means valid.
 fn validate(args: &[String]) -> i32 {
@@ -76,8 +77,12 @@ fn init_logging(config: &Config) {
     }
 }
 
-fn run() -> anyhow::Result<()> {
+fn run(upgrade: bool) -> anyhow::Result<()> {
     let config = Config::from_env()?;
+    if upgrade && config.source != ConfigSource::File {
+        // Two processes cannot hold the local configuration cache at once.
+        anyhow::bail!("--upgrade is available with APG_CONFIG_SOURCE=file only; restart the node instead (it serves from its cache at once)");
+    }
     init_logging(&config);
     metrics::init();
 
@@ -208,10 +213,18 @@ fn run() -> anyhow::Result<()> {
                 }
                 match mgmt_addr {
                     Some(addr) => {
-                        if let Err(e) = mgmt::serve(addr, gateway).await {
-                            // Without it nothing can probe the node; do not limp on.
-                            tracing::error!(error = %e, "management listener failed");
-                            std::process::exit(1);
+                        // While taking over from a running node its management port is
+                        // still held by that node; wait for it to let go.
+                        let mut attempts = if upgrade { 120 } else { 1 };
+                        loop {
+                            let Err(e) = mgmt::serve(addr.clone(), gateway.clone()).await else { break };
+                            attempts -= 1;
+                            if attempts == 0 {
+                                // Without it nothing can probe the node; do not limp on.
+                                tracing::error!(error = %e, "management listener failed");
+                                std::process::exit(1);
+                            }
+                            tokio::time::sleep(Duration::from_millis(500)).await;
                         }
                     }
                     None => std::future::pending::<()>().await,
@@ -233,8 +246,16 @@ fn run() -> anyhow::Result<()> {
     );
 
     // On SIGTERM: stop accepting, let requests in flight finish, then exit (spec DP-4).
-    let conf = ServerConf { grace_period_seconds: Some(0), graceful_shutdown_timeout_seconds: Some(config.shutdown_grace_secs), ..ServerConf::default() };
-    let mut server = Server::new_with_opt_and_conf(None, conf);
+    // A new binary started with --upgrade asks this process for its listening
+    // sockets through `upgrade_sock`; this process then gets SIGQUIT and drains (spec PKG-7).
+    let conf = ServerConf {
+        grace_period_seconds: Some(0),
+        graceful_shutdown_timeout_seconds: Some(config.shutdown_grace_secs),
+        upgrade_sock: format!("{}/upgrade.sock", config.data_dir.trim_end_matches('/')),
+        ..ServerConf::default()
+    };
+    let opt = pingora_core::server::configuration::Opt { upgrade, ..Default::default() };
+    let mut server = Server::new_with_opt_and_conf(Some(opt), conf);
     server.bootstrap();
 
     let mut service = http_proxy_service(&server.configuration, proxy);
@@ -264,7 +285,7 @@ fn run() -> anyhow::Result<()> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
-        None => match run() {
+        None | Some("--upgrade") => match run(!args.is_empty()) {
             Ok(()) => 0,
             Err(e) => {
                 eprintln!("valkv-apg: {e}");
