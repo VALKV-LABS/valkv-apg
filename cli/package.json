@@ -11,6 +11,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
+    "coverage": "vitest run --coverage",
     "test:integ": "vitest run --config vitest.integ.config.ts",
     "prepack": "node -e \"require('fs').cpSync('../schemas','schemas',{recursive:true})\" && npm run build"
   },
@@ -23,6 +24,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2",
+    "@vitest/coverage-v8": "^2.1.8",
     "vitest": "^2.1.8"
   }
 }

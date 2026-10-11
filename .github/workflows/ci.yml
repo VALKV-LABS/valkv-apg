@@ -55,6 +55,8 @@ jobs:
         run: make build
       - name: Generated pages are current, examples are valid, the book builds
         run: make docs-check
+      - name: The quickstart works as written
+        run: make docs-quickstart
 
   packaging:
     name: Helm chart and Terraform reference

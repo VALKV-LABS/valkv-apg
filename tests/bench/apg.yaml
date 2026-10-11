@@ -1,0 +1,32 @@
+# What the throughput benchmark measures: a route with an API key and a local
+# rate limit (spec NFR-1), next to a bare route for comparison. The limit is
+# set far above what the test sends, so it is evaluated on every request and
+# never refuses. Access logging is off: this measures the proxy path.
+version: 1
+settings:
+  access_log:
+    sink: "off"
+services:
+  - name: upstream
+    backends:
+      - target: "upstream:8080"
+routes:
+  - name: bare
+    service: upstream
+    paths: [/bare]
+  - name: guarded
+    service: upstream
+    paths: [/guarded]
+    plugins:
+      - type: key_auth
+      - type: rate_limit
+        config:
+          per_second: 10000000
+          burst: 10000000
+          scope: consumer
+consumers:
+  - name: bench
+    credentials:
+      - name: key
+        type: key
+        key: { $env: APG_SECRET_BENCH_KEY }

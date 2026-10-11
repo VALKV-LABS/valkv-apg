@@ -1,0 +1,57 @@
+name: nightly
+
+# The slower checks that do not run on every pull request: every end-to-end
+# suite in both configuration modes, outages and recovery, version skew, the
+# security suite, the canary rehearsal, the smoke test, and how long a
+# configuration change takes to reach a node.
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: true
+
+jobs:
+  standalone:
+    name: every suite, standalone node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: make e2e MODE=file
+      - run: make build e2e-upgrade
+
+  control-plane:
+    name: every suite, control plane
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: make up
+      - run: make integ
+      - run: make e2e-resilience
+      - run: make e2e-security
+      - run: make e2e-skew
+      - run: make canary-rehearsal
+      - run: make smoke
+      - name: Time for a change to reach a node
+        run: make bench-propagation
+      - if: failure()
+        run: docker compose -f deploy/compose/database.yml -p valkv-apg logs --no-color --tail=300
+      - if: always()
+        run: make down
+
+  checks:
+    name: unit tests, lint, keys, documentation, packaging
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: make lint
+      - run: make unit
+      - run: make check-keys
+      - run: make build docs-check docs-quickstart
+      - run: make lint-helm lint-terraform

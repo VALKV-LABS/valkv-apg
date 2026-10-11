@@ -42,3 +42,6 @@ docs/book/
 # Documentation build output and extracted examples.
 /docs/book/
 /.doc-examples/
+
+# Benchmark results of this machine.
+/tests/bench/results.txt

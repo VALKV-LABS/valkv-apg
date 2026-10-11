@@ -19,7 +19,7 @@ COPY cli/test ./test
 RUN npm run build
 
 FROM src AS test
-CMD ["sh", "-c", "npm run typecheck && npm test"]
+CMD ["sh", "-c", "npm run typecheck && npm run coverage"]
 
 FROM src AS build
 RUN npm prune --omit=dev

@@ -824,6 +824,73 @@ mod tests {
         snap.match_request(&Request { host, path, method, query, header })
     }
 
+    /// Scale (spec NFR-4): 100,000 routes, 20,000 workspaces, 100,000 domains and
+    /// 200,000 consumers in one snapshot. Prints build time, match time and
+    /// memory; asserts the match-time target. Slow, so it runs only when asked:
+    /// `make bench-scale`.
+    #[test]
+    #[ignore = "a benchmark; run with make bench-scale"]
+    fn nfr4_a_large_configuration_builds_and_matches_quickly() {
+        use std::time::Instant;
+        const WORKSPACES: usize = 20_000;
+        const PER_WORKSPACE: usize = 5; // domains and routes: 100,000 of each
+        const CONSUMERS_PER_WORKSPACE: usize = 10; // 200,000
+
+        let rss_mb = || {
+            std::fs::read_to_string("/proc/self/status").ok().and_then(|s| {
+                s.lines().find(|l| l.starts_with("VmRSS:")).and_then(|l| l.split_whitespace().nth(1)?.parse::<u64>().ok())
+            }).map_or(0, |kb| kb / 1024)
+        };
+        let before_mb = rss_mb();
+
+        let mut r = Resources::new();
+        r.apply(&ChangeEvent::upsert("workspace", "sys", None, json!({ "name": "default", "slug": "default", "system": true })));
+        r.apply(&ChangeEvent::upsert("service", "svc-sys", Some("sys".into()), json!({ "name": "sys", "backends": [{ "target": "10.0.0.1:80" }] })));
+        r.apply(&ChangeEvent::upsert("route", "sys-health", Some("sys".into()), json!({ "name": "health", "service": "svc-sys", "paths": [{ "type": "exact", "value": "/_health" }] })));
+        for w in 0..WORKSPACES {
+            let ws = format!("ws-{w}");
+            r.apply(&ChangeEvent::upsert("workspace", &ws, None, json!({ "name": ws, "slug": ws, "system": false })));
+            let svc = format!("svc-{w}");
+            r.apply(&ChangeEvent::upsert("service", &svc, Some(ws.clone()), json!({ "name": "api", "backends": [{ "target": "10.0.0.1:80" }, { "target": "10.0.0.2:80" }] })));
+            for d in 0..PER_WORKSPACE {
+                let host = format!("h{d}.t{w}.example.com");
+                r.apply(&ChangeEvent::upsert("domain", format!("d-{w}-{d}"), Some(ws.clone()), json!({ "hostname": host, "status": "active" })));
+                r.apply(&ChangeEvent::upsert("route", format!("r-{w}-{d}"), Some(ws.clone()), json!({ "name": format!("r{d}"), "service": svc, "hosts": [host], "paths": [format!("/api/v{d}")] })));
+            }
+            for c in 0..CONSUMERS_PER_WORKSPACE {
+                r.apply(&ChangeEvent::upsert("consumer", format!("c-{w}-{c}"), Some(ws.clone()), json!({ "name": format!("c{c}"), "groups": [] })));
+            }
+        }
+
+        let started = Instant::now();
+        let snap = Snapshot::build(&r);
+        let build = started.elapsed();
+        assert_eq!(snap.route_count(), WORKSPACES * PER_WORKSPACE + 1);
+        let held_mb = rss_mb().saturating_sub(before_mb);
+
+        // Requests spread over every workspace, each matching a tenant route after the system tier is tried.
+        let mut nanos: Vec<u128> = Vec::with_capacity(200_000);
+        for i in 0..200_000usize {
+            let (w, d) = ((i * 7919) % WORKSPACES, i % PER_WORKSPACE);
+            let host = format!("h{d}.t{w}.example.com");
+            let path = format!("/api/v{d}/items/{i}");
+            let t = Instant::now();
+            let m = snap.match_request(&Request { host: &host, path: &path, method: "GET", query: "", header: &|_| None });
+            nanos.push(t.elapsed().as_nanos());
+            assert!(m.is_some());
+        }
+        nanos.sort_unstable();
+        let at = |q: f64| nanos[((nanos.len() as f64) * q) as usize] as f64 / 1000.0;
+        println!(
+            "NFR-4: {} routes, {} workspaces, {} domains, {} consumers: snapshot built in {:.2} s; match p50 {:.1} us, p99 {:.1} us, p99.9 {:.1} us; resident memory grew by {} MiB (resources and snapshot)",
+            snap.route_count(), WORKSPACES, WORKSPACES * PER_WORKSPACE, WORKSPACES * CONSUMERS_PER_WORKSPACE, build.as_secs_f64(), at(0.5), at(0.99), at(0.999), held_mb,
+        );
+        if !cfg!(debug_assertions) {
+            assert!(at(0.99) <= 50.0, "p99 route match was {:.1} us; the target is 50", at(0.99));
+            assert!(build.as_secs() < 30, "the snapshot took {:.1} s to build; the target is 30", build.as_secs_f64());
+        }
+    }
+
     #[test]
     fn explain_agrees_with_the_matcher_and_says_why_not() {
         let mut r = base();

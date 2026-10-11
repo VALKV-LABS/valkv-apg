@@ -15,7 +15,7 @@ CLI_DOCKER   := cli/Dockerfile
 UI_DOCKER    := ui/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew e2e-security smoke canary-rehearsal docs docs-check check-keys bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew e2e-security smoke canary-rehearsal docs docs-check docs-quickstart check-keys bench-propagation bench-scale bench-throughput lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -108,6 +108,17 @@ canary-rehearsal:
 e2e-upgrade:
 	docker run --rm -v "$(CURDIR)/tests/e2e/upgrade.sh:/upgrade.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /upgrade.sh
 
+# One snapshot of 100,000 routes, 20,000 workspaces, 100,000 domains and 200,000 consumers:
+# build time, match time, memory (spec NFR-4). Optimised build of the core crate only.
+bench-scale:
+	docker build -q -f $(NODE_DOCKER) --target toolchain -t valkv-apg:toolchain .
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR):/app" -v apg-cargo-registry:/usr/local/cargo/registry -v apg-target:/target \
+		-e CARGO_TARGET_DIR=/target -w /app valkv-apg:toolchain cargo test --release --locked -p apg-core nfr4 -- --ignored --nocapture
+
+# Requests per second and latency through one node, against the upstream alone (spec NFR-1, NFR-2).
+bench-throughput:
+	sh tests/bench/throughput.sh
+
 # Time from a committed change to a node serving it (spec NFR-3).
 bench-propagation:
 	$(COMPOSE) run --rm -w /repo/tests/bench e2e node propagation.js
@@ -143,6 +154,10 @@ docs-check:
 	MSYS_NO_PATHCONV=1 $(TOOLS) sh -c "node tools/gen-docs.mjs --check && node tools/check-doc-links.mjs && rm -rf .doc-examples && node tools/extract-doc-examples.mjs .doc-examples"
 	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/.doc-examples:/examples:ro" -v "$(CURDIR)/tools/check-doc-examples.sh:/check.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /check.sh
 	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/docs:/book" -w /book peaceiris/mdbook:v0.4.40 build -d /tmp/book
+
+# The quickstart of the documentation, executed step by step against the node image.
+docs-quickstart:
+	sh tests/docs/quickstart-standalone.sh
 
 # Every configuration key of every plugin, and every field of Service and Route, is set by some test.
 check-keys:
