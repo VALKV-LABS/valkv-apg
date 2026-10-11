@@ -28,6 +28,7 @@ use pingora_core::{Error, ErrorSource, ErrorType};
 use pingora_http::{RequestHeader, ResponseHeader};
 use pingora_proxy::{FailToProxy, ProxyHttp, Session};
 
+use crate::accesslog::{Sink, TraceContext, rfc3339_millis};
 use crate::auth::{AuthEffects, AuthOutcome};
 use crate::callout::{Answer, Forwarded};
 use crate::config::HttpMode;
@@ -137,6 +138,19 @@ pub struct Ctx {
     response_swallow: bool,
     /// A response being collected for the cache.
     cache_pending: Option<Pending>,
+    /// What the response cache did with this request: HIT, MISS or BYPASS.
+    cache_result: &'static str,
+    trace: Option<TraceContext>,
+    user_agent: String,
+    http_version: &'static str,
+    tls_version: String,
+    /// The query string as received, for the access log (masked there).
+    raw_query: String,
+    /// When the current upstream attempt began, and how long the upstream took to answer.
+    upstream_started: Option<Instant>,
+    upstream_ms: Option<u64>,
+    /// Whether this request is counted in the gauge of requests in progress.
+    counted_active: bool,
 }
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -494,6 +508,7 @@ impl ApgProxy {
                         Verdict::Continue
                     } else if authenticated && !config.cache_authenticated {
                         metrics::CACHE_REQUESTS.with_label_values(&["bypass"]).inc();
+                        ctx.cache_result = "BYPASS";
                         ctx.response_headers.push(("x-apg-cache".into(), "BYPASS".into()));
                         Verdict::Continue
                     } else {
@@ -512,12 +527,14 @@ impl ApgProxy {
                         match self.gateway.plugins.cache.get(&key) {
                             Some(hit) => {
                                 metrics::CACHE_REQUESTS.with_label_values(&["hit"]).inc();
+                                ctx.cache_result = "HIT";
                                 let mut headers = hit.headers;
                                 headers.push(("x-apg-cache".into(), "HIT".into()));
                                 Verdict::Respond { status: hit.status, headers, body: if req.method == "HEAD" { Bytes::new() } else { hit.body } }
                             }
                             None => {
                                 metrics::CACHE_REQUESTS.with_label_values(&["miss"]).inc();
+                                ctx.cache_result = "MISS";
                                 ctx.response_headers.push(("x-apg-cache".into(), "MISS".into()));
                                 // A HEAD response has no body to keep.
                                 if req.method == "GET" {
@@ -778,6 +795,23 @@ impl ProxyHttp for ApgProxy {
                 header(req, "x-forwarded-for").map(str::to_string),
             )
         };
+        {
+            let req = session.req_header();
+            ctx.trace = Some(TraceContext::from_header(header(req, "traceparent"), crate::upstream::random));
+            ctx.user_agent = header(req, "user-agent").unwrap_or("").chars().take(256).collect();
+            ctx.http_version = match req.version {
+                http::Version::HTTP_2 => "2",
+                http::Version::HTTP_10 => "1.0",
+                http::Version::HTTP_3 => "3",
+                _ => "1.1",
+            };
+        }
+        ctx.tls_version = session.digest().and_then(|d| d.ssl_digest.as_ref()).map(|s| s.version.to_string()).unwrap_or_default();
+        ctx.raw_query = query.clone();
+        if !ctx.counted_active {
+            ctx.counted_active = true;
+            metrics::ACTIVE_REQUESTS.inc();
+        }
         ctx.method = method;
         ctx.request_id = inbound_id.filter(|v| valid_request_id(v)).unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
         let peer: Option<IpAddr> = session.client_addr().and_then(|a| a.as_inet()).map(|a| a.ip());
@@ -947,7 +981,10 @@ impl ProxyHttp for ApgProxy {
             let backend = &ctx.picked.as_ref().expect("chosen above").backend;
             let reason = match upstreams.address(&service, backend, ctx.hash_key.as_deref()).await {
                 Ok(addr) => match upstreams.peer(&service, backend, addr, budget) {
-                    Ok(peer) => return Ok(Box::new(peer)),
+                    Ok(peer) => {
+                        ctx.upstream_started = Some(Instant::now());
+                        return Ok(Box::new(peer));
+                    }
                     Err(reason) => reason,
                 },
                 Err(reason) => reason.to_string(),
@@ -1013,6 +1050,10 @@ impl ProxyHttp for ApgProxy {
             upstream.insert_header(name.clone(), value.clone())?;
         }
 
+        // The trace this request belongs to, with this node as the caller (spec §12.3).
+        if let Some(trace) = &ctx.trace {
+            upstream.insert_header("traceparent", trace.outgoing(crate::upstream::random))?;
+        }
         if let Some(transform) = &ctx.request_transform {
             apply_header_ops(upstream, &transform.headers)?;
             if !transform.query.is_empty() {
@@ -1074,6 +1115,9 @@ impl ProxyHttp for ApgProxy {
 
     async fn response_filter(&self, session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
         ctx.upstream_status = Some(upstream_response.status.as_u16());
+        if ctx.upstream_ms.is_none() {
+            ctx.upstream_ms = ctx.upstream_started.map(|t| t.elapsed().as_millis() as u64);
+        }
         let content_type = upstream_response.headers.get("content-type").and_then(|v| v.to_str().ok()).map(str::to_string);
         let content_length = upstream_response.headers.get("content-length").and_then(|v| v.to_str().ok()).and_then(|v| v.parse::<u64>().ok());
         let encoded = upstream_response.headers.contains_key("content-encoding");
@@ -1248,8 +1292,30 @@ impl ProxyHttp for ApgProxy {
         let status = session.response_written().map_or(0, |r| r.status.as_u16());
         let elapsed = ctx.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
         let class = metrics::status_class(status);
-        metrics::REQUESTS.with_label_values(&[class]).inc();
-        metrics::DURATION.with_label_values(&[class]).observe(elapsed);
+        if ctx.counted_active {
+            ctx.counted_active = false;
+            metrics::ACTIVE_REQUESTS.dec();
+        }
+        let route_name = ctx.matched.as_ref().map_or("", |m| m.route.name.as_str());
+        let service_name = ctx.service.as_ref().map_or("", |s| s.spec.name.as_str());
+        let (route_label, service_label) = metrics::series(route_name, service_name);
+        metrics::REQUESTS.with_label_values(&[route_label, service_label, class]).inc();
+        metrics::DURATION.with_label_values(&[route_label, service_label]).observe(elapsed);
+        metrics::REQUEST_BYTES.with_label_values(&[route_label, service_label]).inc_by(ctx.bytes_in);
+        metrics::RESPONSE_BYTES.with_label_values(&[route_label, service_label]).inc_by(ctx.bytes_out);
+        if let Some(ms) = ctx.upstream_ms {
+            metrics::UPSTREAM_DURATION.with_label_values(&[route_label, service_label]).observe(ms as f64 / 1000.0);
+        }
+
+        // Usage: only requests that matched a route and chose a service are attributable (spec USG-1).
+        if let (Some(usage), Some(matched), Some(service), Some(snapshot)) = (self.gateway.usage.get(), &ctx.matched, &ctx.service, &ctx.snapshot)
+            && snapshot.flag("usage_metering")
+            && !self.settings.stub_upstream
+        {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            let sample = crate::usage::Sample { status, bytes_in: ctx.bytes_in, bytes_out: ctx.bytes_out, latency_ms: (elapsed * 1000.0) as u64, upstream_latency_ms: ctx.upstream_ms.unwrap_or(0) };
+            usage.record(now, &matched.workspace_id, &service.id, &matched.route.id, ctx.consumer.as_ref().map(|c| c.id.as_str()), sample);
+        }
 
         // Circuit accounting for an attempt the upstream answered: a status in
         // the service's `passive.statuses` counts against the backend, any
@@ -1272,29 +1338,59 @@ impl ProxyHttp for ApgProxy {
         if ctx.log_suppressed {
             return;
         }
-        // Structured access line. Authorization, Cookie and the query string are never logged here.
-        tracing::info!(
-            target: "apg::access",
-            request_id = %ctx.request_id,
-            client_ip = %ctx.client_ip,
-            method = %ctx.method,
-            scheme = if ctx.is_tls { "https" } else { "http" },
-            host = %ctx.host,
-            path = %ctx.path,
-            status,
-            error_code = ctx.error_code.unwrap_or(""),
-            bytes_in = ctx.bytes_in,
-            bytes_out = ctx.bytes_out,
-            duration_ms = (elapsed * 1000.0) as u64,
-            route = ctx.matched.as_ref().map_or("", |m| m.route.name.as_str()),
-            service = ctx.service.as_ref().map_or("", |s| s.spec.name.as_str()),
-            backend = %ctx.backend_target,
-            attempts = ctx.tries,
-            workspace = ctx.matched.as_ref().map_or("", |m| m.workspace_id.as_str()),
-            consumer = ctx.consumer.as_ref().map_or("", |c| c.name.as_str()),
-            custom = ctx.log_fields.as_deref().unwrap_or(""),
-            "request"
-        );
+        // The access log (spec §12.2). The global setting chooses the sink and
+        // may sample; an `access_log` plugin has already had its say above.
+        let setting = ctx.snapshot.as_ref().map(|s| &s.access_log);
+        let sink = Sink::parse(setting.and_then(|s| s.sink.as_deref()));
+        let sampled = setting.is_none_or(|s| s.sample_rate >= 1.0 || ((crate::upstream::random() >> 11) as f64 / (1u64 << 53) as f64) < s.sample_rate);
+        if sink == Sink::Off || !sampled {
+            return;
+        }
+        let mut line = serde_json::json!({
+            "ts": rfc3339_millis(std::time::SystemTime::now()),
+            "request_id": ctx.request_id,
+            "trace_id": ctx.trace.as_ref().map_or("", |t| t.trace_id.as_str()),
+            "client_ip": ctx.client_ip,
+            "method": ctx.method,
+            "scheme": if ctx.is_tls { "https" } else { "http" },
+            "host": ctx.host,
+            "path": ctx.path,
+            // Header values are never logged; credentials in the query are masked (spec OBS-3).
+            "query": self.gateway.access_log.redact_query(&ctx.raw_query, &ctx.strip_query),
+            "status": status,
+            "error_code": ctx.error_code.unwrap_or(""),
+            "bytes_in": ctx.bytes_in,
+            "bytes_out": ctx.bytes_out,
+            "duration_ms": (elapsed * 1000.0) as u64,
+            "upstream_duration_ms": ctx.upstream_ms,
+            "route": route_name,
+            "service": service_name,
+            "backend": ctx.backend_target,
+            "workspace": ctx.matched.as_ref().map_or("", |m| m.workspace_id.as_str()),
+            "consumer": ctx.consumer.as_ref().map_or("", |c| c.name.as_str()),
+            "retries": ctx.tries.saturating_sub(1),
+            "cache": ctx.cache_result,
+            "http_version": ctx.http_version,
+            "tls_version": ctx.tls_version,
+            "user_agent": ctx.user_agent,
+        });
+        // Custom fields: the setting's, then the plugin's on top.
+        let mut custom = serde_json::Map::new();
+        if let (Some(setting), Some(snapshot), Some(matched)) = (setting.filter(|s| !s.custom_fields.is_empty()), &ctx.snapshot, &ctx.matched) {
+            let headers = session.req_header().headers.clone();
+            let req = Req { method: &ctx.method, host: &ctx.host, path: &ctx.path, query: &ctx.raw_query, client_ip: &ctx.client_ip, headers: &headers, workspace_id: &matched.workspace_id, system_route: matched.route.system, now: 0 };
+            let vars = self.vars(ctx, &req, snapshot, matched);
+            for (name, template) in &setting.custom_fields {
+                custom.insert(name.clone(), serde_json::Value::String(vars.render(template)));
+            }
+        }
+        if let Some(serde_json::Value::Object(fields)) = ctx.log_fields.as_deref().and_then(|f| serde_json::from_str(f).ok()) {
+            custom.extend(fields);
+        }
+        if !custom.is_empty() {
+            line["custom"] = serde_json::Value::Object(custom);
+        }
+        self.gateway.access_log.write(&sink, line.to_string());
     }
 }
 

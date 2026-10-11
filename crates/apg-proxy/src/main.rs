@@ -140,6 +140,24 @@ fn run() -> anyhow::Result<()> {
     let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     gateway.plugins.quotas.load(&quota_file, now());
 
+    // Usage: counted into windows, queued on disk, delivered by a background task (spec §11).
+    apg_proxy::metrics::set_max_series(config.metrics_max_series);
+    let usage = Arc::new(apg_proxy::usage::Usage::new(config.usage_interval_secs, config.usage_by_consumer, Some(PathBuf::from(&config.data_dir).join("usage-queue.json"))));
+    let _ = gateway.usage.set(usage.clone());
+    let usage_sink = match &source {
+        Source::File(_) => match &config.usage_file {
+            Some(path) => apg_proxy::usage::UsageSink::File(PathBuf::from(path)),
+            None => apg_proxy::usage::UsageSink::Discard,
+        },
+        Source::Api(api, admin_url) => apg_proxy::usage::UsageSink::ControlPlane {
+            http: api.client(),
+            url: admin_url.clone(),
+            token: api.config.token.clone(),
+            node_id: config.node_id.clone(),
+            region: config.region.clone(),
+        },
+    };
+
     // Certificate issuance. With a control plane the fleet is coordinated
     // through it; from a file this node is on its own (spec TLS-12).
     let coordination = match &source {
@@ -163,6 +181,7 @@ fn run() -> anyhow::Result<()> {
                 // Backend name resolution and active health checks.
                 tokio::spawn(gateway.upstreams.clone().run());
                 tokio::spawn(certificates.run());
+                tokio::spawn(apg_proxy::usage::run(usage, gateway.clone(), usage_sink));
                 {
                     // Quota counters are written out every ten seconds (spec §9.4).
                     let plugins = gateway.plugins.clone();

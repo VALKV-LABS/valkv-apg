@@ -4,6 +4,7 @@
 //! This crate does the I/O around them: listeners, the proxy pipeline, TLS,
 //! the config sources, the local cache, and the management endpoints.
 
+pub mod accesslog;
 pub mod acme;
 pub mod applier;
 pub mod auth;
@@ -25,3 +26,4 @@ pub mod source_file;
 pub mod tls;
 pub mod transform;
 pub mod upstream;
+pub mod usage;

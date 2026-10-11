@@ -35,6 +35,8 @@ services:
       APG_SECRET_KEY: ZGV2LW9ubHktZGV2LW9ubHktZGV2LW9ubHktZGV2LW8=
       APG_BOOTSTRAP_ADMIN_TOKEN: apg_at_dev-only-admin-token-do-not-use
       APG_BOOTSTRAP_NODE_TOKEN: apg_at_dev-only-node-token-do-not-use
+      # Short, so tests see rollups soon. The default is 60.
+      APG_USAGE_ROLLUP_INTERVAL_SECS: "5"
     ports:
       - "127.0.0.1:9000:9000"
     depends_on:
@@ -84,6 +86,8 @@ services:
       APG_HTTP_MODE: proxy
       # Short long-poll in the dev stack so an outage is noticed quickly in tests.
       APG_POLL_WAIT_MS: "5000"
+      # Short usage windows, so tests see them soon. The default is 60.
+      APG_USAGE_FLUSH_INTERVAL_SECS: "5"
       # The same key as the admin: nodes open the certificate keys it seals.
       APG_SECRET_KEY: ZGV2LW9ubHktZGV2LW9ubHktZGV2LW9ubHktZGV2LW8=
       # Certificates come from the test authority below, never from a public one.

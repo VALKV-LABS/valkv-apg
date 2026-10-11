@@ -24,13 +24,13 @@ describe("migrations", () => {
     url.pathname = "/apg_test_migrations";
     const sql = connect(url.href, 2);
     try {
-      expect(await migrateUp(sql)).toEqual([1]);
+      expect(await migrateUp(sql)).toEqual([1, 2]);
       expect(await migrateUp(sql)).toEqual([]); // idempotent
       const tables = async () => (await sql`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name LIKE 'apg\_%' AND table_name <> 'apg_migrations'`)[0]!["n"];
       expect(await tables()).toBeGreaterThan(15);
-      expect(await migrateDown(sql, 1)).toEqual([1]);
+      expect((await migrateDown(sql, 2)).sort()).toEqual([1, 2]);
       expect(await tables()).toBe(0);
-      expect(await migrateUp(sql)).toEqual([1]);
+      expect(await migrateUp(sql)).toEqual([1, 2]);
       expect((await migrateStatus(sql)).every((m) => m.applied)).toBe(true);
       // the system workspace and the cluster identity exist from the first migration
       expect((await sql`SELECT name FROM apg_workspaces WHERE system`)[0]!["name"]).toBe("default");
@@ -51,7 +51,7 @@ describe("migrations", () => {
     const b = connect(url.href, 2);
     try {
       const results = await Promise.all([migrateUp(a), migrateUp(b)]);
-      expect(results.flat().sort()).toEqual([1]);
+      expect(results.flat().sort()).toEqual([1, 2]);
     } finally {
       await a.end();
       await b.end();
@@ -281,5 +281,75 @@ describe("metrics and OpenAPI", () => {
     const api = await h.call("GET", "/v1/openapi.json", { token: null });
     expect(api.json.openapi).toBe("3.1.0");
     expect(api.json.paths["/v1/workspaces/{ws}/routes"]).toBeDefined();
+  });
+});
+
+describe("usage (spec §11)", () => {
+  const job = (name: string) => buildJobs(h.store, { changelogRetentionHours: 1, nodeSlotTtlHours: 1, auditRetentionDays: 1, usageRawRetentionDays: 7, usageHourlyRetentionDays: 400 }).find((j) => j.name === name)!;
+
+  it("a window is stored once however often it is sent, rolled up by overwrite, and answerable per caller", async () => {
+    const ws = (await h.call("POST", "/v1/workspaces", { body: { name: "usage-ws" } })).json;
+    const start = Math.floor(Date.now() / 60_000) * 60 - 120;
+    const window = (nodeId: string, requests: number) => ({
+      node_id: nodeId, region: "eu", window_start: start, interval_secs: 60,
+      rows: [
+        { workspace_id: ws.id, service_id: "s1", route_id: "r1", requests, bytes_in: 10, bytes_out: 100, status_2xx: requests, latency_ms_sum: 50, upstream_latency_ms_sum: 40 },
+        { workspace_id: "another-workspace", service_id: "s9", route_id: "r9", consumer_id: "c9", requests: 7, status_5xx: 7 },
+      ],
+    });
+    expect((await h.call("POST", "/dp/usage", { ...node(), body: window("n1", 2) })).status).toBe(204);
+    // The node retries, this time with the final figures: the row is replaced, not added to (USG-4).
+    expect((await h.call("POST", "/dp/usage", { ...node(), body: window("n1", 3) })).status).toBe(204);
+    expect((await h.call("POST", "/dp/usage", { ...node(), body: window("n2", 5) })).status).toBe(204);
+
+    const minute = await h.call("GET", `/v1/usage?granularity=minute&group_by=route&workspace=${ws.id}`);
+    expect(minute.status).toBe(200);
+    expect(minute.json.data).toHaveLength(1);
+    expect(minute.json.data[0]).toMatchObject({ route_id: "r1", requests: 8, bytes_in: 20, bytes_out: 200, status_2xx: 8, latency_ms_sum: 100 });
+
+    // Rolled up; running the job again changes nothing (USG-6).
+    await h.jobs.runOnce(job("usage_rollup"));
+    await h.jobs.runOnce(job("usage_rollup"));
+    const hour = await h.call("GET", "/v1/usage?granularity=hour&group_by=workspace,region");
+    const byWorkspace = Object.fromEntries(hour.json.data.map((r: any) => [r.workspace_id, r]));
+    expect(byWorkspace[ws.id]).toMatchObject({ region: "eu", requests: 8 });
+    expect(byWorkspace["another-workspace"]).toMatchObject({ requests: 14, status_5xx: 14 });
+    const day = await h.call("GET", `/v1/usage?granularity=day&workspace=${ws.id}`);
+    expect(day.json.data).toHaveLength(1);
+    expect(day.json.data[0].requests).toBe(8);
+    // A late correction re-rolls its hour.
+    await h.call("POST", "/dp/usage", { ...node(), body: window("n2", 6) });
+    await h.jobs.runOnce(job("usage_rollup"));
+    expect((await h.call("GET", `/v1/usage?granularity=hour&workspace=${ws.id}`)).json.data[0].requests).toBe(9);
+    // Filters.
+    expect((await h.call("GET", "/v1/usage?granularity=minute&consumer=c9&group_by=consumer")).json.data[0]).toMatchObject({ consumer_id: "c9", requests: 14 });
+    expect((await h.call("GET", "/v1/usage?granularity=minute&route=no-such-route")).json.data).toEqual([]);
+
+    // A workspace-scoped caller sees its own workspace and has to name it.
+    const viewer = await h.token("viewer", [ws.id]);
+    expect((await h.call("GET", `/v1/usage?workspace=${ws.id}`, { token: viewer })).status).toBe(200);
+    expect((await h.call("GET", "/v1/usage", { token: viewer })).status).toBe(403);
+    expect((await h.call("GET", "/v1/usage?workspace=default", { token: viewer })).status).toBe(404);
+  });
+
+  it("only nodes report usage, and malformed reports are refused whole", async () => {
+    const editor = await h.token("editor");
+    expect((await h.call("POST", "/dp/usage", { token: editor, body: { node_id: "n1", window_start: 1, interval_secs: 60, rows: [] } })).status).toBe(403);
+    const bad = async (body: unknown) => (await h.call("POST", "/dp/usage", { ...node(), body })).status;
+    const row = { workspace_id: "w", service_id: "s", route_id: "r" };
+    expect(await bad({ node_id: "n1", window_start: 1_800_000_000, interval_secs: 60, rows: [{ ...row, requests: -1 }] })).toBe(422);
+    expect(await bad({ node_id: "n1", window_start: 1_800_000_000, interval_secs: 60, rows: [{ service_id: "s", route_id: "r" }] })).toBe(422);
+    expect(await bad({ window_start: 1_800_000_000, interval_secs: 60, rows: [row] })).toBe(422);
+    expect(await bad({ node_id: "n1", window_start: "soon", interval_secs: 60, rows: [row] })).toBe(422);
+    expect(await bad({ node_id: "n1", window_start: 1_800_000_000, interval_secs: 0, rows: [row] })).toBe(422);
+    expect((await h.call("GET", "/v1/usage?granularity=second")).status).toBe(400);
+    expect((await h.call("GET", "/v1/usage?group_by=colour")).status).toBe(400);
+    expect((await h.call("GET", "/v1/usage?from=2030-01-01T00:00:00Z&to=2020-01-01T00:00:00Z")).status).toBe(400);
+  });
+
+  it("retention removes raw windows past their age", async () => {
+    await h.sql`UPDATE apg_usage_raw SET window_start = now() - interval '8 days' WHERE node_id = 'n1'`;
+    expect(await h.jobs.runOnce(job("usage_retention"))).toBeGreaterThanOrEqual(2);
+    expect((await h.sql`SELECT count(*)::int AS n FROM apg_usage_raw WHERE node_id = 'n1'`)[0]!["n"]).toBe(0);
   });
 });

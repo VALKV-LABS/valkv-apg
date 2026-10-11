@@ -43,11 +43,13 @@ pub struct Settings {
     pub backend_allow: Vec<Cidr>,
     /// Opens client-certificate keys sealed by a control plane.
     pub secrets: Option<Arc<SecretBox>>,
+    /// Query parameter names masked in the access log (`APG_LOG_REDACT_QUERY`).
+    pub redact_query: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { dns_refresh: Duration::from_secs(30), backend_allow: Vec::new(), secrets: None }
+        Self { dns_refresh: Duration::from_secs(30), backend_allow: Vec::new(), secrets: None, redact_query: ["apikey", "token", "access_token", "signature"].iter().map(|s| s.to_string()).collect() }
     }
 }
 
@@ -584,6 +586,23 @@ impl Upstreams {
         }
         bs.in_flight.fetch_add(1, Ordering::Relaxed);
         Some(Picked { backend: (*backend).clone(), state: bs.clone() })
+    }
+
+    /// How many backends of each service this node would send traffic to right now (spec OBS-4).
+    pub fn health_summary(&self, snapshot: &Snapshot) -> Vec<serde_json::Value> {
+        snapshot
+            .services()
+            .take(500)
+            .map(|entry| {
+                let state = self.service(entry);
+                let (mut healthy, mut unhealthy) = (0u32, 0u32);
+                for backend in entry.spec.backends.iter().filter(|b| b.status == "active") {
+                    let bs = state.backend(&backend.target);
+                    if bs.healthy() && bs.circuit.is_closed() { healthy += 1 } else { unhealthy += 1 }
+                }
+                serde_json::json!({ "service_id": entry.id, "name": entry.spec.name, "healthy": healthy, "unhealthy": unhealthy })
+            })
+            .collect()
     }
 
     /// Records how an attempt ended, for the circuit breaker.

@@ -38,7 +38,6 @@ plugins:
 # Settings refused everywhere.
 settings:
   - { path: workspace_resolvers }
-  - { path: access_log }
 
 # Settings that only mean something to the admin, so a file-mode node refuses them.
 settings_file_mode:

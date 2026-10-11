@@ -14,6 +14,7 @@ import type { Resolver } from "./egress.js";
 import { ApiError, type ErrorDetail } from "./errors.js";
 import { KINDS, type KindDef, type KindName } from "./kinds.js";
 import type { SchemaRegistry } from "./schemas.js";
+import { templateFault } from "./template.js";
 import { loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
 
 const UNBUILT_SETTINGS = loadUnbuilt().settings;
@@ -421,6 +422,16 @@ export class Store {
     const faults = this.deps.schemas.validate("resources/settings.json", { [name]: input["value"] });
     if (faults.length > 0) {
       throw new ApiError("VALIDATION_FAILED", `invalid setting '${name}'`, faults.map((f) => ({ pointer: f.pointer.replace(`/${name}`, "/value"), message: f.message })));
+    }
+    if (name === "access_log") {
+      // Shipping lines to an HTTP endpoint is not built; stdout, a file and off are.
+      if (String(input["value"]?.["sink"] ?? "").startsWith("http")) {
+        throw new ApiError("VALIDATION_FAILED", "an http sink is not enforced by this build yet; use stdout, off or file:<path>", [{ pointer: "/value/sink", message: "not available in this build" }]);
+      }
+      for (const [field, template] of Object.entries((input["value"]?.["custom_fields"] ?? {}) as Record<string, unknown>)) {
+        const fault = typeof template === "string" ? templateFault(template) : null;
+        if (fault) throw new ApiError("VALIDATION_FAILED", fault, [{ pointer: `/value/custom_fields/${field}`, message: fault }]);
+      }
     }
     const unbuilt = unbuiltFaults({ [name]: input["value"] }, UNBUILT_SETTINGS);
     if (unbuilt.length > 0) {

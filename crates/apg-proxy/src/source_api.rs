@@ -200,6 +200,7 @@ impl ApiSource {
                 "region": self.config.region,
                 "started_at": started,
                 "counts": { "routes": snap.route_count(), "services": snap.service_count(), "workspaces": snap.workspace_count() },
+                "backends": self.gateway.upstreams.health_summary(&snap),
             });
             let req = self.client.post(&url).timeout(Duration::from_secs(5)).json(&body);
             let req = match &self.config.token {

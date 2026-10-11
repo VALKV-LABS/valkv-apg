@@ -20,6 +20,7 @@ export const READ_VARIABLES = [
   "APG_ADMIN_JWT_WORKSPACE_CLAIM", "APG_ADMIN_JWT_ROLE_CLAIM",
   "APG_DOMAIN_VERIFICATION", "APG_CHANGELOG_RETENTION_HOURS", "APG_NODE_SLOT_TTL_HOURS", "APG_AUDIT_RETENTION_DAYS",
   "APG_EGRESS_ALLOW_CIDRS", "APG_BACKEND_ALLOW_CIDRS", "APG_LOG_LEVEL", "APG_LOG_FORMAT",
+  "APG_USAGE_ROLLUP_INTERVAL_SECS", "APG_USAGE_RAW_RETENTION_DAYS", "APG_USAGE_HOURLY_RETENTION_DAYS", "APG_USAGE_WEBHOOK_URL",
 ] as const;
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
@@ -58,6 +59,9 @@ export interface Config {
   changelogRetentionHours: number;
   nodeSlotTtlHours: number;
   auditRetentionDays: number;
+  usageRollupSecs: number;
+  usageRawRetentionDays: number;
+  usageHourlyRetentionDays: number;
   egressAllow: BlockList;
   backendAllow: BlockList;
   logLevel: (typeof LOG_LEVELS)[number];
@@ -94,6 +98,9 @@ export function loadConfig(env: Env = process.env): Config {
   const dp = get(env, "APG_DP_LISTEN");
   const previous = get(env, "APG_SECRET_KEY_PREVIOUS");
 
+  if (get(env, "APG_USAGE_WEBHOOK_URL") !== null) {
+    throw new ConfigError("APG_USAGE_WEBHOOK_URL is not available in this build yet; read usage through GET /v1/usage");
+  }
   return {
     databaseUrl: required(env, "APG_DATABASE_URL"),
     listen: parseAddress("APG_ADMIN_LISTEN", get(env, "APG_ADMIN_LISTEN") ?? "0.0.0.0:9000"),
@@ -109,6 +116,9 @@ export function loadConfig(env: Env = process.env): Config {
     changelogRetentionHours: positiveInt("APG_CHANGELOG_RETENTION_HOURS", get(env, "APG_CHANGELOG_RETENTION_HOURS") ?? "168"),
     nodeSlotTtlHours: positiveInt("APG_NODE_SLOT_TTL_HOURS", get(env, "APG_NODE_SLOT_TTL_HOURS") ?? "24"),
     auditRetentionDays: positiveInt("APG_AUDIT_RETENTION_DAYS", get(env, "APG_AUDIT_RETENTION_DAYS") ?? "400"),
+    usageRollupSecs: positiveInt("APG_USAGE_ROLLUP_INTERVAL_SECS", get(env, "APG_USAGE_ROLLUP_INTERVAL_SECS") ?? "60"),
+    usageRawRetentionDays: positiveInt("APG_USAGE_RAW_RETENTION_DAYS", get(env, "APG_USAGE_RAW_RETENTION_DAYS") ?? "7"),
+    usageHourlyRetentionDays: positiveInt("APG_USAGE_HOURLY_RETENTION_DAYS", get(env, "APG_USAGE_HOURLY_RETENTION_DAYS") ?? "400"),
     egressAllow: wrap(() => parseCidrList(get(env, "APG_EGRESS_ALLOW_CIDRS") ?? "", "APG_EGRESS_ALLOW_CIDRS")),
     backendAllow: wrap(() => parseCidrList(get(env, "APG_BACKEND_ALLOW_CIDRS") ?? "", "APG_BACKEND_ALLOW_CIDRS")),
     logLevel: oneOf("APG_LOG_LEVEL", get(env, "APG_LOG_LEVEL") ?? "info", LOG_LEVELS),

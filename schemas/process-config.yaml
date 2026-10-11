@@ -88,6 +88,7 @@ variables:
   - { name: APG_DOMAIN_VERIFICATION, component: admin, type: enum, values: [none, dns_txt], default: none, phase: "1", description: "Whether a Domain must be proven before it becomes active." }
   - { name: APG_CHANGELOG_RETENTION_HOURS, component: admin, type: integer, default: 168, phase: "1", description: "Age at which changelog rows are deleted (CFG-9)." }
   - { name: APG_NODE_SLOT_TTL_HOURS, component: admin, type: integer, default: 24, phase: "1", description: "Silence after which a node's replication slot is dropped (CFG-15)." }
+  - { name: APG_USAGE_ROLLUP_INTERVAL_SECS, component: admin, type: integer, default: 60, phase: "2f", description: "How often hourly and daily usage is rebuilt from the windows received." }
   - { name: APG_USAGE_RAW_RETENTION_DAYS, component: admin, type: integer, default: 7, phase: "2f", description: "Retention of raw usage windows." }
   - { name: APG_USAGE_HOURLY_RETENTION_DAYS, component: admin, type: integer, default: 400, phase: "2f", description: "Retention of hourly usage." }
   - { name: APG_USAGE_WEBHOOK_URL, component: admin, type: url, phase: "2f", description: "Receives each closed hour's usage (USG-8)." }

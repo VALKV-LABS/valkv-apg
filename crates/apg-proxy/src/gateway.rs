@@ -70,6 +70,9 @@ pub struct Gateway {
     pub upstreams: Arc<Upstreams>,
     /// Built plugin instances.
     pub plugins: Arc<Runtime>,
+    pub access_log: crate::accesslog::AccessLogger,
+    /// Usage counters, once the node has been told how to keep them.
+    pub usage: std::sync::OnceLock<Arc<crate::usage::Usage>>,
     /// ACME HTTP-01 answers every node of the fleet must give (spec TLS-10): token to key authorisation.
     challenges: ArcSwap<HashMap<String, String>>,
     /// Answers for challenges this node started itself, when nothing distributes them (file mode).
@@ -92,6 +95,8 @@ impl Gateway {
             applied_seq: AtomicU64::new(0),
             health: SourceHealth::new(stale_after_secs),
             plugins: Arc::new(Runtime::new(upstreams.secrets.clone())),
+            access_log: crate::accesslog::AccessLogger::new(8192, upstreams.redact_query.clone()),
+            usage: std::sync::OnceLock::new(),
             upstreams: Arc::new(Upstreams::new(upstreams)),
             challenges: ArcSwap::from_pointee(HashMap::new()),
             local_challenges: DashMap::new(),

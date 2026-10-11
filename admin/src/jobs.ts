@@ -8,6 +8,7 @@
 
 import type { Sql, Tx } from "./db.js";
 import type { Store } from "./store.js";
+import { rollup } from "./usage.js";
 
 /** One job: a name, how often it runs, and what it does. Returns a count for the log. */
 export interface Job {
@@ -21,6 +22,9 @@ export interface JobSettings {
   changelogRetentionHours: number;
   nodeSlotTtlHours: number;
   auditRetentionDays: number;
+  usageRollupSecs?: number;
+  usageRawRetentionDays?: number;
+  usageHourlyRetentionDays?: number;
 }
 
 /** Postgres slot names allow only lower-case letters, digits and underscores. Must match the node's own derivation. */
@@ -55,6 +59,19 @@ export function buildJobs(store: Store, s: JobSettings): Job[] {
       name: "audit_retention",
       everyMs: 6 * 3600_000,
       run: async (tx) => (await tx`DELETE FROM apg_audit_log WHERE ts < now() - make_interval(days => ${s.auditRetentionDays})`).count,
+    },
+    {
+      // spec USG-6. Hours and days that received usage lately are rebuilt by overwrite.
+      name: "usage_rollup",
+      everyMs: (s.usageRollupSecs ?? 60) * 1000,
+      run: async (tx) => rollup(tx),
+    },
+    {
+      name: "usage_retention",
+      everyMs: 3600_000,
+      run: async (tx) =>
+        (await tx`DELETE FROM apg_usage_raw WHERE window_start < now() - make_interval(days => ${s.usageRawRetentionDays ?? 7})`).count +
+        (await tx`DELETE FROM apg_usage_hourly WHERE bucket < now() - make_interval(days => ${s.usageHourlyRetentionDays ?? 400})`).count,
     },
     {
       name: "idempotency_cleanup",

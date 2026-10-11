@@ -13,6 +13,7 @@ import { bodyOf, ctxOf, pageOf, sendResource, writeOptions } from "../http.js";
 import { KINDS, type KindName, verifyDomain } from "../kinds.js";
 import type { SchemaRegistry } from "../schemas.js";
 import { type Json, type Row, type Store, isUuid, workspaceApi } from "../store.js";
+import { query as queryUsage } from "../usage.js";
 import { PLUGIN_TYPES } from "../plugin-types.js";
 
 /** Endpoint descriptions, collected as routes are registered; the OpenAPI document is built from them. */
@@ -302,6 +303,9 @@ export function registerApi(app: FastifyInstance, store: Store, schemas: SchemaR
     const rows = await sql<Row[]>`SELECT *, (last_seen > now() - interval '30 seconds') AS live FROM apg_nodes ORDER BY node_id`;
     return { data: rows.map((r) => ({ ...r, lag: Math.max(0, last - r["applied_seq"]) })), last_seq: last };
   });
+
+  doc({ method: "get", path: "/v1/usage", summary: "Usage by time bucket, grouped and filtered by workspace, service, route, consumer or region", tag: "usage", success: 200, roles: "viewer" });
+  app.get("/v1/usage", async (request) => queryUsage(store, sql, ctxOf(request).actor, request.query as Record<string, string | undefined>));
 
   doc({ method: "get", path: "/v1/audit", summary: "Search the audit log", tag: "audit", list: true, success: 200, roles: "viewer" });
   app.get("/v1/audit", async (request) => {

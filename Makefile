@@ -64,7 +64,7 @@ ifeq ($(MODE),file)
 	$(STANDALONE) up -d --wait node node-redirect
 	$(STANDALONE) run --rm --use-aliases e2e; status=$$?; $(STANDALONE) down -v --remove-orphans; exit $$status
 else
-	$(COMPOSE) run --rm --use-aliases -e MODE=$(MODE) -e SUITE=routing,upstream,tls,plugins e2e
+	$(COMPOSE) run --rm --use-aliases -e MODE=$(MODE) -e SUITE=routing,upstream,tls,plugins,usage e2e
 endif
 
 # Stops and starts containers to prove serving does not depend on the control

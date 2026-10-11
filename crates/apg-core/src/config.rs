@@ -150,6 +150,17 @@ pub fn compile(doc: &Value, schemas: &Schemas) -> Result<Vec<ChangeEvent>, Vec<F
     if let Some(settings) = root.get("settings").and_then(Value::as_object) {
         c.refuse_unbuilt(settings, &unbuilt().settings, "/settings");
         c.refuse_unbuilt(settings, &unbuilt().settings_file_mode, "/settings");
+        if let Some(log) = settings.get("access_log") {
+            // Shipping lines to an HTTP endpoint is not built; stdout, a file and off are.
+            if log.get("sink").and_then(Value::as_str).is_some_and(|s| s.starts_with("http")) {
+                c.fault("/settings/access_log/sink".into(), format!("an http sink {UNBUILT}; use stdout, off or file:<path>"));
+            }
+            for (name, value) in log.get("custom_fields").and_then(Value::as_object).into_iter().flatten() {
+                if let Some(Err(e)) = value.as_str().map(crate::template::Template::compile) {
+                    c.fault(format!("/settings/access_log/custom_fields/{name}"), e.to_string());
+                }
+            }
+        }
         for (name, value) in settings {
             if name == "workspace_base_domains" {
                 base_domains = value.as_array().into_iter().flatten().filter_map(|b| b["domain"].as_str().map(str::to_string)).collect();

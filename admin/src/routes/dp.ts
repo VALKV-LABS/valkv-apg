@@ -15,6 +15,7 @@ import { ApiError } from "../errors.js";
 import { bodyOf, ctxOf } from "../http.js";
 import { KINDS, SNAPSHOT_ORDER } from "../kinds.js";
 import type { Json, Row, Store } from "../store.js";
+import { ingest } from "../usage.js";
 
 const MAX_WAIT_MS = 55_000;
 
@@ -156,6 +157,15 @@ export function registerDp(app: FastifyInstance, store: Store, notifier: ChangeN
     const [row] = await sql<{ min_applied: number | null; live: number }[]>`
       SELECT min(applied_seq) AS min_applied, count(*)::int AS live FROM apg_nodes WHERE last_seen > now() - interval '30 seconds'`;
     return { min_applied_seq: row!.min_applied, live_nodes: row!.live };
+  });
+
+  // ── Usage (spec §11) ───────────────────────────────────────────────────────
+
+  // One closed window from one node. Sending the same window again replaces
+  // it, so a node may retry freely (spec USG-4).
+  app.post("/dp/usage", async (request, reply) => {
+    await ingest(sql, bodyOf(request));
+    return reply.status(204).send();
   });
 
   // ── Certificate coordination (spec §8.4) ───────────────────────────────────

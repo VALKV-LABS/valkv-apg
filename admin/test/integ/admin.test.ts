@@ -351,9 +351,13 @@ describe("everything accepted is enforced", () => {
     expect(route.status).toBe(422);
     expect(route.json.error.details[0].pointer).toBe("/idle_timeout_ms");
 
-    const setting = await h.call("PUT", "/v1/settings/access_log", { body: { value: { sink: "stdout" } } });
+    const setting = await h.call("PUT", "/v1/settings/access_log", { body: { value: { sink: "https://logs.example.com/ingest" } } });
     expect(setting.status).toBe(422);
     expect(setting.json.error.message).toContain("not enforced by this build");
+    // The sinks nodes do implement are accepted, and a broken template is not.
+    expect((await h.call("PUT", "/v1/settings/access_log", { body: { value: { sink: "file:/var/log/apg/access.log", sample_rate: 0.5 } } })).status).toBe(200);
+    expect((await h.call("PUT", "/v1/settings/access_log", { body: { value: { custom_fields: { who: "{{ nobody.home }}" } } } })).status).toBe(422);
+    expect((await h.call("PUT", "/v1/settings/access_log", { body: { value: { sink: "stdout", custom_fields: { tenant: "{{ workspace.slug }}" } } } })).status).toBe(200);
   });
 
   it("a client certificate towards the upstream is referenced by id, and its key reaches nodes sealed", async () => {

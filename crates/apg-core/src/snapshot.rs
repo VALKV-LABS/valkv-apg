@@ -256,6 +256,22 @@ struct WorkspaceEntry {
     spec: Workspace,
 }
 
+/// The `access_log` setting (spec §12.2).
+#[derive(Debug, Clone)]
+pub struct AccessLogSetting {
+    /// `stdout`, `off` or `file:<path>`. `None` means the default, `stdout`.
+    pub sink: Option<String>,
+    pub sample_rate: f64,
+    /// Field name to template.
+    pub custom_fields: Vec<(String, Template)>,
+}
+
+impl Default for AccessLogSetting {
+    fn default() -> Self {
+        Self { sink: None, sample_rate: 1.0, custom_fields: Vec::new() }
+    }
+}
+
 /// A hostname to obtain a certificate for from an ACME authority.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AcmeHost {
@@ -283,6 +299,7 @@ pub struct Snapshot {
     flags: HashMap<String, bool>,
     error_responses: HashMap<String, CompiledErrorResponse>,
     pub identity_headers: bool,
+    pub access_log: AccessLogSetting,
     route_count: usize,
     pub report: BuildReport,
 }
@@ -367,6 +384,14 @@ impl Snapshot {
                     }
                 }
                 "identity_headers" => snap.identity_headers = value.as_bool().unwrap_or(true),
+                "access_log" => {
+                    snap.access_log = AccessLogSetting {
+                        sink: value.get("sink").and_then(|s| s.as_str()).map(str::to_string),
+                        sample_rate: value.get("sample_rate").and_then(|r| r.as_f64()).unwrap_or(1.0),
+                        // A field whose template does not compile is left out; the loaders refuse it up front.
+                        custom_fields: value.get("custom_fields").and_then(|f| f.as_object()).into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), Template::compile(v.as_str()?).ok()?))).collect(),
+                    };
+                }
                 _ => {}
             }
         }

@@ -314,7 +314,7 @@ step("behind a trusted proxy the forwarded client address is honoured (HDR-2)", 
 
 step("metrics are exposed on the management port only", async () => {
   const m = await http("GET", `${MGMT}/metrics`);
-  assert.ok(m.text.includes('apg_requests_total{status_class="2xx"}'));
+  assert.ok(/apg_requests_total{route="[^"]+",service="[^"]+",status_class="2xx"}/.test(m.text));
   assert.ok(m.text.includes('apg_gateway_errors_total{code="NO_ROUTE"}'));
   assert.ok(m.text.includes('apg_limited_total{type="rate_limit"}'));
   // the traffic listener does not serve them: /metrics there is just an unmatched path

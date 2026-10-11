@@ -59,5 +59,14 @@ the project uses [Semantic Versioning](https://semver.org/).
 - Templates in plugin configuration, checked when written; secret-typed values read
   from the node's environment or a file, or sealed by the control plane.
 - The TLS listener asks for a client certificate on names where `mtls_auth` applies.
+- Usage metering: requests, statuses, transferred body bytes and latency per workspace,
+  service, route and optionally consumer, in clock-aligned windows that survive a
+  control-plane outage and a node restart; hourly and daily rollups; `GET /v1/usage`;
+  a file sink in standalone mode.
+- Observability: request metrics labelled by route and service with a cap on label
+  pairs, upstream time and body bytes; a JSON access log with a chosen sink, sampling
+  and custom fields, credentials in the query masked; W3C trace context continued and
+  sent upstream; backend health in node heartbeats; a Grafana dashboard and Prometheus
+  alert rules in `deploy/observability/`.
 - Node sources imported from the seed and moved to the `apg` namespace
   (environment variables, metrics, crate and binary names).

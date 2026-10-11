@@ -18,6 +18,8 @@ pub const READ_VARIABLES: &[&str] = &[
     "APG_SECRET_KEY", "APG_SECRET_KEY_FILE", "APG_SECRET_KEY_PREVIOUS", "APG_TLS_MIN_VERSION", "APG_ACME_EMAIL",
     "APG_ACME_DIRECTORY_URL", "APG_ACME_DNS_PROVIDER", "APG_ACME_DNS_WEBHOOK_URL", "APG_ACME_DNS_WEBHOOK_SECRET",
     "APG_ACME_DNS_PROPAGATION_SECS", "APG_ACME_INSECURE_DIRECTORY", "APG_TEMPLATE_ENV_ALLOW", "APG_CACHE_MEMORY_BYTES",
+    "APG_USAGE_FLUSH_INTERVAL_SECS", "APG_USAGE_BY_CONSUMER", "APG_USAGE_SINK", "APG_METRICS_MAX_SERIES", "APG_METRICS_WORKSPACE_LABEL",
+    "APG_LOG_REDACT_QUERY", "APG_OTLP_ENDPOINT", "APG_TRACE_SAMPLE_RATIO",
 ];
 
 /// Where the node reads configuration from (spec §2.2).
@@ -82,6 +84,12 @@ pub struct Config {
     pub template_env_allow: Vec<String>,
     /// Memory budget of the response cache.
     pub cache_bytes: usize,
+    /// Length of a usage window, and whether usage is kept per consumer.
+    pub usage_interval_secs: u64,
+    pub usage_by_consumer: bool,
+    /// File mode: where usage windows are written, if anywhere.
+    pub usage_file: Option<String>,
+    pub metrics_max_series: usize,
 }
 
 impl Config {
@@ -249,6 +257,24 @@ impl Config {
         };
         let acme = crate::acme::Settings { email: get(env, "APG_ACME_EMAIL"), directory_url, insecure_directory, dns_webhook };
 
+        let usage_file = match get(env, "APG_USAGE_SINK").as_deref() {
+            None | Some("none") => None,
+            Some(value) => match value.strip_prefix("file:").filter(|p| !p.is_empty()) {
+                Some(path) => Some(path.to_string()),
+                None => anyhow::bail!("APG_USAGE_SINK must be 'none' or 'file:<path>'; got '{value}'"),
+            },
+        };
+        // Documented, not built: refuse them rather than start a node that silently lacks what was asked for.
+        if get(env, "APG_OTLP_ENDPOINT").is_some() {
+            anyhow::bail!("APG_OTLP_ENDPOINT is not available in this build yet: trace context is propagated and logged, but spans are not exported");
+        }
+        if get(env, "APG_TRACE_SAMPLE_RATIO").is_some_and(|v| v.parse::<f64>().ok() != Some(0.0)) {
+            anyhow::bail!("APG_TRACE_SAMPLE_RATIO is not available in this build yet; leave it unset");
+        }
+        if boolean("APG_METRICS_WORKSPACE_LABEL", &get(env, "APG_METRICS_WORKSPACE_LABEL").unwrap_or_else(|| "false".into()))? {
+            anyhow::bail!("APG_METRICS_WORKSPACE_LABEL is not available in this build yet; leave it unset");
+        }
+
         let listen_https = listener(env, "APG_LISTEN_HTTPS", "0.0.0.0:8443")?;
         let listen_http = listener(env, "APG_LISTEN_HTTP", "0.0.0.0:8080")?;
         if listen_https.is_none() && listen_http.is_none() {
@@ -277,10 +303,15 @@ impl Config {
                 dns_refresh: std::time::Duration::from_secs(number("APG_DNS_REFRESH_SECS", 30, 5, 300)?),
                 backend_allow: parse_cidr_list(&get(env, "APG_BACKEND_ALLOW_CIDRS").unwrap_or_default()).map_err(|e| anyhow::anyhow!("APG_BACKEND_ALLOW_CIDRS: {e}"))?,
                 secrets: secrets.clone(),
+                redact_query: get(env, "APG_LOG_REDACT_QUERY").unwrap_or_else(|| "apikey,token,access_token,signature".into()).split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
             },
             secrets,
             tls13_only,
             acme,
+            usage_interval_secs: number("APG_USAGE_FLUSH_INTERVAL_SECS", 60, 1, 3600)?,
+            usage_by_consumer: boolean("APG_USAGE_BY_CONSUMER", &get(env, "APG_USAGE_BY_CONSUMER").unwrap_or_else(|| "false".into()))?,
+            usage_file,
+            metrics_max_series: number("APG_METRICS_MAX_SERIES", 10_000, 1, 10_000_000)? as usize,
             cache_bytes: number("APG_CACHE_MEMORY_BYTES", 268_435_456, 0, 1 << 40)? as usize,
             template_env_allow: get(env, "APG_TEMPLATE_ENV_ALLOW").unwrap_or_default().split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
         })

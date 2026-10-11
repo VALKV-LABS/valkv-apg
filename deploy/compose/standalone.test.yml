@@ -7,6 +7,11 @@ services:
       APG_ACME_DIRECTORY_URL: https://pebble:14000/dir
       APG_ACME_INSECURE_DIRECTORY: "true"
       APG_ALLOW_TEST_MODES: "true"
+      # Usage goes to a file the test runner can read, in short windows.
+      APG_USAGE_FLUSH_INTERVAL_SECS: "5"
+      APG_USAGE_SINK: file:/usage-out/usage
+    volumes:
+      - usage-out:/usage-out
     networks:
       default:
         # The name the test authority resolves when it validates a challenge.
@@ -14,6 +19,19 @@ services:
     depends_on:
       pebble:
         condition: service_started
+      usage-init:
+        condition: service_completed_successfully
+
+  # Makes the usage volume writable by the node's unprivileged user.
+  usage-init:
+    image: alpine:3
+    volumes:
+      - usage-out:/usage-out
+    command: ["sh", "-c", "chmod 777 /usage-out"]
+
+  e2e:
+    volumes:
+      - usage-out:/usage-out:ro
 
   node-redirect:
     environment:
@@ -28,3 +46,6 @@ services:
     profiles: ["test"]
     environment:
       PEBBLE_VA_NOSLEEP: "1"
+
+volumes:
+  usage-out:
