@@ -252,6 +252,9 @@ fn run(upgrade: bool) -> anyhow::Result<()> {
         grace_period_seconds: Some(0),
         graceful_shutdown_timeout_seconds: Some(config.shutdown_grace_secs),
         upgrade_sock: format!("{}/upgrade.sock", config.data_dir.trim_end_matches('/')),
+        // The framework's default is one worker thread per service, which leaves
+        // every other core idle. Use what the machine (or the container's CPU limit) offers.
+        threads: std::thread::available_parallelism().map_or(2, std::num::NonZero::get),
         ..ServerConf::default()
     };
     let opt = pingora_core::server::configuration::Opt { upgrade, ..Default::default() };

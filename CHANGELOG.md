@@ -61,6 +61,8 @@ the project uses [Semantic Versioning](https://semver.org/).
 - Documentation: getting started, concepts, guides, a reference generated from the
   schemas and the code, operations pages with runbooks and a threat model, and a
   comparison with other gateways. `make docs-check` validates every example.
+- The node now uses every available core for proxying. It ran on one worker thread
+  before, whatever the machine had.
 - `jwt_auth.jwks_cache_secs` below 30 is now honoured; it was held back by the limit on
   refreshes that tokens can provoke.
 - A smoke test for any deployment (`tests/smoke.sh`): it configures routes of its own,

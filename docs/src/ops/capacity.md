@@ -1,6 +1,6 @@
 # Capacity planning
 
-What each part needs, what makes it need more, and what to watch. The project has not yet published benchmark figures; the numbers below are sizing guidance to start from, not measurements. Measure with your own traffic before committing to a size.
+What each part needs, what makes it need more, and what to watch. The sizes below are guidance to start from. Measure with your own traffic before committing to one; `make bench-throughput` and `make bench-scale` are the project's own measurements, and [what they showed](#what-has-been-measured) is at the end of this page.
 
 ## Nodes
 
@@ -68,3 +68,27 @@ make bench-propagation
 | `apg_certs_expiring{within="7d"}` above 0 | Renewal is failing |
 
 Ready-made rules are in `deploy/observability/alerts.yaml`.
+
+## What has been measured
+
+Two benchmarks are in the repository. Their results depend on the machine; these are from a development laptop, not from server hardware, and are here so that you know what was and was not shown.
+
+**A large configuration** (`make bench-scale`): one node's configuration with 100,000 routes, 20,000 workspaces, 100,000 domains and 200,000 consumers.
+
+| | Result |
+|---|---|
+| Building the snapshot | 1.5 s |
+| Matching a request to a route | median 1.2 µs, 99th percentile 7 µs |
+| Memory for the configuration | about 730 MiB |
+
+Matching does not slow down as the number of routes grows, because routes are indexed by workspace and host.
+
+**Throughput** (`make bench-throughput`): one node, a release build, against a fast upstream, with the load generator, the node and the upstream sharing 8 logical CPUs inside Docker Desktop.
+
+| | Requests per second | 99th percentile latency at full load |
+|---|---|---|
+| The upstream alone | 55,000 | 17 ms |
+| Through the gateway | 11,900 | 29 ms |
+| Through the gateway with an API key and a rate limit | 10,700 | 29 ms |
+
+An API key check and a rate limit together cost about a tenth of the gateway's throughput. The gateway's own figure here is well below the project's goal of 30,000 requests a second per node; that goal has not been demonstrated yet, and these numbers should not be read as what server hardware would do. Size from your own measurement.

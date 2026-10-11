@@ -106,7 +106,7 @@ canary-rehearsal:
 # A new process takes over a running node's listeners; no request may fail
 # (spec PKG-7). Runs inside the node image, so it needs `make build` first.
 e2e-upgrade:
-	docker run --rm -v "$(CURDIR)/tests/e2e/upgrade.sh:/upgrade.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /upgrade.sh
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/tests/e2e/upgrade.sh:/upgrade.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /upgrade.sh
 
 # One snapshot of 100,000 routes, 20,000 workspaces, 100,000 domains and 200,000 consumers:
 # build time, match time, memory (spec NFR-4). Optimised build of the core crate only.
