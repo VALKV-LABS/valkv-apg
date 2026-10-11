@@ -1,5 +1,11 @@
 # valkv-apg
 
+[![ci](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/ci.yml/badge.svg)](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/ci.yml)
+[![release](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/release.yml/badge.svg)](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/release.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Docker: gateway](https://img.shields.io/docker/v/valkv-labs/valkv-apg?label=valkv-apg&sort=semver)](https://hub.docker.com/r/valkv-labs/valkv-apg)
+[![Docker: control plane](https://img.shields.io/docker/v/valkv-labs/valkv-apg-admin?label=valkv-apg-admin&sort=semver)](https://hub.docker.com/r/valkv-labs/valkv-apg-admin)
+
 Open-source API gateway for multi-tenant platforms. Runs from a single YAML
 file or a Postgres-backed control plane, with per-tenant routing, limits, usage
 metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudflare/pingora).
@@ -74,9 +80,21 @@ docker run --rm -v "$PWD/deploy/compose/standalone:/cfg:ro" valkv-labs/valkv-apg
 | Docker Compose | [`deploy/compose/standalone.yml`](deploy/compose/standalone.yml) for one node and a file; [`deploy/compose/database.yml`](deploy/compose/database.yml) for a control plane, Postgres and two nodes |
 | Kubernetes | `helm install apg deploy/helm/valkv-apg -f my-values.yaml`. It expects a Postgres you provide. See [`values.yaml`](deploy/helm/valkv-apg/values.yaml) |
 | A Linux host | The release tarball holds the binary, [`valkv-apg.service`](deploy/systemd/valkv-apg.service) and its environment file. `systemctl reload valkv-apg` swaps in a new binary without dropping a connection (standalone mode) |
+| A cloud trial in one command | [`deploy/lightsail`](deploy/lightsail/README.md): one Amazon Lightsail instance with the gateway, control plane, console and sample upstreams, followed by a smoke test of every feature |
 | AWS | [`deploy/terraform/aws`](deploy/terraform/aws/README.md): load balancers, auto-scaling groups, managed Postgres, with a [cost estimate](deploy/terraform/aws/COST.md) |
 
-Upgrade the control plane first, then the nodes. A node keeps serving from its cache while the control plane is away.
+Upgrade the control plane first, then the nodes. A node keeps serving from its cache while the control plane is away. [Rolling out a new version, and rolling it back](docs/ops/rollout.md) has the stages, the promotion criteria and the exact commands.
+
+### Images
+
+Two images are published for `linux/amd64` and `linux/arm64`:
+
+| Image | What it is | When you need it |
+|---|---|---|
+| `valkv-labs/valkv-apg` | The gateway (the node) | Always. On its own it is a complete gateway driven by one YAML file |
+| `valkv-labs/valkv-apg-admin` | The control plane: Admin API, the console at `/ui/`, and the configuration API nodes poll | When configuration lives in Postgres and is managed through the API, the console or `apgctl` |
+
+They are kept apart on purpose: nodes are many, face the internet and hold no database connection; the control plane is small, private and holds the secrets. A tagged release publishes both, signed, with a bill of materials; each merge to `main` publishes both as `edge`.
 
 ## Layout
 
@@ -103,6 +121,9 @@ make integ            # admin, CLI and browser tests, then end-to-end suites
 make e2e MODE=file    # the routing and upstream suites against a standalone node
 make e2e-resilience   # control plane down, restart from cache, resync
 make e2e-upgrade      # a new binary takes over the listeners; no request fails
+make e2e-skew         # nodes step over events from a newer control plane
+make smoke            # every feature, expected against actual
+make canary-rehearsal # promote a healthy canary, roll back a faulty one
 make lint-helm lint-terraform
 make down
 make lint

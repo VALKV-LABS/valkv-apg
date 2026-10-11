@@ -15,7 +15,7 @@ CLI_DOCKER   := cli/Dockerfile
 UI_DOCKER    := ui/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew smoke canary-rehearsal bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -85,6 +85,19 @@ endif
 # plane, and that a node resyncs when it must. Needs `make up` first.
 e2e-resilience:
 	sh tests/e2e/resilience.sh
+
+# Change events from a newer control plane must be stepped over, never fatal (spec PKG-2).
+e2e-skew:
+	sh tests/e2e/skew.sh
+
+# One request through every class of plugin, and a change seen on every node (spec PKG-6).
+# Against the Compose stack here; against any deployment with tests/smoke.sh.
+smoke:
+	MSYS_NO_PATHCONV=1 $(COMPOSE) run --rm -e APG_ADMIN_URL=http://admin:9000 -e APG_ADMIN_TOKEN=apg_at_dev-only-admin-token-do-not-use -e APG_GATEWAY_URL=http://node:8080 -e SMOKE_TLS_URL=https://node:8443 -e SMOKE_SKIP_USAGE e2e node /repo/tests/smoke.mjs
+
+# A canary stage that is promoted, one with injected errors that is rolled back, and the rollback itself.
+canary-rehearsal:
+	sh tests/canary/rehearse.sh
 
 # A new process takes over a running node's listeners; no request may fail
 # (spec PKG-7). Runs inside the node image, so it needs `make build` first.

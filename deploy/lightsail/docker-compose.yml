@@ -1,0 +1,81 @@
+# valkv-apg on one machine, to try it: the gateway, its control plane with the
+# console, Postgres, and two small upstreams to route to.
+#
+# Not a production layout: everything shares one host and the Admin API speaks
+# plain HTTP. See deploy/terraform/aws and deploy/helm for the real thing.
+#
+# The secrets come from the .env file next to this one (launch.sh writes it).
+
+name: valkv-apg-trial
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: apg
+      POSTGRES_PASSWORD: ${APG_DB_PASSWORD:?set in .env}
+      POSTGRES_DB: apg
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apg -d apg"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # The control plane: Admin API, the console at /ui/, and the config API the gateway polls.
+  admin:
+    image: ${APG_ADMIN_IMAGE:-valkv-labs/valkv-apg-admin:latest}
+    restart: unless-stopped
+    environment:
+      APG_DATABASE_URL: postgres://apg:${APG_DB_PASSWORD}@postgres:5432/apg
+      APG_SECRET_KEY: ${APG_SECRET_KEY:?set in .env}
+      APG_BOOTSTRAP_ADMIN_TOKEN: ${APG_ADMIN_TOKEN:?set in .env}
+      APG_BOOTSTRAP_NODE_TOKEN: ${APG_NODE_TOKEN:?set in .env}
+      APG_DEBUG_NODE_URL: http://gateway:9100
+      APG_UI_BRAND_NAME: ${APG_UI_BRAND_NAME:-valkv-apg}
+    ports:
+      - "${APG_ADMIN_PORT:-9000}:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # The gateway. HTTP is served as is (no redirect to HTTPS) so the trial works
+  # by IP address, before any domain or certificate exists.
+  gateway:
+    image: ${APG_NODE_IMAGE:-valkv-labs/valkv-apg:latest}
+    restart: unless-stopped
+    environment:
+      APG_CONFIG_SOURCE: api_poll
+      APG_CONFIG_URL: http://admin:9000/dp
+      APG_NODE_ID: trial-1
+      APG_NODE_TOKEN: ${APG_NODE_TOKEN}
+      APG_SECRET_KEY: ${APG_SECRET_KEY}
+      APG_HTTP_MODE: proxy
+      APG_USAGE_FLUSH_INTERVAL_SECS: "15"
+      APG_ACME_EMAIL: ${APG_ACME_EMAIL:-}
+    ports:
+      - "${APG_HTTP_PORT:-80}:8080"
+      - "${APG_HTTPS_PORT:-443}:8443"
+    volumes:
+      - gateway-cache:/var/lib/apg
+    depends_on:
+      admin:
+        condition: service_healthy
+
+  # Upstreams to route to. `echo` answers with a JSON description of the request
+  # it received, which is what the smoke test reads.
+  echo:
+    image: mendhak/http-https-echo:35
+    restart: unless-stopped
+    environment:
+      HTTP_PORT: "8080"
+
+  hello:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  gateway-cache:

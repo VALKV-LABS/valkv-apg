@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "services": [
+    { "name": "echo", "labels": { "suite": "demo" }, "backends": [{ "target": "echo:8080" }] },
+    { "name": "hello", "labels": { "suite": "demo" }, "backends": [{ "target": "hello:80" }] }
+  ],
+  "consumers": [
+    {
+      "name": "demo-app",
+      "labels": { "suite": "demo" },
+      "credentials": [{ "name": "key", "type": "key", "key": "${DEMO_KEY}", "labels": { "suite": "demo" } }]
+    }
+  ],
+  "routes": [
+    {
+      "name": "hello",
+      "labels": { "suite": "demo" },
+      "service": "hello",
+      "paths": ["/hello"],
+      "strip_path": true
+    },
+    {
+      "name": "echo",
+      "labels": { "suite": "demo" },
+      "service": "echo",
+      "paths": ["/echo"]
+    },
+    {
+      "name": "private",
+      "labels": { "suite": "demo" },
+      "service": "echo",
+      "paths": ["/private"],
+      "plugins": [
+        { "type": "key_auth", "labels": { "suite": "demo" } },
+        { "type": "rate_limit", "labels": { "suite": "demo" }, "config": { "per_second": 2, "burst": 5, "scope": "consumer" } }
+      ]
+    }
+  ]
+}

@@ -55,6 +55,13 @@ the project uses [Semantic Versioning](https://semver.org/).
 - Route tester: nodes answer `GET /debug/match` on the management listener with the
   route a request would hit and why the others were not chosen; `GET /v1/debug/match`
   and `apgctl route match` ask a node (`APG_DEBUG_NODE_URL`).
+- A smoke test for any deployment (`tests/smoke.sh`): it configures routes of its own,
+  sends requests through every class of plugin and prints expected against actual.
+- `deploy/canary/check.mjs` decides promote, hold or roll back from the nodes' own
+  metrics; `docs/ops/rollout.md` is the rollout and rollback runbook for Kubernetes,
+  Compose, systemd and the AWS reference.
+- `deploy/lightsail`: one command starts a trial on an Amazon Lightsail instance and
+  smoke-tests it.
 - `valkv-apg --upgrade`: a new process takes over the listening sockets of a running
   standalone node, which then drains and exits. No request is dropped.
 - `schemas/unbuilt.yaml`: the keys no node enforces yet. The file loader and the admin

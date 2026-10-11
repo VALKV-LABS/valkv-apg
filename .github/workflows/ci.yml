@@ -61,6 +61,12 @@ jobs:
       - run: make up
       - run: make integ
       - run: make e2e-resilience
+      - name: Version skew
+        run: make e2e-skew
+      - name: Smoke test
+        run: make smoke
+      - name: Canary rehearsal
+        run: make canary-rehearsal
       - if: failure()
         run: docker compose -f deploy/compose/database.yml -p valkv-apg logs --no-color --tail=200
       - if: always()
