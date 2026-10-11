@@ -469,8 +469,17 @@ pub fn check(resources: &Resources, read: Read<'_>) -> Vec<Fault> {
 
 // ── The registry ─────────────────────────────────────────────────────────────
 
+/// How long an address that could not be connected to is passed over the first
+/// time, while its name has other addresses. It doubles with each further
+/// failure, up to `UNREACHABLE_AT_MOST`.
+const UNREACHABLE_FOR: Duration = Duration::from_secs(30);
+const UNREACHABLE_AT_MOST: Duration = Duration::from_secs(600);
+
 pub struct Upstreams {
     settings: Settings,
+    /// Addresses a connection could not be made to: until when each is passed
+    /// over, and how many times in a row it has failed.
+    unreachable: DashMap<IpAddr, (Instant, u32)>,
     services: DashMap<String, Arc<ServiceState>>,
     dns: Dns,
     address_rotation: AtomicUsize,
@@ -486,7 +495,7 @@ impl Default for Upstreams {
 
 impl Upstreams {
     pub fn new(settings: Settings) -> Self {
-        Self { settings, services: DashMap::new(), dns: Dns::default(), address_rotation: AtomicUsize::new(0), plan: ArcSwap::from_pointee(Vec::new()), wake: Notify::new() }
+        Self { settings, unreachable: DashMap::new(), services: DashMap::new(), dns: Dns::default(), address_rotation: AtomicUsize::new(0), plan: ArcSwap::from_pointee(Vec::new()), wake: Notify::new() }
     }
 
     fn service(&self, entry: &ServiceEntry) -> Arc<ServiceState> {
@@ -764,11 +773,31 @@ impl Upstreams {
         if allowed.is_empty() {
             return Err("the backend address is not public, and this service may only reach public addresses");
         }
+        // A name often has an address this node cannot use: an IPv6 address
+        // where there is no IPv6 route, a record for a host that is gone. One
+        // that just failed is passed over while the name has another.
+        let usable: Vec<IpAddr> = if self.unreachable.is_empty() {
+            Vec::new()
+        } else {
+            let now = Instant::now();
+            allowed.iter().copied().filter(|ip| self.unreachable.get(ip).is_none_or(|e| now >= e.0)).collect()
+        };
+        let pool = if usable.is_empty() { &allowed } else { &usable };
         let slot = match key {
             Some(k) => hash_parts(&[k]) as usize,
             None => self.address_rotation.fetch_add(1, Ordering::Relaxed),
         };
-        Ok(SocketAddr::new(allowed[slot % allowed.len()], port))
+        Ok(SocketAddr::new(pool[slot % pool.len()], port))
+    }
+
+    /// A connection to `addr` could not be made. Other addresses of the same
+    /// name are preferred for a while, longer each time it happens again.
+    pub fn connect_failed(&self, addr: SocketAddr) {
+        let now = Instant::now();
+        let mut entry = self.unreachable.entry(addr.ip()).or_insert((now, 0));
+        let strikes = entry.1.saturating_add(1);
+        let pause = UNREACHABLE_FOR.saturating_mul(1u32 << (strikes - 1).min(10)).min(UNREACHABLE_AT_MOST);
+        *entry = (now + pause, strikes);
     }
 
     /// The connection settings for one attempt (spec §7.4, §7.6). `budget` is
@@ -829,6 +858,10 @@ impl Upstreams {
                     probes.insert(spec.key.clone(), (spec.fingerprint.clone(), tokio::spawn(self.clone().probe_loop(connector.clone(), spec.clone()))));
                 }
             }
+
+            // An address that has behaved for a while is forgotten, so the list cannot grow without bound.
+            let now = Instant::now();
+            self.unreachable.retain(|_, (until, _)| now < *until + UNREACHABLE_AT_MOST);
 
             let full = last_full.is_none_or(|at| at.elapsed() >= self.settings.dns_refresh);
             self.dns.refresh(full).await;
@@ -1269,6 +1302,40 @@ mod tests {
         assert_eq!(failure_reason(&Error::explain(ErrorType::ReadTimedout, "x")), "no answer in time");
         assert!(!failure_reason(&Error::explain(ErrorType::ConnectError, "10.0.0.1:80")).contains("10.0.0.1"));
         assert_eq!(connect_failure(&std::io::ErrorKind::ConnectionRefused.into()), "connection refused");
+    }
+
+    // spec UP-5
+    #[tokio::test]
+    async fn an_address_that_cannot_be_connected_to_is_passed_over_while_the_name_has_another() {
+        let (up, _snap, svc) = setup(json!({ "name": "s", "backends": [{ "target": "two.test:80" }] }), &[]);
+        let v4: IpAddr = "192.0.2.1".parse().unwrap();
+        let v6: IpAddr = "2001:db8::1".parse().unwrap();
+        up.dns.cache.insert("two.test".into(), Arc::new(vec![v4, v6]));
+        let backend = &svc.spec.backends[0];
+        let mut seen = HashSet::new();
+        for _ in 0..4 {
+            seen.insert(up.address(&svc, backend, None).await.unwrap().ip());
+        }
+        assert_eq!(seen.len(), 2, "requests spread over every address of the name");
+
+        // The node has no route to one of them: after the first failure it is left alone.
+        up.connect_failed(SocketAddr::new(v6, 80));
+        for _ in 0..20 {
+            assert_eq!(up.address(&svc, backend, None).await.unwrap().ip(), v4);
+        }
+        assert_eq!(up.address(&svc, backend, Some("k")).await.unwrap().ip(), v4, "with a hash key too");
+        // It fails again: the pause doubles, up to a limit.
+        let first = up.unreachable.get(&v6).unwrap().0;
+        up.connect_failed(SocketAddr::new(v6, 80));
+        assert!(up.unreachable.get(&v6).unwrap().0 >= first + UNREACHABLE_FOR);
+        for _ in 0..40 {
+            up.connect_failed(SocketAddr::new(v6, 80));
+        }
+        assert!(up.unreachable.get(&v6).unwrap().0 <= Instant::now() + UNREACHABLE_AT_MOST);
+
+        // Every address failed: one is used anyway, since nothing else is left.
+        up.connect_failed(SocketAddr::new(v4, 80));
+        assert!(up.address(&svc, backend, None).await.is_ok());
     }
 
     #[tokio::test]

@@ -5,6 +5,16 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- A backend name with an address the node cannot reach (an IPv6 address where there is no
+  IPv6 route, for instance) no longer fails a share of requests with `502`. An address a
+  connection could not be made to is passed over while the name has another, for 30
+  seconds at first and longer each time it fails again.
+- The node's JSON log no longer carries the source file, line and module path of library
+  code in every line.
+- A backend that answers on one node is reported healthy even when another node has sent
+  it nothing yet.
+
 ### Added
 - Backend health with reasons. A node reports each backend as healthy, failing (with why:
   connection refused, the host name does not resolve, a timeout, a bad status) or not

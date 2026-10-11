@@ -189,6 +189,8 @@ describe("backend health", () => {
       { target: "10.0.0.1:80", state: "unhealthy", reason: "connection refused", in_rotation: false, health_check: true, circuit: "open" },
       { target: "10.0.0.2:80", state: "healthy", in_rotation: true, health_check: true, circuit: "closed" },
     ]);
+    // A node that has sent a backend nothing does not outvote the nodes that got an answer.
+    await beat("h3", [{ target: "10.0.0.2:80", state: "unknown", in_rotation: true, health_check: false, circuit: "closed" }]);
     // A node from before per-backend reports says nothing about any backend.
     await h.call("POST", "/dp/heartbeat", { ...node(), body: { node_id: "h-old", applied_seq: 1, backends: [{ service_id: id, name: "health-svc", healthy: 2, unhealthy: 0 }] } });
 
@@ -200,7 +202,8 @@ describe("backend health", () => {
     expect(first.nodes[0].seen_at).toBe("2025-10-09T08:53:20.000Z");
     expect([second.state, second.reason]).toEqual(["healthy", undefined]);
     expect([third.state, third.nodes]).toEqual(["down", []]);
-    expect(one.live_nodes).toBeGreaterThanOrEqual(3);
+    expect(second.nodes.map((n: any) => n.state)).toEqual(["healthy", "healthy", "unknown"]);
+    expect(one.live_nodes).toBeGreaterThanOrEqual(4);
     expect((await h.call("GET", `/v1/workspaces/default/services/${id}/health`)).json.name).toBe("health-svc");
 
     const all = (await h.call("GET", "/v1/workspaces/default/health")).json;

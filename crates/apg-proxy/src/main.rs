@@ -71,7 +71,7 @@ fn validate(args: &[String]) -> i32 {
 fn init_logging(config: &Config) {
     let filter = tracing_subscriber::EnvFilter::new(&config.log_level);
     if config.log_json {
-        tracing_subscriber::fmt().json().with_env_filter(filter).init();
+        tracing_subscriber::fmt().event_format(apg_proxy::logfmt::JsonLines).with_env_filter(filter).init();
     } else {
         tracing_subscriber::fmt().with_env_filter(filter).init();
     }

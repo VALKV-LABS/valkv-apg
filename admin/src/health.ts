@@ -11,15 +11,24 @@ import type { Json, Row } from "./store.js";
 
 export type HealthState = "healthy" | "unhealthy" | "unknown" | "down";
 
-/** Worst first. One node that cannot reach a backend matters more than several that can. */
-const WORST_FIRST: HealthState[] = ["unhealthy", "unknown", "healthy", "down"];
+const STATES: HealthState[] = ["unhealthy", "unknown", "healthy", "down"];
 
+/** A service is as good as its worst backend: one that is failing, or that nobody has checked, is what needs looking at. */
 function worst(states: HealthState[]): HealthState {
-  return WORST_FIRST.find((s) => states.includes(s)) ?? "unknown";
+  return STATES.find((s) => states.includes(s)) ?? "unknown";
+}
+
+/**
+ * What several nodes say about one backend. One node that cannot reach it
+ * matters more than several that can. A node that has sent it nothing knows
+ * nothing, so it does not outvote a node that got an answer.
+ */
+function agreed(states: HealthState[]): HealthState {
+  return (["unhealthy", "healthy"] as const).find((s) => states.includes(s)) ?? "unknown";
 }
 
 function stateOf(value: unknown): HealthState {
-  return WORST_FIRST.includes(value as HealthState) ? (value as HealthState) : "unknown";
+  return STATES.includes(value as HealthState) ? (value as HealthState) : "unknown";
 }
 
 /**
@@ -60,7 +69,7 @@ export function summarize(services: Row[], nodes: Row[]): Json[] {
         });
       }
       const configuredDown = backend["status"] === "down";
-      const state: HealthState = configuredDown ? "down" : seen.length === 0 ? "unknown" : worst(seen.map((n) => n["state"]));
+      const state: HealthState = configuredDown ? "down" : agreed(seen.map((n) => n["state"]));
       const failing = seen.find((n) => n["state"] === "unhealthy" && n["reason"]);
       return {
         target: backend["target"],

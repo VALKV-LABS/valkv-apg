@@ -148,6 +148,8 @@ pub struct Ctx {
     raw_query: String,
     /// When the current upstream attempt began, and how long the upstream took to answer.
     upstream_started: Option<Instant>,
+    /// The address of the attempt in progress.
+    upstream_addr: Option<std::net::SocketAddr>,
     upstream_ms: Option<u64>,
     /// Whether this request is counted in the gauge of requests in progress.
     counted_active: bool,
@@ -984,6 +986,7 @@ impl ProxyHttp for ApgProxy {
                 Ok(addr) => match upstreams.peer(&service, backend, addr, budget) {
                     Ok(peer) => {
                         ctx.upstream_started = Some(Instant::now());
+                        ctx.upstream_addr = Some(addr);
                         return Ok(Box::new(peer));
                     }
                     Err(reason) => reason,
@@ -1246,6 +1249,10 @@ impl ProxyHttp for ApgProxy {
     /// always be tried (spec UP-10).
     fn fail_to_connect(&self, session: &mut Session, _peer: &HttpPeer, ctx: &mut Self::CTX, mut e: Box<Error>) -> Box<Error> {
         self.attempt_failed(ctx, &failure_reason(&e));
+        // The address itself did not take a connection: the name's other addresses are preferred for a while.
+        if let (Some(addr), ErrorType::ConnectRefused | ErrorType::ConnectNoRoute | ErrorType::ConnectTimedout | ErrorType::ConnectError) = (ctx.upstream_addr, e.etype()) {
+            self.gateway.upstreams.connect_failed(addr);
+        }
         let timed_out = matches!(e.etype(), ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout);
         let again = (Self::may_retry(ctx, "connect_failure") || (timed_out && Self::may_retry(ctx, "timeout"))) && !session.as_ref().retry_buffer_truncated();
         e.set_retry(again);

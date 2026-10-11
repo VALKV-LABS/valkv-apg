@@ -13,6 +13,7 @@ pub mod callout;
 pub mod config;
 pub mod gateway;
 pub mod limits;
+pub mod logfmt;
 pub mod metrics;
 pub mod mgmt;
 pub mod mtls;
