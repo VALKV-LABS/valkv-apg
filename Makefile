@@ -11,9 +11,10 @@ export DOCKER_BUILDKIT := 1
 COMPOSE      := docker compose -f deploy/compose/database.yml -p valkv-apg
 NODE_DOCKER  := crates/apg-proxy/Dockerfile
 ADMIN_DOCKER := admin/Dockerfile
+CLI_DOCKER   := cli/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin integ e2e e2e-resilience e2e-upgrade bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+.PHONY: up down unit unit-rust unit-admin unit-cli integ e2e e2e-resilience e2e-upgrade bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -38,7 +39,7 @@ logs:
 ps:
 	$(COMPOSE) ps
 
-unit: unit-rust unit-admin
+unit: unit-rust unit-admin unit-cli
 
 unit-rust:
 	docker build --progress=plain -f $(NODE_DOCKER) --target test-run -t valkv-apg:test-run .
@@ -47,11 +48,17 @@ unit-admin:
 	docker build -q -f $(ADMIN_DOCKER) --target test -t valkv-apg-admin:test .
 	docker run --rm valkv-apg-admin:test
 
-# Admin integration tests against Postgres, then every end-to-end suite in
+unit-cli:
+	docker build -q -f $(CLI_DOCKER) --target test -t valkv-apg-cli:test .
+	docker run --rm valkv-apg-cli:test
+
+# Admin integration tests against Postgres, the CLI against the running stack, then every end-to-end suite in
 # api_poll mode against the running stack (spec §21).
 integ:
 	docker build -q -f $(ADMIN_DOCKER) --target test -t valkv-apg-admin:test .
 	$(COMPOSE) run --rm admin-integ
+	docker build -q -f $(CLI_DOCKER) --target test -t valkv-apg-cli:test .
+	$(COMPOSE) run --rm cli-integ
 	$(COMPOSE) run --rm --use-aliases e2e
 
 STANDALONE := docker compose -f deploy/compose/standalone.yml -f deploy/compose/standalone.test.yml --profile test

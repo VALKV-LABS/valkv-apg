@@ -27,6 +27,8 @@ jobs:
         run: make unit-rust
       - name: Admin type-check, unit tests and shared fixtures
         run: make unit-admin
+      - name: CLI type-check and unit tests
+        run: make unit-cli
 
   e2e-file:
     name: end to end, standalone node

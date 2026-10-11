@@ -70,6 +70,22 @@ services:
       postgres:
         condition: service_healthy
 
+  # The CLI's integration tests: the built apgctl against this admin and node.
+  cli-integ:
+    image: valkv-apg-cli:test
+    build:
+      context: ../..
+      dockerfile: cli/Dockerfile
+      target: test
+    profiles: ["test"]
+    environment:
+      APG_ADMIN_URL: http://admin:9000
+      APG_ADMIN_TOKEN: apg_at_dev-only-admin-token-do-not-use
+    command: ["npm", "run", "test:integ"]
+    depends_on:
+      admin:
+        condition: service_healthy
+
   # A node that polls the admin's config API. It holds no database connection.
   node:
     image: valkv-labs/valkv-apg:dev

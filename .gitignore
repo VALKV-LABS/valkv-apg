@@ -33,3 +33,4 @@ docs/book/
 /tools/debrand-denylist.txt
 /tests/e2e/seed/
 /crates/apg-proxy/seed-reference/
+/cli/schemas/
