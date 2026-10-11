@@ -23,6 +23,7 @@ help:
 build:
 	docker build -f $(NODE_DOCKER)  --target runtime --build-arg CARGO_PROFILE=dev -t valkv-labs/valkv-apg:dev .
 	docker build -f $(ADMIN_DOCKER) --target runtime -t valkv-labs/valkv-apg-admin:dev .
+	docker build -q -t valkv-apg-pebble:dev deploy/compose/pebble
 
 up: build
 	$(COMPOSE) up -d --wait
@@ -52,9 +53,9 @@ integ:
 	$(COMPOSE) run --rm admin-integ
 	$(COMPOSE) run --rm --use-aliases e2e
 
-STANDALONE := docker compose -f deploy/compose/standalone.yml --profile test
+STANDALONE := docker compose -f deploy/compose/standalone.yml -f deploy/compose/standalone.test.yml --profile test
 
-# The routing and upstream suites in one mode. The runner hosts the upstream
+# The routing, upstream and TLS suites in one mode. The runner hosts the upstream
 # suite's test servers, so it joins the network under its service name.
 # `file` uses its own stack (no control plane).
 e2e:
@@ -62,7 +63,7 @@ ifeq ($(MODE),file)
 	$(STANDALONE) up -d --wait node node-redirect
 	$(STANDALONE) run --rm --use-aliases e2e; status=$$?; $(STANDALONE) down -v --remove-orphans; exit $$status
 else
-	$(COMPOSE) run --rm --use-aliases -e MODE=$(MODE) -e SUITE=routing,upstream e2e
+	$(COMPOSE) run --rm --use-aliases -e MODE=$(MODE) -e SUITE=routing,upstream,tls e2e
 endif
 
 # Stops and starts containers to prove serving does not depend on the control

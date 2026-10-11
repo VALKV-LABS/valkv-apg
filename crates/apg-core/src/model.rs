@@ -413,6 +413,9 @@ pub struct Plugin {
 #[derive(Debug, Clone, Deserialize)]
 pub struct BaseDomain {
     pub domain: String,
+    /// Policy for the wildcard certificate that serves `{slug}.{domain}`.
+    #[serde(default)]
+    pub tls: DomainTls,
 }
 
 /// A PEM bundle used to verify upstreams (spec §4.4). "cert_file" is file mode only.
@@ -436,6 +439,9 @@ pub struct Certificate {
     pub cert_pem: Option<String>,
     #[serde(default)]
     pub key_pem: Option<String>,
+    /// The key as a control plane sends it: sealed for this certificate's id.
+    #[serde(default)]
+    pub key_ciphertext: Option<String>,
     #[serde(default)]
     pub cert_file: Option<String>,
     #[serde(default)]

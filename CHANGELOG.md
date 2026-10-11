@@ -37,5 +37,16 @@ the project uses [Semantic Versioning](https://semver.org/).
   and `apg_dns_failures_total`.
 - `schemas/unbuilt.yaml`: the keys no node enforces yet. The file loader and the admin
   both refuse them, so nothing is accepted and then ignored.
+- Certificates: nodes open keys the control plane sealed (`APG_SECRET_KEY`) and serve
+  manually uploaded certificates; domains with `tls.mode: acme` get a certificate from
+  an ACME authority without anyone asking, through HTTP-01 or DNS-01 (webhook
+  provider), and are renewed 30 days before expiry. With a control plane one node
+  issues under a lease, every node answers the challenge, and the certificate is
+  distributed to the fleet; in standalone mode the node keeps its certificates in its
+  data directory.
+- `APG_TLS_MIN_VERSION`, `APG_ACME_EMAIL`, `APG_ACME_DIRECTORY_URL`,
+  `APG_ACME_DNS_PROVIDER` and the webhook settings; metrics `apg_certs_expiring`,
+  `apg_acme_issuances_total` and `apg_acme_failures_total`.
+- Upstream client certificates now work from a control plane as well as from a file.
 - Node sources imported from the seed and moved to the `apg` namespace
   (environment variables, metrics, crate and binary names).

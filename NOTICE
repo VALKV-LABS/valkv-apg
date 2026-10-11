@@ -5,3 +5,15 @@ This product includes software developed at Valkv Labs.
 
 Parts of the node began as an internal gateway at Valkv Labs and were
 relicensed by their copyright holder under the Apache License, Version 2.0.
+
+
+## 
+1. ensure we have git hub actions to push build and images to docker hub
+2. also our page should build status i have seen those badges on other projects on readme
+3. add a deploy to aws for a user to try this in cloud
+    single aws lightsail deployment with admin ui/valkv-apg/ may be some downstream mock services could be hello world nginx or something 
+    post deployment we should have something to do smoke test all features of gateway
+    auth/rate-limiting/etc every feature and report status of expected vs actual
+
+
+4. do we support openid connect ? what feature we have vs standard api gw out there used by enterprise ? what we dont have vs whats must 

@@ -88,6 +88,11 @@ impl ApiSource {
         Ok(Self { config, applier, gateway, client })
     }
 
+    /// The HTTP client configured for this control plane (its CA and client certificate).
+    pub fn client(&self) -> reqwest::Client {
+        self.client.clone()
+    }
+
     fn base(&self) -> &str {
         self.config.url.trim_end_matches('/')
     }

@@ -15,12 +15,14 @@ const all = {
   file: [
     ["routing", "./routing.js"],
     ["upstream", "./upstream.js"],
+    ["tls", "./tls.js"],
   ],
   api_poll: [
     ["smoke", "./smoke.js"],
     ["control-plane", "./control-plane.js"],
     ["routing", "./routing.js"],
     ["upstream", "./upstream.js"],
+    ["tls", "./tls.js"],
   ],
 }[mode];
 

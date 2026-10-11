@@ -253,6 +253,14 @@ struct WorkspaceEntry {
     spec: Workspace,
 }
 
+/// A hostname to obtain a certificate for from an ACME authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AcmeHost {
+    pub hostname: String,
+    /// Prove control through a DNS record; otherwise through HTTP.
+    pub dns01: bool,
+}
+
 /// The whole configuration, indexed.
 #[derive(Debug, Default)]
 pub struct Snapshot {
@@ -265,6 +273,8 @@ pub struct Snapshot {
     domains_exact: HashMap<String, String>,
     domains_wildcard: HashMap<String, String>,
     base_domains: Vec<String>,
+    /// Hostnames to hold an ACME certificate for, with the challenge type to use (spec TLS-4).
+    acme_hosts: Vec<AcmeHost>,
     pub plugins: PluginIndex,
     flags: HashMap<String, bool>,
     error_responses: HashMap<String, CompiledErrorResponse>,
@@ -338,6 +348,12 @@ impl Snapshot {
             match name.as_str() {
                 "workspace_base_domains" => {
                     if let Ok(list) = serde_json::from_value::<Vec<BaseDomain>>(value.clone()) {
+                        for b in &list {
+                            // One wildcard certificate serves every workspace's host under a base domain.
+                            if b.tls.mode == "acme" {
+                                snap.acme_hosts.push(AcmeHost { hostname: format!("*.{}", b.domain.to_ascii_lowercase()), dns01: true });
+                            }
+                        }
                         snap.base_domains = list.into_iter().map(|b| b.domain.to_ascii_lowercase()).collect();
                     }
                 }
@@ -361,6 +377,10 @@ impl Snapshot {
                 continue;
             }
             let host = d.hostname.to_ascii_lowercase();
+            if d.tls.mode == "acme" {
+                // A wildcard can only be proven through DNS.
+                snap.acme_hosts.push(AcmeHost { dns01: d.tls.challenge == "dns01" || host.starts_with('*'), hostname: host.clone() });
+            }
             match host.strip_prefix('*') {
                 Some(suffix) => snap.domains_wildcard.insert(suffix.to_string(), ws.clone()),
                 None => snap.domains_exact.insert(host, ws.clone()),
@@ -545,6 +565,11 @@ impl Snapshot {
 
     pub fn service(&self, id: &str) -> Option<&Arc<ServiceEntry>> {
         self.services.get(id)
+    }
+
+    /// Hostnames this configuration wants an ACME certificate for.
+    pub fn acme_hosts(&self) -> &[AcmeHost] {
+        &self.acme_hosts
     }
 
     /// Every service, in no particular order.
@@ -760,6 +785,35 @@ mod tests {
         assert_eq!(find(&s, "GET", "acme.gw.example.net", "/").as_deref(), Some("acme-slug"));
         // a pending domain owns nothing, so its route cannot match yet
         assert_eq!(find(&s, "GET", "soon.rival.test", "/"), None);
+    }
+
+    // spec TLS-4, DOM-3
+    #[test]
+    fn certificates_are_wanted_only_for_active_acme_domains_and_base_domains() {
+        let mut r = base();
+        r.apply(&ChangeEvent::upsert("setting", "workspace_base_domains", None, json!({ "value": [{ "domain": "gw.example.net" }, { "domain": "plain.example.net", "tls": { "mode": "none" } }] })));
+        let add = |r: &mut Resources, hostname: &str, extra: serde_json::Value| {
+            let mut data = json!({ "hostname": hostname, "status": "active" });
+            data.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            r.apply(&ChangeEvent::upsert("domain", format!("d-{hostname}"), Some(ACME.into()), data));
+        };
+        add(&mut r, "shop.acme.test", json!({}));
+        add(&mut r, "dns.acme.test", json!({ "tls": { "mode": "acme", "challenge": "dns01" } }));
+        add(&mut r, "*.wild.acme.test", json!({ "tls": { "mode": "acme" } }));
+        add(&mut r, "manual.acme.test", json!({ "tls": { "mode": "manual", "certificate": "c1" } }));
+        add(&mut r, "clear.acme.test", json!({ "tls": { "mode": "none" } }));
+        add(&mut r, "pending.acme.test", json!({ "status": "pending" }));
+        let mut wanted: Vec<(String, bool)> = Snapshot::build(&r).acme_hosts().iter().map(|h| (h.hostname.clone(), h.dns01)).collect();
+        wanted.sort();
+        assert_eq!(
+            wanted,
+            [
+                ("*.gw.example.net".to_string(), true),
+                ("*.wild.acme.test".to_string(), true),
+                ("dns.acme.test".to_string(), true),
+                ("shop.acme.test".to_string(), false),
+            ]
+        );
     }
 
     // spec CFG-3

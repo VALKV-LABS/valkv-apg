@@ -31,6 +31,7 @@ use tokio::sync::Notify;
 
 use crate::metrics;
 use crate::net::{Cidr, is_non_public, split_target};
+use crate::secrets::SecretBox;
 use crate::tls::key_matches;
 
 /// Process-level settings (spec Appendix B).
@@ -40,11 +41,13 @@ pub struct Settings {
     pub dns_refresh: Duration,
     /// Private ranges an egress-restricted service may still reach (spec SEC-4).
     pub backend_allow: Vec<Cidr>,
+    /// Opens client-certificate keys sealed by a control plane.
+    pub secrets: Option<Arc<SecretBox>>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { dns_refresh: Duration::from_secs(30), backend_allow: Vec::new() }
+        Self { dns_refresh: Duration::from_secs(30), backend_allow: Vec::new(), secrets: None }
     }
 }
 
@@ -359,7 +362,7 @@ fn pem_of(inline: &Option<String>, file: &Option<String>, what: &str, read: Read
     }
 }
 
-fn load_tls(resources: &Resources, service: &Service, read: Read<'_>) -> Result<UpstreamTls, String> {
+fn load_tls(resources: &Resources, service: &Service, read: Read<'_>, secrets: Option<&SecretBox>) -> Result<UpstreamTls, String> {
     let mut out = UpstreamTls::default();
     if service.scheme != "https" {
         return Ok(out);
@@ -379,7 +382,12 @@ fn load_tls(resources: &Resources, service: &Service, read: Read<'_>) -> Result<
         let stored = resources.get("certificate", id).ok_or_else(|| format!("client certificate '{id}' is not in the configuration"))?;
         let cert: Certificate = serde_json::from_value(stored.data.clone()).map_err(|e| format!("client certificate '{id}': {e}"))?;
         let cert_pem = pem_of(&cert.cert_pem, &cert.cert_file, &format!("client certificate '{}'", cert.name), read)?;
-        let key_pem = pem_of(&cert.key_pem, &cert.key_file, &format!("the key of client certificate '{}'", cert.name), read)?;
+        let key_pem = match (&cert.key_ciphertext, secrets) {
+            // From a control plane the key is sealed for the certificate's id.
+            (Some(sealed), Some(secrets)) if cert.key_pem.is_none() && cert.key_file.is_none() => secrets.open(sealed, &format!("certificate:{id}"))?,
+            (Some(_), None) if cert.key_pem.is_none() && cert.key_file.is_none() => return Err(format!("the key of client certificate '{}' is sealed and APG_SECRET_KEY is not set on this node", cert.name)),
+            _ => pem_of(&cert.key_pem, &cert.key_file, &format!("the key of client certificate '{}'", cert.name), read)?,
+        };
         key_matches(&cert_pem, &key_pem).map_err(|e| format!("client certificate '{}': {e}", cert.name))?;
         let chain = X509::stack_from_pem(&cert_pem).map_err(|_| format!("client certificate '{}' is not PEM", cert.name))?;
         let key = PKey::private_key_from_pem(&key_pem).map_err(|_| format!("the key of client certificate '{}' is not PEM", cert.name))?;
@@ -394,7 +402,7 @@ pub fn check(resources: &Resources, read: Read<'_>) -> Vec<Fault> {
     let mut faults = Vec::new();
     for (id, stored) in resources.kind("service") {
         let Ok(service) = serde_json::from_value::<Service>(stored.data.clone()) else { continue };
-        if let Err(message) = load_tls(resources, &service, read) {
+        if let Err(message) = load_tls(resources, &service, read, None) {
             let name = if service.name.is_empty() { id.as_str() } else { service.name.as_str() };
             faults.push(Fault::new("/services", format!("service '{name}': {message}")));
         }
@@ -458,7 +466,7 @@ impl Upstreams {
                 }
             }
 
-            let tls = load_tls(resources, spec, &|p| std::fs::read(p)).unwrap_or_else(|message| {
+            let tls = load_tls(resources, spec, &|p| std::fs::read(p), self.settings.secrets.as_deref()).unwrap_or_else(|message| {
                 tracing::error!(service = %spec.name, %message, "upstream TLS material is unusable; requests to this service will fail");
                 UpstreamTls { broken: Some(message), ..Default::default() }
             });
@@ -1107,6 +1115,14 @@ mod tests {
         assert_eq!(peer.options.ca.as_ref().map(|c| c.len()), Some(1));
         assert!(peer.client_cert_key.is_some());
         assert!(peer.options.verify_cert);
+
+        // From a control plane the client key arrives sealed; it opens with the fleet's secret key only.
+        let secrets = Arc::new(SecretBox::from_base64("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=", None).unwrap());
+        let sealed = ChangeEvent::upsert("certificate", "c1", Some("w".into()), json!({ "name": "client", "cert_pem": cert_pem, "key_ciphertext": secrets.seal(key_pem.as_bytes(), "certificate:c1") }));
+        let (up, _snap, svc) = setup_with(Settings { secrets: Some(secrets), ..Default::default() }, service(json!({ "client_certificate": "c1" })), std::slice::from_ref(&sealed));
+        assert!(up.peer(&svc, &svc.spec.backends[0], addr, None).unwrap().client_cert_key.is_some());
+        let (up, _snap, svc) = setup(service(json!({ "client_certificate": "c1" })), &[sealed]);
+        assert!(up.peer(&svc, &svc.spec.backends[0], addr, None).unwrap_err().contains("APG_SECRET_KEY"));
 
         // A reference that cannot be loaded: no connection, never a weaker one.
         let (up, _snap, svc) = setup(service(json!({ "ca_certificates": ["gone"] })), &[]);

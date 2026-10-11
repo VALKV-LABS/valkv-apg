@@ -15,6 +15,9 @@ pub const READ_VARIABLES: &[&str] = &[
     "APG_STUB_UPSTREAM", "APG_ALLOW_TEST_MODES", "APG_CONFIG_URL", "APG_ADMIN_URL", "APG_NODE_TOKEN",
     "APG_POLL_INTERVAL_MS", "APG_POLL_LIMIT", "APG_POLL_WAIT_MS", "APG_CONFIG_CLIENT_CERT", "APG_CONFIG_CLIENT_KEY",
     "APG_CONFIG_CLIENT_CA", "APG_DNS_REFRESH_SECS", "APG_BACKEND_ALLOW_CIDRS",
+    "APG_SECRET_KEY", "APG_SECRET_KEY_FILE", "APG_SECRET_KEY_PREVIOUS", "APG_TLS_MIN_VERSION", "APG_ACME_EMAIL",
+    "APG_ACME_DIRECTORY_URL", "APG_ACME_DNS_PROVIDER", "APG_ACME_DNS_WEBHOOK_URL", "APG_ACME_DNS_WEBHOOK_SECRET",
+    "APG_ACME_DNS_PROPAGATION_SECS", "APG_ACME_INSECURE_DIRECTORY",
 ];
 
 /// Where the node reads configuration from (spec §2.2).
@@ -70,6 +73,11 @@ pub struct Config {
     /// Present exactly when `source` is `ApiPoll`.
     pub api_poll: Option<ApiPoll>,
     pub upstream: crate::upstream::Settings,
+    /// Opens keys sealed by the control plane. `None` when no secret key is configured.
+    pub secrets: Option<std::sync::Arc<crate::secrets::SecretBox>>,
+    /// Refuse TLS 1.2 clients (spec TLS-2).
+    pub tls13_only: bool,
+    pub acme: crate::acme::Settings,
 }
 
 impl Config {
@@ -197,6 +205,46 @@ impl Config {
             anyhow::bail!("APG_STUB_UPSTREAM is a test mode; it needs APG_ALLOW_TEST_MODES=true");
         }
 
+        let secret_key = match (get(env, "APG_SECRET_KEY"), get(env, "APG_SECRET_KEY_FILE")) {
+            (Some(key), _) => Some(key),
+            (None, Some(path)) => Some(std::fs::read_to_string(&path).map_err(|e| anyhow::anyhow!("APG_SECRET_KEY_FILE: cannot read '{path}': {e}"))?),
+            (None, None) => None,
+        };
+        let secrets = match secret_key {
+            Some(key) => Some(std::sync::Arc::new(crate::secrets::SecretBox::from_base64(&key, get(env, "APG_SECRET_KEY_PREVIOUS").as_deref())?)),
+            None => None,
+        };
+
+        let tls13_only = one_of("APG_TLS_MIN_VERSION", &get(env, "APG_TLS_MIN_VERSION").unwrap_or_else(|| "1.2".into()), &["1.2", "1.3"])? == "1.3";
+
+        let directory_url = get(env, "APG_ACME_DIRECTORY_URL").unwrap_or_else(|| crate::acme::LETS_ENCRYPT.to_string());
+        if !(directory_url.starts_with("https://") || directory_url.starts_with("http://")) {
+            anyhow::bail!("APG_ACME_DIRECTORY_URL must start with https://; got '{directory_url}'");
+        }
+        let insecure_directory = boolean("APG_ACME_INSECURE_DIRECTORY", &get(env, "APG_ACME_INSECURE_DIRECTORY").unwrap_or_else(|| "false".into()))?;
+        if insecure_directory && !allow_test {
+            anyhow::bail!("APG_ACME_INSECURE_DIRECTORY is a test mode; it needs APG_ALLOW_TEST_MODES=true");
+        }
+        let dns_webhook = match get(env, "APG_ACME_DNS_PROVIDER") {
+            None => None,
+            Some(provider) => match one_of("APG_ACME_DNS_PROVIDER", &provider, &["webhook", "cloudflare", "route53"])? {
+                "webhook" => {
+                    let url = get(env, "APG_ACME_DNS_WEBHOOK_URL").ok_or_else(|| anyhow::anyhow!("APG_ACME_DNS_WEBHOOK_URL is required when APG_ACME_DNS_PROVIDER=webhook"))?;
+                    if !(url.starts_with("https://") || url.starts_with("http://")) {
+                        anyhow::bail!("APG_ACME_DNS_WEBHOOK_URL must start with http:// or https://; got '{url}'");
+                    }
+                    Some(crate::acme::DnsWebhook {
+                        url,
+                        secret: get(env, "APG_ACME_DNS_WEBHOOK_SECRET"),
+                        propagation: std::time::Duration::from_secs(number("APG_ACME_DNS_PROPAGATION_SECS", 30, 0, 600)?),
+                    })
+                }
+                // Refused rather than accepted and ignored: a wildcard certificate that never arrives is hard to trace back to this line.
+                other => anyhow::bail!("APG_ACME_DNS_PROVIDER={other} is not available in this build yet; use 'webhook'"),
+            },
+        };
+        let acme = crate::acme::Settings { email: get(env, "APG_ACME_EMAIL"), directory_url, insecure_directory, dns_webhook };
+
         let listen_https = listener(env, "APG_LISTEN_HTTPS", "0.0.0.0:8443")?;
         let listen_http = listener(env, "APG_LISTEN_HTTP", "0.0.0.0:8080")?;
         if listen_https.is_none() && listen_http.is_none() {
@@ -224,7 +272,11 @@ impl Config {
             upstream: crate::upstream::Settings {
                 dns_refresh: std::time::Duration::from_secs(number("APG_DNS_REFRESH_SECS", 30, 5, 300)?),
                 backend_allow: parse_cidr_list(&get(env, "APG_BACKEND_ALLOW_CIDRS").unwrap_or_default()).map_err(|e| anyhow::anyhow!("APG_BACKEND_ALLOW_CIDRS: {e}"))?,
+                secrets: secrets.clone(),
             },
+            secrets,
+            tls13_only,
+            acme,
         })
     }
 }
@@ -320,6 +372,35 @@ mod tests {
     fn the_stub_upstream_test_mode_cannot_be_enabled_by_itself() {
         assert!(err(&[("APG_STUB_UPSTREAM", "true")]).contains("APG_ALLOW_TEST_MODES"));
         assert!(load(&[("APG_STUB_UPSTREAM", "true"), ("APG_ALLOW_TEST_MODES", "true")]).unwrap().stub_upstream);
+    }
+
+    #[test]
+    fn secrets_tls_version_and_acme_settings() {
+        const KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+        let c = load(&[]).unwrap();
+        assert!(c.secrets.is_none() && !c.tls13_only && c.acme.email.is_none() && c.acme.dns_webhook.is_none());
+        assert_eq!(c.acme.directory_url, crate::acme::LETS_ENCRYPT);
+
+        let c = load(&[("APG_SECRET_KEY", KEY), ("APG_TLS_MIN_VERSION", "1.3"), ("APG_ACME_EMAIL", "ops@example.com")]).unwrap();
+        assert!(c.secrets.is_some() && c.upstream.secrets.is_some() && c.tls13_only);
+        assert_eq!(c.acme.email.as_deref(), Some("ops@example.com"));
+        // The key never shows up in debug output.
+        assert!(!format!("{c:?}").contains(KEY));
+
+        assert!(err(&[("APG_SECRET_KEY", "c2hvcnQ=")]).contains("32 random bytes"));
+        assert!(err(&[("APG_SECRET_KEY_FILE", "/no/such/file")]).contains("APG_SECRET_KEY_FILE"));
+        assert!(err(&[("APG_TLS_MIN_VERSION", "1.1")]).contains("APG_TLS_MIN_VERSION"));
+        assert!(err(&[("APG_ACME_DIRECTORY_URL", "acme.example")]).contains("APG_ACME_DIRECTORY_URL"));
+
+        let hook = load(&[("APG_ACME_DNS_PROVIDER", "webhook"), ("APG_ACME_DNS_WEBHOOK_URL", "https://dns.example/hook"), ("APG_ACME_DNS_WEBHOOK_SECRET", "s")]).unwrap().acme.dns_webhook.unwrap();
+        assert_eq!((hook.url.as_str(), hook.secret.as_deref(), hook.propagation.as_secs()), ("https://dns.example/hook", Some("s"), 30));
+        assert!(err(&[("APG_ACME_DNS_PROVIDER", "webhook")]).contains("APG_ACME_DNS_WEBHOOK_URL is required"));
+        // Providers that are documented but not built refuse to start, they are not silently ignored.
+        assert!(err(&[("APG_ACME_DNS_PROVIDER", "cloudflare")]).contains("not available in this build"));
+        assert!(err(&[("APG_ACME_DNS_PROVIDER", "bind")]).contains("must be one of"));
+
+        assert!(err(&[("APG_ACME_INSECURE_DIRECTORY", "true")]).contains("APG_ALLOW_TEST_MODES"));
+        assert!(load(&[("APG_ACME_INSECURE_DIRECTORY", "true"), ("APG_ALLOW_TEST_MODES", "true")]).unwrap().acme.insecure_directory);
     }
 
     // spec Appendix B: the documented list and the code must not drift.

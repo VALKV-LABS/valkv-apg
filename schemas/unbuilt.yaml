@@ -20,10 +20,9 @@ service:
 route:
   - { path: idle_timeout_ms, default: 300000 }
 
-# Refused by the admin only: these work from a file, where the node reads the
-# key itself, but need certificate keys delivered to nodes (build phase 2d).
-service_database_mode:
-  - { path: tls.client_certificate }
+# Refused by the admin only: keys that work from a file but not yet from a
+# control plane. Empty at present.
+service_database_mode: []
 
 # Settings refused everywhere.
 settings:

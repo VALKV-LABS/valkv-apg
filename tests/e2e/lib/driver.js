@@ -53,6 +53,7 @@ export async function adminCall(method, path, body) {
 /** Makes one workspace's resources match the document. */
 async function syncWorkspace(ws, section) {
   const base = `/v1/workspaces/${ws}`;
+  for (const { name, ...rest } of section.certificates ?? []) await adminCall("PUT", `${base}/certificates/${name}`, rest);
   for (const { hostname, ...rest } of section.domains ?? []) {
     await adminCall("PUT", `${base}/domains/${hostname.replace("*.", "wildcard.")}`, { hostname, ...rest });
   }

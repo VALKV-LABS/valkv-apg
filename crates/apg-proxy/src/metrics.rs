@@ -45,6 +45,15 @@ pub static BACKEND_CIRCUIT_OPEN: LazyLock<IntGaugeVec> = LazyLock::new(|| {
 pub static DNS_FAILURES: LazyLock<IntCounter> =
     LazyLock::new(|| register_int_counter!("apg_dns_failures_total", "Backend host names that failed to resolve.").unwrap());
 
+pub static CERTS_EXPIRING: LazyLock<IntGaugeVec> =
+    LazyLock::new(|| register_int_gauge_vec!("apg_certs_expiring", "Served certificates that expire within the window.", &["within"]).unwrap());
+
+pub static ACME_ISSUANCES: LazyLock<IntCounter> =
+    LazyLock::new(|| register_int_counter!("apg_acme_issuances_total", "Certificates this node obtained from the ACME authority.").unwrap());
+
+pub static ACME_FAILURES: LazyLock<IntCounterVec> =
+    LazyLock::new(|| register_int_counter_vec!("apg_acme_failures_total", "Failed attempts to obtain a certificate, by the step that failed.", &["reason"]).unwrap());
+
 pub static CONFIG_CONVERGED: LazyLock<IntGauge> =
     LazyLock::new(|| register_int_gauge!("apg_config_converged", "1 once the node has applied a complete configuration.").unwrap());
 
@@ -85,6 +94,11 @@ pub fn init() {
     LazyLock::force(&BACKEND_HEALTHY);
     LazyLock::force(&BACKEND_CIRCUIT_OPEN);
     LazyLock::force(&DNS_FAILURES);
+    LazyLock::force(&ACME_ISSUANCES);
+    LazyLock::force(&ACME_FAILURES);
+    for within in ["7d", "14d", "30d"] {
+        CERTS_EXPIRING.with_label_values(&[within]).set(0);
+    }
     LazyLock::force(&CONFIG_CONVERGED);
     LazyLock::force(&CONFIG_APPLIED_SEQ);
     LazyLock::force(&CONFIG_SOURCE_AGE);

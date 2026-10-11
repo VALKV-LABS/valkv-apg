@@ -1,5 +1,6 @@
 //! The node's live state: the current snapshot, and what the config source last said.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Instant;
@@ -8,6 +9,7 @@ use apg_core::model::KINDS;
 use apg_core::resources::Resources;
 use apg_core::snapshot::Snapshot;
 use arc_swap::ArcSwap;
+use dashmap::DashMap;
 use parking_lot::Mutex;
 
 use crate::metrics;
@@ -65,6 +67,12 @@ pub struct Gateway {
     pub health: SourceHealth,
     /// Backend health, circuits, resolved addresses and upstream trust material.
     pub upstreams: Arc<Upstreams>,
+    /// ACME HTTP-01 answers every node of the fleet must give (spec TLS-10): token to key authorisation.
+    challenges: ArcSwap<HashMap<String, String>>,
+    /// Answers for challenges this node started itself, when nothing distributes them (file mode).
+    local_challenges: DashMap<String, String>,
+    /// Signalled whenever a configuration is installed.
+    pub changed: tokio::sync::Notify,
     pub node_id: String,
     pub source: &'static str,
     started: Instant,
@@ -81,6 +89,9 @@ impl Gateway {
             applied_seq: AtomicU64::new(0),
             health: SourceHealth::new(stale_after_secs),
             upstreams: Arc::new(Upstreams::new(upstreams)),
+            challenges: ArcSwap::from_pointee(HashMap::new()),
+            local_challenges: DashMap::new(),
+            changed: tokio::sync::Notify::new(),
             node_id,
             source,
             started: Instant::now(),
@@ -110,9 +121,32 @@ impl Gateway {
         }
         // Before the swap, so no request meets a service whose state is not there yet.
         self.upstreams.sync(resources, &snapshot);
+        let challenges: HashMap<String, String> = resources
+            .kind("acme_challenge")
+            .filter_map(|(token, stored)| Some((token.clone(), stored.data.get("key_authorization")?.as_str()?.to_string())))
+            .collect();
+        self.challenges.store(Arc::new(challenges));
         self.snapshot.store(Arc::new(snapshot));
         self.applied_seq.store(seq, Ordering::Relaxed);
         metrics::CONFIG_APPLIED_SEQ.set(seq as i64);
+        self.changed.notify_waiters();
+    }
+
+    /// The answer to an ACME HTTP-01 challenge, if this node knows the token.
+    pub fn challenge(&self, token: &str) -> Option<String> {
+        self.challenges.load().get(token).cloned().or_else(|| self.local_challenges.get(token).map(|v| v.clone()))
+    }
+
+    /// Remembers (or with `None` forgets) the answer to a challenge this node started.
+    pub fn set_local_challenge(&self, token: &str, key_authorization: Option<&str>) {
+        match key_authorization {
+            Some(value) => {
+                self.local_challenges.insert(token.to_string(), value.to_string());
+            }
+            None => {
+                self.local_challenges.remove(token);
+            }
+        }
     }
 
     /// The document `/status` returns: the node's own view of itself (spec OBS-5).
@@ -177,5 +211,24 @@ mod tests {
         assert_eq!(status["counts"]["routes"], 1);
         assert_eq!(status["node_id"], "n1");
         assert_eq!(status["converged"], false);
+    }
+
+    // spec TLS-10
+    #[test]
+    fn challenge_answers_come_from_configuration_and_from_this_node() {
+        let g = Gateway::new("n1".into(), "api_poll", 30);
+        assert_eq!(g.challenge("tok"), None);
+        let mut r = Resources::new();
+        r.apply(&ChangeEvent::upsert("acme_challenge", "tok", None, json!({ "token": "tok", "key_authorization": "tok.thumb" })));
+        g.install(&r, 7);
+        assert_eq!(g.challenge("tok").as_deref(), Some("tok.thumb"));
+        // Withdrawn by the control plane: no longer answered.
+        g.install(&Resources::new(), 8);
+        assert_eq!(g.challenge("tok"), None);
+
+        g.set_local_challenge("mine", Some("mine.thumb"));
+        assert_eq!(g.challenge("mine").as_deref(), Some("mine.thumb"));
+        g.set_local_challenge("mine", None);
+        assert_eq!(g.challenge("mine"), None);
     }
 }

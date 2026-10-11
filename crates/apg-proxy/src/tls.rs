@@ -4,8 +4,9 @@
 //! the fallback certificate. The lookup reads an immutable table that is
 //! swapped whole when configuration changes, so a handshake never waits on a lock.
 //!
-//! Phase 2a serves manually configured certificates and the fallback. Issuing
-//! certificates from an ACME authority is build phase 2d.
+//! Certificates come from configuration (files or inline in file mode; from a
+//! control plane with the key sealed) and, in file mode, from this node's own
+//! ACME issuance (`acme.rs`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -22,11 +23,32 @@ use pingora_core::tls::pkey::PKey;
 use pingora_core::tls::ssl::NameType;
 use pingora_core::tls::x509::X509;
 
+use crate::metrics;
+use crate::secrets::SecretBox;
+
 /// A certificate chain and its key, PEM-encoded.
 #[derive(Clone)]
 pub struct CertPair {
     pub cert_pem: Vec<u8>,
     pub key_pem: Vec<u8>,
+    /// When the leaf expires, in seconds since the epoch.
+    pub not_after: i64,
+}
+
+impl CertPair {
+    /// Builds a pair after checking that the key belongs to the certificate.
+    pub fn new(cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Result<Self, String> {
+        key_matches(&cert_pem, &key_pem)?;
+        let not_after = certificate_not_after(&cert_pem)?;
+        Ok(Self { cert_pem, key_pem, not_after })
+    }
+}
+
+/// When the first certificate in a PEM bundle expires, in seconds since the epoch.
+pub fn certificate_not_after(cert_pem: &[u8]) -> Result<i64, String> {
+    let (_, pem) = x509_parser::pem::parse_x509_pem(cert_pem).map_err(|_| "not a PEM-encoded certificate".to_string())?;
+    let cert = pem.parse_x509().map_err(|_| "not an X.509 certificate".to_string())?;
+    Ok(cert.validity().not_after.timestamp())
 }
 
 #[derive(Default)]
@@ -53,8 +75,12 @@ impl Table {
 
 /// The certificates the node can present.
 pub struct TlsStore {
+    /// Certificates from configuration.
     table: ArcSwap<Table>,
+    /// Certificates this node issued itself (file mode).
+    issued: ArcSwap<Table>,
     fallback: Arc<CertPair>,
+    secrets: Option<Arc<SecretBox>>,
 }
 
 /// DNS names a certificate is valid for, from its subject alternative names.
@@ -84,11 +110,15 @@ fn self_signed() -> anyhow::Result<CertPair> {
     let mut params = rcgen::CertificateParams::new(vec!["valkv-apg.invalid".to_string()])?;
     params.distinguished_name.push(rcgen::DnType::CommonName, "valkv-apg fallback certificate");
     let cert = params.self_signed(&key)?;
-    Ok(CertPair { cert_pem: cert.pem().into_bytes(), key_pem: key.serialize_pem().into_bytes() })
+    CertPair::new(cert.pem().into_bytes(), key.serialize_pem().into_bytes()).map_err(|e| anyhow::anyhow!(e))
 }
 
-/// Reads one configured certificate. `read` loads a file named by `cert_file` / `key_file`.
-pub fn load_certificate(cert: &Certificate, read: &dyn Fn(&str) -> std::io::Result<Vec<u8>>) -> Result<(CertPair, Vec<String>), String> {
+type Read<'a> = &'a dyn Fn(&str) -> std::io::Result<Vec<u8>>;
+type Open<'a> = &'a dyn Fn(&str) -> Result<Vec<u8>, String>;
+
+/// Reads one configured certificate. `read` loads a file named by `cert_file` /
+/// `key_file`; `open` decrypts a key that arrived sealed from a control plane.
+pub fn load_certificate(cert: &Certificate, read: Read<'_>, open: Open<'_>) -> Result<(CertPair, Vec<String>), String> {
     let load = |inline: &Option<String>, file: &Option<String>, what: &str| -> Result<Vec<u8>, String> {
         match (inline, file) {
             (Some(pem), _) => Ok(pem.clone().into_bytes()),
@@ -97,13 +127,15 @@ pub fn load_certificate(cert: &Certificate, read: &dyn Fn(&str) -> std::io::Resu
         }
     };
     let cert_pem = load(&cert.cert_pem, &cert.cert_file, "certificate")?;
-    let key_pem = load(&cert.key_pem, &cert.key_file, "key")?;
-    key_matches(&cert_pem, &key_pem)?;
+    let key_pem = match &cert.key_ciphertext {
+        Some(sealed) if cert.key_pem.is_none() && cert.key_file.is_none() => open(sealed)?,
+        _ => load(&cert.key_pem, &cert.key_file, "key")?,
+    };
     let hosts = certificate_hosts(&cert_pem)?;
     if hosts.is_empty() {
         return Err("the certificate names no DNS host (no subject alternative names)".to_string());
     }
-    Ok((CertPair { cert_pem, key_pem }, hosts))
+    Ok((CertPair::new(cert_pem, key_pem)?, hosts))
 }
 
 impl TlsStore {
@@ -112,21 +144,26 @@ impl TlsStore {
     pub fn new(fallback_files: Option<&(String, String)>) -> anyhow::Result<Self> {
         let fallback = match fallback_files {
             Some((cert, key)) => {
-                let pair = CertPair { cert_pem: std::fs::read(cert)?, key_pem: std::fs::read(key)? };
-                key_matches(&pair.cert_pem, &pair.key_pem).map_err(|e| anyhow::anyhow!("APG_TLS_FALLBACK_CERT / APG_TLS_FALLBACK_KEY: {e}"))?;
-                pair
+                CertPair::new(std::fs::read(cert)?, std::fs::read(key)?).map_err(|e| anyhow::anyhow!("APG_TLS_FALLBACK_CERT / APG_TLS_FALLBACK_KEY: {e}"))?
             }
             None => self_signed()?,
         };
-        Ok(Self { table: ArcSwap::from_pointee(Table::default()), fallback: Arc::new(fallback) })
+        Ok(Self { table: ArcSwap::from_pointee(Table::default()), issued: ArcSwap::from_pointee(Table::default()), fallback: Arc::new(fallback), secrets: None })
+    }
+
+    /// Gives the store the key that opens certificate keys sealed by a control plane.
+    pub fn with_secrets(mut self, secrets: Option<Arc<SecretBox>>) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// Checks every certificate in `resources` without installing anything.
     /// Faults are located at the certificate's position in its section.
-    pub fn check(resources: &Resources, read: &dyn Fn(&str) -> std::io::Result<Vec<u8>>) -> Vec<Fault> {
+    pub fn check(resources: &Resources, read: Read<'_>) -> Vec<Fault> {
+        let no_sealed_keys = |_: &str| Err("a sealed key needs a control plane and APG_SECRET_KEY".to_string());
         let mut faults = Vec::new();
         for (id, stored) in resources.kind("certificate") {
-            let outcome = serde_json::from_value::<Certificate>(stored.data.clone()).map_err(|e| e.to_string()).and_then(|c| load_certificate(&c, read).map(|_| c.name));
+            let outcome = serde_json::from_value::<Certificate>(stored.data.clone()).map_err(|e| e.to_string()).and_then(|c| load_certificate(&c, read, &no_sealed_keys).map(|_| c.name));
             if let Err(message) = outcome {
                 let name = stored.data.get("name").and_then(|n| n.as_str()).unwrap_or(id);
                 faults.push(Fault::new("/certificates", format!("certificate '{name}': {message}")));
@@ -138,18 +175,17 @@ impl TlsStore {
     /// Installs the certificates in `resources`, replacing the previous set.
     /// Returns how many names are now served. A certificate that fails to load
     /// is skipped and logged; `check` is how a caller refuses it up front.
-    pub fn install(&self, resources: &Resources, read: &dyn Fn(&str) -> std::io::Result<Vec<u8>>) -> usize {
+    pub fn install(&self, resources: &Resources, read: Read<'_>) -> usize {
         let mut table = Table::default();
         for (id, stored) in resources.kind("certificate") {
             let Ok(cert) = serde_json::from_value::<Certificate>(stored.data.clone()) else { continue };
-            // A certificate from a control plane carries its key as ciphertext,
-            // which this build cannot open yet (build phase 2d). Until then such a
-            // certificate is not served; handshakes for its names get the fallback.
-            if cert.key_pem.is_none() && cert.key_file.is_none() {
-                tracing::debug!(certificate = %id, "certificate has no key this build can read; not installed");
-                continue;
-            }
-            match load_certificate(&cert, read) {
+            // A certificate from a control plane carries its key sealed for this
+            // certificate's id (spec CFG-6); only the fleet's secret key opens it.
+            let open = |sealed: &str| match &self.secrets {
+                Some(secrets) => secrets.open(sealed, &format!("certificate:{id}")),
+                None => Err("APG_SECRET_KEY is not set on this node, so the certificate's key cannot be opened".to_string()),
+            };
+            match load_certificate(&cert, read, &open) {
                 Ok((pair, hosts)) => {
                     let pair = Arc::new(pair);
                     for h in &hosts {
@@ -161,17 +197,63 @@ impl TlsStore {
         }
         let names = table.exact.len() + table.wildcard.len();
         self.table.store(Arc::new(table));
+        self.export_expiry();
         names
+    }
+
+    /// Adds a certificate this node issued itself. It serves the names it
+    /// carries unless a configured certificate covers them.
+    pub fn add_issued(&self, pair: CertPair) -> Result<(), String> {
+        let hosts = certificate_hosts(&pair.cert_pem)?;
+        let pair = Arc::new(pair);
+        let current = self.issued.load();
+        let mut next = Table { exact: current.exact.clone(), wildcard: current.wildcard.clone() };
+        for h in &hosts {
+            next.insert(h, &pair);
+        }
+        self.issued.store(Arc::new(next));
+        self.export_expiry();
+        Ok(())
+    }
+
+    fn find(&self, name: &str) -> Option<Arc<CertPair>> {
+        self.table.load().find(name).cloned().or_else(|| self.issued.load().find(name).cloned())
+    }
+
+    /// When the certificate held for exactly this name (`api.example.com` or
+    /// `*.example.com`) expires. `None` when no certificate names it.
+    pub fn not_after(&self, hostname: &str) -> Option<i64> {
+        let host = hostname.to_ascii_lowercase();
+        let lookup = |t: &Table| match host.strip_prefix('*') {
+            Some(suffix) => t.wildcard.get(suffix).map(|p| p.not_after),
+            None => t.exact.get(&host).map(|p| p.not_after),
+        };
+        lookup(&self.table.load()).or_else(|| lookup(&self.issued.load()))
+    }
+
+    /// Exports how many served certificates expire soon (spec Appendix C).
+    pub fn export_expiry(&self) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let (table, issued) = (self.table.load(), self.issued.load());
+        // One certificate usually serves several names; count it once.
+        let mut expiries: HashMap<*const CertPair, i64> = HashMap::new();
+        for pair in table.exact.values().chain(table.wildcard.values()).chain(issued.exact.values()).chain(issued.wildcard.values()) {
+            expiries.insert(Arc::as_ptr(pair), pair.not_after);
+        }
+        for (label, days) in [("7d", 7), ("14d", 14), ("30d", 30)] {
+            let soon = expiries.values().filter(|t| **t - now < days * 86_400).count();
+            metrics::CERTS_EXPIRING.with_label_values(&[label]).set(soon as i64);
+        }
     }
 
     /// The certificate for an SNI name, or the fallback.
     pub fn select(&self, sni: Option<&str>) -> Arc<CertPair> {
-        sni.and_then(|name| self.table.load().find(name).cloned()).unwrap_or_else(|| self.fallback.clone())
+        sni.and_then(|name| self.find(name)).unwrap_or_else(|| self.fallback.clone())
     }
 
-    /// True when a configured (non-fallback) certificate covers the name.
+    /// True when a configured or issued (non-fallback) certificate covers the name.
     pub fn covers(&self, sni: &str) -> bool {
-        self.table.load().find(sni).is_some()
+        self.find(sni).is_some()
     }
 }
 
@@ -297,5 +379,54 @@ mod tests {
         store.install(&resources_with(&[("a", json!({ "name": "a", "cert_pem": c1, "key_pem": k1 }))]), &no_files);
         store.install(&resources_with(&[("b", json!({ "name": "b", "cert_pem": c2, "key_pem": k2 }))]), &no_files);
         assert!(!store.covers("old.example.com") && store.covers("new.example.com"));
+    }
+
+    // spec CFG-6, SEC-1
+    #[test]
+    fn a_key_sealed_by_the_control_plane_is_opened_with_the_secret_key_only() {
+        const KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
+        let (c, k) = make(&["sealed.example.com"]);
+        let secrets = Arc::new(SecretBox::from_base64(KEY, None).unwrap());
+        let sealed = secrets.seal(k.as_bytes(), "certificate:c1");
+        let r = resources_with(&[("c1", json!({ "name": "c", "cert_pem": c, "key_ciphertext": sealed }))]);
+
+        let with_key = TlsStore::new(None).unwrap().with_secrets(Some(secrets.clone()));
+        assert_eq!(with_key.install(&r, &no_files), 1);
+        assert_eq!(with_key.select(Some("sealed.example.com")).key_pem, k.as_bytes());
+
+        // No secret key on the node: the certificate is not served, the fallback is.
+        let without = TlsStore::new(None).unwrap();
+        assert_eq!(without.install(&r, &no_files), 0);
+        assert!(!without.covers("sealed.example.com"));
+
+        // A ciphertext moved onto another certificate does not open.
+        let moved = resources_with(&[("c2", json!({ "name": "c", "cert_pem": c, "key_ciphertext": sealed }))]);
+        assert_eq!(with_key.install(&moved, &no_files), 0);
+    }
+
+    #[test]
+    fn issued_certificates_serve_until_configuration_covers_the_name() {
+        let (issued_cert, issued_key) = make(&["shop.example.com"]);
+        let (configured_cert, configured_key) = make(&["shop.example.com"]);
+        let store = TlsStore::new(None).unwrap();
+        assert_eq!(store.not_after("shop.example.com"), None);
+        store.add_issued(CertPair::new(issued_cert.clone().into_bytes(), issued_key.into_bytes()).unwrap()).unwrap();
+        assert_eq!(store.select(Some("shop.example.com")).cert_pem, issued_cert.as_bytes());
+        let expires = store.not_after("shop.example.com").unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert!(expires > now, "the expiry is read from the certificate");
+
+        // Installing configuration does not drop what was issued, but takes precedence for the same name.
+        store.install(&resources_with(&[("a", json!({ "name": "a", "cert_pem": configured_cert, "key_pem": configured_key }))]), &no_files);
+        assert_eq!(store.select(Some("shop.example.com")).cert_pem, configured_cert.as_bytes());
+        store.install(&Resources::new(), &no_files);
+        assert_eq!(store.select(Some("shop.example.com")).cert_pem, issued_cert.as_bytes());
+
+        // Lookup by exact name: a wildcard certificate does not answer for a plain host.
+        let (wild_cert, wild_key) = make(&["*.apps.example.com"]);
+        store.add_issued(CertPair::new(wild_cert.into_bytes(), wild_key.into_bytes()).unwrap()).unwrap();
+        assert!(store.not_after("*.apps.example.com").is_some());
+        assert_eq!(store.not_after("x.apps.example.com"), None);
+        assert!(CertPair::new(b"junk".to_vec(), b"junk".to_vec()).is_err());
     }
 }

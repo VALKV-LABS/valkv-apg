@@ -327,9 +327,13 @@ impl ProxyHttp for ApgProxy {
         }
 
         if !ctx.is_tls {
-            if raw_path.starts_with("/.well-known/acme-challenge/") {
-                // Challenges are answered here once certificate issuance exists (build phase 2d).
-                self.respond_plain(session, 404, &[], "not found\n").await?;
+            if let Some(token) = raw_path.strip_prefix("/.well-known/acme-challenge/") {
+                // Answered by every node that holds the token, whichever one the
+                // authority happens to reach (spec TLS-5, TLS-10). Never routed.
+                match self.gateway.challenge(token) {
+                    Some(answer) => self.respond_plain(session, 200, &[], &answer).await?,
+                    None => self.respond_plain(session, 404, &[], "not found\n").await?,
+                }
                 return Ok(true);
             }
             if self.settings.http_mode == HttpMode::Redirect {

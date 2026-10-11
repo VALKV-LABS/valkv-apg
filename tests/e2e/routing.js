@@ -18,7 +18,8 @@ function baseConfig() {
   return {
     version: 1,
     settings: {
-      workspace_base_domains: [{ domain: "gw.test" }],
+      // No certificate is wanted for the base domain here; tls.js covers issuance.
+      workspace_base_domains: [{ domain: "gw.test", tls: { mode: "none" } }],
       error_responses: {
         NO_ROUTE: {
           status: 404,

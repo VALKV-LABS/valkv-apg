@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use apg_core::schema::Schemas;
+use apg_proxy::acme;
 use apg_proxy::applier::Applier;
 use apg_proxy::config::{Config, ConfigSource};
 use apg_proxy::source_api::{ApiSource, ApiSourceConfig};
@@ -19,6 +20,7 @@ use apg_proxy::tls::{SniAcceptor, TlsStore};
 use apg_proxy::{metrics, mgmt};
 use pingora_core::listeners::tls::TlsSettings;
 use pingora_core::server::Server;
+use pingora_core::tls::ssl::SslVersion;
 use pingora_core::server::configuration::ServerConf;
 use pingora_proxy::http_proxy_service;
 
@@ -80,7 +82,7 @@ fn run() -> anyhow::Result<()> {
     metrics::init();
 
     let schemas = Arc::new(Schemas::load()?);
-    let tls = Arc::new(TlsStore::new(config.tls_fallback.as_ref())?);
+    let tls = Arc::new(TlsStore::new(config.tls_fallback.as_ref())?.with_secrets(config.secrets.clone()));
     let source_name = match config.source {
         ConfigSource::File => "file",
         ConfigSource::ApiPoll => "api_poll",
@@ -131,6 +133,19 @@ fn run() -> anyhow::Result<()> {
         }
     };
 
+    // Certificate issuance. With a control plane the fleet is coordinated
+    // through it; from a file this node is on its own (spec TLS-12).
+    let coordination = match &source {
+        Source::File(_) => acme::Coordination::Local { data_dir: PathBuf::from(&config.data_dir) },
+        Source::Api(api, admin_url) => acme::Coordination::Fleet(acme::Fleet {
+            base: admin_url.trim_end_matches('/').to_string(),
+            token: api.config.token.clone(),
+            http: api.client(),
+            node_id: config.node_id.clone(),
+        }),
+    };
+    let certificates = acme::Manager::new(config.acme.clone(), gateway.clone(), tls.clone(), config.secrets.clone(), coordination)?;
+
     // Background runtime: the config source and the management listener.
     {
         let gateway = gateway.clone();
@@ -140,6 +155,7 @@ fn run() -> anyhow::Result<()> {
             rt.block_on(async move {
                 // Backend name resolution and active health checks.
                 tokio::spawn(gateway.upstreams.clone().run());
+                tokio::spawn(certificates.run());
                 match source {
                     Source::File(file) => {
                         tokio::spawn(file.watch());
@@ -184,6 +200,9 @@ fn run() -> anyhow::Result<()> {
     if let Some(addr) = &config.listen_https {
         let mut settings = TlsSettings::with_callbacks(Box::new(SniAcceptor { store: tls })).map_err(|e| anyhow::anyhow!("TLS setup failed: {e}"))?;
         settings.enable_h2();
+        if config.tls13_only {
+            settings.set_min_proto_version(Some(SslVersion::TLS1_3)).map_err(|e| anyhow::anyhow!("APG_TLS_MIN_VERSION: {e}"))?;
+        }
         service.add_tls_with_settings(addr, None, settings);
     }
     if let Some(addr) = &config.listen_http {

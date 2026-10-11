@@ -356,18 +356,12 @@ impl Compiler<'_> {
             let hostname = dom["hostname"].as_str().unwrap_or_default().to_string();
             let mode = dom.get("tls").and_then(|t| t.get("mode")).and_then(Value::as_str).unwrap_or("acme");
             let mut tls = json!({ "mode": mode, "challenge": dom.get("tls").and_then(|t| t.get("challenge")).and_then(Value::as_str).unwrap_or("http01") });
-            match mode {
-                // Certificates from an ACME authority arrive in a later build phase;
-                // until then, accepting the setting would promise something nothing does.
-                "acme" => self.fault(format!("{at}/tls/mode"), "tls.mode 'acme' is not available in this build; use 'manual' with a certificate, or 'none'"),
-                "manual" => {
-                    let reference = dom["tls"]["certificate"].as_str().unwrap_or_default();
-                    match names.certificates.get(reference) {
-                        Some(id) => tls["certificate"] = json!(id),
-                        None => self.fault(format!("{at}/tls/certificate"), format!("certificate '{reference}' is not defined in this workspace")),
-                    }
+            if mode == "manual" {
+                let reference = dom["tls"]["certificate"].as_str().unwrap_or_default();
+                match names.certificates.get(reference) {
+                    Some(id) => tls["certificate"] = json!(id),
+                    None => self.fault(format!("{at}/tls/certificate"), format!("certificate '{reference}' is not defined in this workspace")),
                 }
-                _ => {}
             }
             if !d.system && base_domains.iter().any(|b| hostname == *b || hostname.ends_with(&format!(".{b}"))) {
                 self.fault(format!("{at}/hostname"), format!("'{hostname}' is inside a base domain and cannot be claimed"));
@@ -719,7 +713,8 @@ routes:
     fn features_this_build_cannot_enforce_are_refused_not_ignored() {
         let base = "version: 1\nservices:\n  - { name: s, backends: [{ target: 'a:1' }] }\n";
         assert_eq!(pointers(compile_yaml(&format!("{base}routes:\n  - name: r\n    service: s\n    plugins: [{{ type: key_auth }}]\n"))), ["/routes/0/plugins/0/type"]);
-        assert_eq!(pointers(compile_yaml(&format!("{base}domains:\n  - hostname: a.example.com\n"))), ["/domains/0/tls/mode"]);
+        // A domain defaults to an ACME certificate, which the node now obtains itself.
+        assert!(compile_yaml(&format!("{base}domains:\n  - hostname: a.example.com\n")).is_ok());
         assert_eq!(pointers(compile_yaml(&format!("{base}consumers:\n  - name: c\n    credentials: [{{ type: mtls, identity: x }}]\n"))), ["/consumers/0/credentials"]);
         assert_eq!(pointers(compile_yaml(&format!("{base}plugins:\n  - {{ type: rate_limit, scope: workspace, config: {{ per_sec: 1 }} }}\n"))), ["/plugins/0/config"]);
         assert_eq!(pointers(compile_yaml(&format!("{base}flags: {{ make_it_fast: true }}\n"))), ["/flags/make_it_fast"]);

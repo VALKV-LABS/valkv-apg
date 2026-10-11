@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import http from "node:http";
 import http2 from "node:http2";
 import https from "node:https";
-import { MGMT, MODE, NODE, apply, metric } from "./lib/driver.js";
+import { MGMT, NODE, apply, metric } from "./lib/driver.js";
 import { assert, step } from "./lib/harness.js";
 import { send, until } from "./lib/raw.js";
 
@@ -94,13 +94,9 @@ function config() {
     svc("unresolvable", [{ target: "no-such-host.invalid:80" }], { retries: { attempts: 0 } }),
     svc("unresolvable-retry", [{ target: "no-such-host.invalid:80" }, "a"], NO_BREAKER),
   ];
-  // A client certificate needs its key on the node. From a file the node reads
-  // it; from a control plane keys are delivered in a later build phase, and
-  // until then the control plane refuses the setting.
-  if (MODE === "file") {
-    services.push(svc("mtls", ["mtls"], { scheme: "https", tls: { ...trusted, client_certificate: "client" } }));
-    services.push(svc("mtls-missing", ["mtls"], { scheme: "https", tls: trusted }));
-  }
+  // The client certificate's key is read from the file, or arrives sealed from the control plane.
+  services.push(svc("mtls", ["mtls"], { scheme: "https", tls: { ...trusted, client_certificate: "client" } }));
+  services.push(svc("mtls-missing", ["mtls"], { scheme: "https", tls: trusted }));
   const routes = services
     .filter((s) => !s.name.startsWith("up-side-"))
     .map((s) => ({ name: s.name, service: s.name, hosts: [`${s.name}.up.test`], ...(s.name === "up-deadline" ? { timeout_ms: 400 } : {}) }));
@@ -108,7 +104,7 @@ function config() {
   return {
     version: 1,
     ca_certificates: [{ name: "test-ca", cert_pem: CERT }],
-    ...(MODE === "file" ? { certificates: [{ name: "client", cert_pem: CERT, key_pem: KEY }] } : {}),
+    certificates: [{ name: "client", cert_pem: CERT, key_pem: KEY }],
     services,
     routes,
   };
@@ -266,14 +262,12 @@ step("upstream TLS: SNI is sent and the certificate is verified against the serv
   assertGatewayError(await call("tls-wrongname"), 502, "UPSTREAM_ERROR");
 });
 
-if (MODE === "file") {
-  step("upstream mutual TLS: the node presents the service's client certificate (UP-14)", async () => {
-    const ok = await call("mtls");
-    assert.equal(ok.status, 200, ok.text);
-    assert.ok(ok.json.client_certificate, "the upstream saw a client certificate");
-    assertGatewayError(await call("mtls-missing"), 502, "UPSTREAM_ERROR");
-  });
-}
+step("upstream mutual TLS: the node presents the service's client certificate (UP-14)", async () => {
+  const ok = await call("mtls");
+  assert.equal(ok.status, 200, ok.text);
+  assert.ok(ok.json.client_certificate, "the upstream saw a client certificate");
+  assertGatewayError(await call("mtls-missing"), 502, "UPSTREAM_ERROR");
+});
 
 step("a split with split_key keeps one caller on one side (UP-15)", async () => {
   const mine = await tally("split", 10, "/", () => ({ headers: { "x-user": "user-7" } }));

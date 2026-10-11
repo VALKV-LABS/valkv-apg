@@ -356,11 +356,15 @@ describe("everything accepted is enforced", () => {
     expect(setting.json.error.message).toContain("not enforced by this build");
   });
 
-  it("a client certificate towards the upstream waits for key delivery to nodes", async () => {
-    await h.call("PUT", `${D}/certificates/upstream-client`, { body: { cert_pem: fixture("test-cert.crt"), key_pem: fixture("test-cert.key") } });
+  it("a client certificate towards the upstream is referenced by id, and its key reaches nodes sealed", async () => {
+    const before = await h.lastSeq();
+    const cert = await h.call("PUT", `${D}/certificates/upstream-client`, { body: { cert_pem: fixture("test-cert.crt"), key_pem: fixture("test-cert.key") } });
     const res = await h.call("PUT", `${D}/services/mtls`, { body: { scheme: "https", backends: [{ target: "10.0.1.1:443" }], tls: { client_certificate: "upstream-client" } } });
-    expect(res.status).toBe(422);
-    expect(res.json.error.details[0].pointer).toBe("/tls/client_certificate");
+    expect(res.status).toBe(200);
+    expect(res.json.tls.client_certificate).toBe(cert.json.id);
+    const events = await h.events(before);
+    expect(JSON.stringify(events)).not.toContain("PRIVATE KEY");
+    expect(events.find((e) => e.data["kind"] === "certificate")!.data["data"].key_ciphertext).toMatch(/^v1:/);
   });
 });
 

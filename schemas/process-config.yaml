@@ -41,6 +41,8 @@ variables:
   - { name: APG_CLOUDFLARE_API_TOKEN, component: node, type: secret, phase: "0", description: "Token for the cloudflare DNS provider." }
   - { name: APG_ACME_DNS_WEBHOOK_URL, component: node, type: url, phase: "2d", description: "Endpoint for the webhook DNS provider." }
   - { name: APG_ACME_DNS_WEBHOOK_SECRET, component: node, type: secret, phase: "2d", description: "Signs webhook DNS provider requests." }
+  - { name: APG_ACME_DNS_PROPAGATION_SECS, component: node, type: integer, default: 30, phase: "2d", description: "Wait between publishing a DNS challenge record and asking the authority to check it, 0 to 600." }
+  - { name: APG_ACME_INSECURE_DIRECTORY, component: node, type: boolean, default: false, phase: "2d", description: "Tests only: do not verify the ACME directory's TLS certificate. Needs APG_ALLOW_TEST_MODES." }
   - { name: APG_USAGE_FLUSH_INTERVAL_SECS, component: node, type: integer, default: 60, phase: "0", description: "Usage window length." }
   - { name: APG_USAGE_BY_CONSUMER, component: node, type: boolean, default: false, phase: "2f", description: "Add the consumer dimension to usage." }
   - { name: APG_USAGE_SINK, component: node, type: string, default: none, phase: "2f", description: "none or file:<path>. Used when no admin receives usage." }

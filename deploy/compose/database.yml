@@ -1,7 +1,7 @@
 # Database-mode development stack (spec §18.1). Started by `make up`.
 #
-# Phase 0 runs Postgres, the admin and a sample upstream. Nodes join this file
-# in build phase 2b, when the admin serves the config API they poll.
+# Postgres, the admin, two nodes that poll it, a sample upstream, and a test
+# ACME authority the nodes obtain certificates from.
 name: valkv-apg
 
 services:
@@ -84,6 +84,18 @@ services:
       APG_HTTP_MODE: proxy
       # Short long-poll in the dev stack so an outage is noticed quickly in tests.
       APG_POLL_WAIT_MS: "5000"
+      # The same key as the admin: nodes open the certificate keys it seals.
+      APG_SECRET_KEY: ZGV2LW9ubHktZGV2LW9ubHktZGV2LW9ubHktZGV2LW8=
+      # Certificates come from the test authority below, never from a public one.
+      APG_ACME_EMAIL: dev@valkv-apg.test
+      APG_ACME_DIRECTORY_URL: https://pebble:14000/dir
+      APG_ACME_INSECURE_DIRECTORY: "true"
+      APG_ALLOW_TEST_MODES: "true"
+    networks: &node-net
+      default:
+        # Names the test authority resolves when it validates a challenge. Both
+        # nodes answer to them, as they would behind one load balancer.
+        aliases: [acme-one.test, acme-two.test]
     volumes:
       - node1-cache:/var/lib/apg
     ports:
@@ -104,12 +116,23 @@ services:
       APG_NODE_ID: node-redirect
       APG_HTTP_MODE: redirect
       APG_TRAFFIC_HEALTH_PATH: /_apg/health
+      APG_TLS_MIN_VERSION: "1.3"
       APG_TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    networks: *node-net
     depends_on:
       admin:
         condition: service_healthy
       echo:
         condition: service_healthy
+
+  # A test ACME authority (not for production use). It validates HTTP-01
+  # challenges on the nodes' HTTP port.
+  pebble:
+    image: valkv-apg-pebble:dev
+    build:
+      context: ./pebble
+    environment:
+      PEBBLE_VA_NOSLEEP: "1"
 
   # Test runner. Not started by `up`; run with `make integ`.
   e2e:

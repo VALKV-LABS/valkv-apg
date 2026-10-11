@@ -41,6 +41,10 @@ fjall = "2"
 
 # TLS: fallback certificate and reading names out of configured certificates
 rcgen       = "0.13"
+
+# Secrets, ACME signing and certificate requests. The same OpenSSL the proxy engine links.
+openssl = "0.10"
+base64  = "0.22"
 x509-parser = "0.16"
 
 http  = "1"
