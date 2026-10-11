@@ -321,8 +321,11 @@ impl RemoteJwks {
     async fn current(self: &Arc<Self>, refresh: bool) -> Option<Arc<Vec<Jwk>>> {
         let mut times = self.times.lock().await;
         let (fetched, tried) = *times;
-        let may_try = tried.is_none_or(|at| at.elapsed() >= REFRESH_AT_MOST_EVERY);
         let stale = fetched.is_none_or(|at| at.elapsed() >= self.cache_for);
+        // The limit is on refreshes a token can provoke. A copy that has reached
+        // its configured age is due however short that age is.
+        let wait = if stale { REFRESH_AT_MOST_EVERY.min(self.cache_for) } else { REFRESH_AT_MOST_EVERY };
+        let may_try = tried.is_none_or(|at| at.elapsed() >= wait);
         if (fetched.is_none() || refresh || stale) && may_try {
             times.1 = Some(Instant::now());
             match self.fetch().await {

@@ -1,0 +1,49 @@
+## When to use it
+
+To open a route only to known networks, or to shut out a network that is misbehaving. It runs before authentication, so a blocked address costs almost nothing. `deny` wins over `allow`; a non-empty `allow` list excludes everyone else.
+
+## Examples
+
+An admin area reachable from the office and the VPN only:
+
+```yaml
+version: 1
+services:
+  - name: backoffice
+    backends:
+      - target: "10.0.0.15:8080"
+routes:
+  - name: backoffice
+    service: backoffice
+    paths: [/admin]
+    plugins:
+      - type: ip_restriction
+        config:
+          allow: ["203.0.113.0/24", "198.51.100.17"]
+```
+
+Open to everyone but one network:
+
+```yaml
+version: 1
+services:
+  - name: site
+    backends:
+      - target: "10.0.0.16:8080"
+routes:
+  - name: site
+    service: site
+    paths: [/]
+    plugins:
+      - type: ip_restriction
+        config:
+          deny: ["192.0.2.0/24"]
+```
+
+## What clients see
+
+`403 IP_FORBIDDEN`.
+
+## Which address is checked
+
+The address the connection comes from. Behind a load balancer or a CDN that is its address, not the client's, unless you list the proxy's ranges in `APG_TRUSTED_PROXIES`; then the client address is taken from `X-Forwarded-For`, skipping trusted hops.

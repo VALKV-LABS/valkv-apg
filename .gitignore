@@ -38,3 +38,7 @@ docs/book/
 # Details of a trial deployment (addresses and tokens).
 /deploy/lightsail/.trial-*
 /deploy/lightsail/.env
+
+# Documentation build output and extracted examples.
+/docs/book/
+/.doc-examples/

@@ -91,10 +91,13 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
+    let hostOrigins: string[] = [];
     setUnauthenticatedHandler(() => {
       setCredentials({});
       setActor(null);
       setStatus(embed ? "waiting-for-host" : "signed-out");
+      // The host's token ran out: ask it for a fresh one.
+      if (embed) for (const origin of hostOrigins) window.parent?.postMessage({ type: "apg:ready" }, origin);
     });
 
     (async () => {
@@ -110,6 +113,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       applyBrand(loaded);
 
       if (embed) {
+        hostOrigins = loaded.embed_origins;
         setStatus("waiting-for-host");
         const onMessage = (event: MessageEvent) => {
           // Only a listed origin may hand over a token.

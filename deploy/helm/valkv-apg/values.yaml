@@ -70,7 +70,7 @@ node:
     maxUnavailable: 1
 
 # A second set of nodes on another image tag, behind the same Service, for a
-# staged rollout (see docs/ops/rollout.md). They receive traffic in proportion
+# staged rollout (see docs/src/ops/rollout.md). They receive traffic in proportion
 # to their share of all node pods.
 canary:
   enabled: false

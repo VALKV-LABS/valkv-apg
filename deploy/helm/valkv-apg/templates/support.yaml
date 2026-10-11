@@ -106,7 +106,7 @@ spec:
       path: /metrics
       interval: {{ .Values.serviceMonitor.interval }}
       relabelings:
-        # So canary and stable can be compared (see docs/ops/rollout.md).
+        # So canary and stable can be compared (see docs/src/ops/rollout.md).
         - sourceLabels: [__meta_kubernetes_pod_label_apg_track]
           targetLabel: track
 {{- end }}

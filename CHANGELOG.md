@@ -58,10 +58,15 @@ the project uses [Semantic Versioning](https://semver.org/).
 - Route tester: nodes answer `GET /debug/match` on the management listener with the
   route a request would hit and why the others were not chosen; `GET /v1/debug/match`
   and `apgctl route match` ask a node (`APG_DEBUG_NODE_URL`).
+- Documentation: getting started, concepts, guides, a reference generated from the
+  schemas and the code, operations pages with runbooks and a threat model, and a
+  comparison with other gateways. `make docs-check` validates every example.
+- `jwt_auth.jwks_cache_secs` below 30 is now honoured; it was held back by the limit on
+  refreshes that tokens can provoke.
 - A smoke test for any deployment (`tests/smoke.sh`): it configures routes of its own,
   sends requests through every class of plugin and prints expected against actual.
 - `deploy/canary/check.mjs` decides promote, hold or roll back from the nodes' own
-  metrics; `docs/ops/rollout.md` is the rollout and rollback runbook for Kubernetes,
+  metrics; `docs/src/ops/rollout.md` is the rollout and rollback runbook for Kubernetes,
   Compose, systemd and the AWS reference.
 - `deploy/lightsail`: one command starts a trial on an Amazon Lightsail instance and
   smoke-tests it.

@@ -17,4 +17,4 @@ release receives security fixes.
 ## Scope
 
 In scope: the node, the admin, the CLI, the UI, the published images and the
-Helm chart. The threat model, once written, lives in `docs/ops/threat-model.md`.
+Helm chart. The threat model is `docs/src/ops/threat-model.md`.

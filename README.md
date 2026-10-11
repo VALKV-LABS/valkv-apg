@@ -13,6 +13,8 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 > **Status: early build, not released.** The table below says what works today.
 > Do not run this in production yet.
 
+**Documentation:** [`docs/src`](docs/src/SUMMARY.md) (build it with `make docs`). Start with [a gateway from one file, in five minutes](docs/src/getting-started/standalone.md), or see [how it compares with other gateways](docs/src/guides/coming-from-other-gateways.md).
+
 ## Why another gateway
 
 - **Runs alone.** One binary and one YAML file are a complete gateway. No database.
@@ -84,7 +86,7 @@ docker run --rm -v "$PWD/deploy/compose/standalone:/cfg:ro" valkv-labs/valkv-apg
 | A cloud trial in one command | [`deploy/lightsail`](deploy/lightsail/README.md): one Amazon Lightsail instance with the gateway, control plane, console and sample upstreams, followed by a smoke test of every feature |
 | AWS | [`deploy/terraform/aws`](deploy/terraform/aws/README.md): load balancers, auto-scaling groups, managed Postgres, with a [cost estimate](deploy/terraform/aws/COST.md) |
 
-Upgrade the control plane first, then the nodes. A node keeps serving from its cache while the control plane is away. [Rolling out a new version, and rolling it back](docs/ops/rollout.md) has the stages, the promotion criteria and the exact commands.
+Upgrade the control plane first, then the nodes. A node keeps serving from its cache while the control plane is away. [Rolling out a new version, and rolling it back](docs/src/ops/rollout.md) has the stages, the promotion criteria and the exact commands.
 
 ### Images
 
@@ -125,6 +127,8 @@ make e2e-upgrade      # a new binary takes over the listeners; no request fails
 make e2e-skew         # nodes step over events from a newer control plane
 make smoke            # every feature, expected against actual
 make canary-rehearsal # promote a healthy canary, roll back a faulty one
+make docs docs-check  # regenerate the reference and build the book; check it is current
+make check-keys       # every configuration key is set by some test
 make lint-helm lint-terraform
 make down
 make lint

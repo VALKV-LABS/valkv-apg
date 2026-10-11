@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Pencil, Plus, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
 import { ApiError, type Json, api, ws } from "../api";
-import { SchemaForm, shownPointers } from "../components/schema-form";
+import { SchemaForm, plain, shownPointers } from "../components/schema-form";
 import { Card, Confirm, Dialog, Empty, ErrorNotice, ErrorState, Field, Loading, PageHead, Tabs, Tag } from "../components/ui";
 import { useCollection, useNames, useSchemas } from "../hooks";
 import { useSession } from "../session";
@@ -177,7 +177,7 @@ export function Plugins() {
                 {schemas.data.pluginTypes.map((t) => (
                   <tr key={t["name"]}>
                     <td className="mono">{t["name"]}</td>
-                    <td className="wrap">{t["schema"]?.["description"] ?? <span className="dim">Not available in this build.</span>}</td>
+                    <td className="wrap">{plain(t["schema"]?.["description"]) ?? <span className="dim">Not available in this build.</span>}</td>
                     <td className="wrap">{(t["phases"] as string[]).map((p) => PHASE[p] ?? p).join("; ")}</td>
                     <td className="num">{t["default_priority"]}</td>
                     <td className="actions">

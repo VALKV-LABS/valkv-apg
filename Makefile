@@ -15,7 +15,7 @@ CLI_DOCKER   := cli/Dockerfile
 UI_DOCKER    := ui/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew e2e-security smoke canary-rehearsal bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew e2e-security smoke canary-rehearsal docs docs-check check-keys bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -129,6 +129,24 @@ lint-helm:
 # Formatting and validity of the AWS reference. No account and no credentials are used.
 lint-terraform:
 	$(TERRAFORM) 'terraform fmt -check -recursive /tf && terraform init -backend=false -input=false > /dev/null && terraform validate; status=$$?; rm -rf .terraform .terraform.lock.hcl; exit $$status'
+
+TOOLS := docker run --rm -v "$(CURDIR):/repo" -w /repo node:22-slim
+
+# Regenerates the reference pages from the schemas, the OpenAPI document and the code, then builds the book into docs/book.
+docs:
+	MSYS_NO_PATHCONV=1 $(TOOLS) node tools/gen-docs.mjs
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/docs:/book" -w /book peaceiris/mdbook:v0.4.40 build
+
+# Fails when a generated page is stale, when a configuration example in the docs is not valid,
+# or when a page is missing from the table of contents. Needs `make build` for the node image.
+docs-check:
+	MSYS_NO_PATHCONV=1 $(TOOLS) sh -c "node tools/gen-docs.mjs --check && node tools/check-doc-links.mjs && rm -rf .doc-examples && node tools/extract-doc-examples.mjs .doc-examples"
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/.doc-examples:/examples:ro" -v "$(CURDIR)/tools/check-doc-examples.sh:/check.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /check.sh
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/docs:/book" -w /book peaceiris/mdbook:v0.4.40 build -d /tmp/book
+
+# Every configuration key of every plugin, and every field of Service and Route, is set by some test.
+check-keys:
+	MSYS_NO_PATHCONV=1 $(TOOLS) node tools/check-tested-keys.mjs
 
 # Maintainers only: checks that nothing from the code's origin leaked into the
 # tree. The script and its list are not published; the target is a no-op without them.

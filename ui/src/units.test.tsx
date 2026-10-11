@@ -4,7 +4,7 @@ import { useState } from "react";
 import { describe, expect, it } from "vitest";
 import { type Json, formatBytes, formatNumber, relativeTime, withQuery } from "./api";
 import { byBucket } from "./components/chart";
-import { SchemaForm, Schemas, shownPointers } from "./components/schema-form";
+import { SchemaForm, Schemas, plain, shownPointers } from "./components/schema-form";
 import { toCsv } from "./pages/usage";
 import { realSchemas } from "./test-server";
 import { inkFor } from "./theme";
@@ -116,6 +116,18 @@ describe("schema-driven forms", () => {
   it("puts a fault inside a JSON-edited value on that value", () => {
     render(<Form path="resources/route.json" initial={{ name: "r", service: "s", paths: ["orders"] }} faults={[{ pointer: "/paths/0/value", message: "a path must start with '/'" }]} />);
     expect(within(screen.getByLabelText(/^Paths/).closest(".field") as HTMLElement).getByText("/0/value: a path must start with '/'")).toBeInTheDocument();
+  });
+});
+
+describe("descriptions", () => {
+  it("are shown without references to the requirements document", () => {
+    expect(plain("Token-bucket request rate limit (spec §9.4).")).toBe("Token-bucket request rate limit.");
+    expect(plain("Field name to a template (spec §9.5). Written as one object.")).toBe("Field name to a template. Written as one object.");
+    expect(plain("Plugin types a non-admin role may create (PL-7). Default: all.")).toBe("Plugin types a non-admin role may create. Default: all.");
+    expect(plain("Burst (at most 5).")).toBe("Burst (at most 5).");
+    expect(plain(undefined)).toBeUndefined();
+    render(<Form path="plugins/rate_limit.json" initial={{}} />);
+    expect(document.body.textContent).not.toMatch(/spec §|\((?:[A-Z]{2,4}-\d+)\)/);
   });
 });
 

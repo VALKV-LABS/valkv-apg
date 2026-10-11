@@ -179,6 +179,7 @@ function config({ keyAuthOn = true } = {}) {
       // Keys with a default most configurations never change; each is set here to something else and shown to matter (TST-1).
       route("keyqueryonly", [{ type: "key_auth", config: { in_header: false, in_query: true, key_names: ["apikey"] } }]),
       route("jwtstrict", [{ type: "jwt_auth", config: jwt({ leeway_secs: 0 }) }]),
+      route("jwtrefresh", [{ type: "jwt_auth", config: { issuer: ISSUER, jwks_url: `http://${HOST}:${JWKS_PORT}/jwks`, algorithms: ["ES256"], jwks_cache_secs: 10 } }]),
       route("fwdtenant", [{ type: "forward_auth", config: { url: `http://${HOST}:${AUTH_PORT}/verify`, request_headers: ["Authorization", "X-Tenant"], cache_secs: 60, cache_key_headers: ["Authorization", "X-Tenant"] } }]),
       route("fwdcached", [{ type: "forward_auth", config: { url: `http://${HOST}:${AUTH_PORT}/verify`, cache_secs: 60 } }]),
       route("cachevary", [{ type: "response_cache", config: { ttl_secs: 30, vary_headers: ["Accept-Language"] } }]),
@@ -603,6 +604,17 @@ step("defaults that are rarely changed do change behaviour when they are (TST-1)
   assert.equal(bobs.headers["x-apg-cache"], "MISS", "bob is not served alice's copy");
   assert.equal(bobs.json.headers["x-apg-consumer-name"], "bob");
 
+  // jwt_auth.jwks_cache_secs: the keys are fetched again once the copy is older than this.
+  const bearer = { headers: { authorization: `Bearer ${token({ sub: "alice-1" })}` } };
+  // An earlier step took the issuer down; bring it back, and wait for the node to try it again.
+  await startJwks();
+  await until(async () => (await call("jwtrefresh", bearer)).status === 200, { what: "the node to fetch the key set" });
+  const fetched = jwksFetches;
+  assert.equal((await call("jwtrefresh", bearer)).status, 200);
+  assert.equal(jwksFetches, fetched, "within the cache time the copy is used");
+  await new Promise((r) => setTimeout(r, 11_000));
+  assert.equal((await call("jwtrefresh", bearer)).status, 200);
+  await until(async () => jwksFetches > fetched, { what: "the key set to be fetched again after jwks_cache_secs" });
 });
 
 step("the kill switch stops a plugin type everywhere, and brings it back (PL-3)", async () => {

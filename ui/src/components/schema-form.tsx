@@ -46,6 +46,10 @@ export class Schemas {
   }
 }
 
+/** Schema descriptions carry references to the requirements document that mean nothing to the reader. */
+export const plain = (text: unknown): string | undefined =>
+  typeof text === "string" ? text.replace(/\s*\((?:spec )?§[^)]*\)/g, "").replace(/\s*\(spec [^)]*\)/g, "").replace(/\s*\([A-Z]{2,4}-\d+[a-z]?(?:, [A-Z]{2,4}-\d+[a-z]?)*\)/g, "") : undefined;
+
 const escape = (key: string) => key.replace(/~/g, "~0").replace(/\//g, "~1");
 const title = (key: string) => key.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
 const isScalar = (s: Json) => s["enum"] !== undefined || ["string", "integer", "number", "boolean"].includes(s["type"]);
@@ -169,7 +173,7 @@ function SchemaField({ common, name, schema: raw, base: rawBase, value, onChange
 }) {
   const { schema, base } = common.schemas.resolve(raw, rawBase);
   const label = title(name);
-  const hint: string | undefined = schema["description"];
+  const hint = plain(schema["description"]);
   const error = common.faults.get(pointer);
   const invalid = error ? { "aria-invalid": true as const } : {};
   const disabled = common.disabled;
