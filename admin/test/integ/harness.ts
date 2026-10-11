@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { FastifyInstance } from "fastify";
 import { Authenticator, createToken } from "../../src/auth.js";
 import type { UiConfig } from "../../src/config.js";
+import { Oidc, type OidcConfig } from "../../src/oidc.js";
 import { SecretBox } from "../../src/crypto.js";
 import { type Sql, connect, migrateUp } from "../../src/db.js";
 import { parseCidrList } from "../../src/egress.js";
@@ -38,7 +39,7 @@ export interface Harness {
 const BASE_URL = process.env["APG_TEST_DATABASE_URL"] ?? "postgres://apg:apg-dev-only@postgres:5432/apg";
 
 /** Creates an empty database named after the test file, migrates it, and starts the server on it. */
-export async function start(name: string, opts: { domainVerification?: "none" | "dns_txt"; ui?: UiConfig; debugNodeUrl?: string } = {}): Promise<Harness> {
+export async function start(name: string, opts: { domainVerification?: "none" | "dns_txt"; ui?: UiConfig; debugNodeUrl?: string; oidc?: OidcConfig } = {}): Promise<Harness> {
   const dbName = `apg_test_${name}`;
   const root = connect(BASE_URL, 1);
   await root.unsafe(`DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
@@ -53,10 +54,11 @@ export async function start(name: string, opts: { domainVerification?: "none" | 
   const dns = new Map<string, string[]>();
   const txt = new Map<string, string[][]>();
   const schemas = new SchemaRegistry(fileURLToPath(new URL("../../../schemas/", import.meta.url)));
+  const box = new SecretBox(Buffer.alloc(32, 9));
   const store = new Store({
     sql,
     schemas,
-    box: new SecretBox(Buffer.alloc(32, 9)),
+    box,
     domainVerification: opts.domainVerification ?? "none",
     egressAllow: parseCidrList("", "x"),
     backendAllow: parseCidrList("", "x"),
@@ -71,7 +73,7 @@ export async function start(name: string, opts: { domainVerification?: "none" | 
   await notifier.start(sql);
   const auth = new Authenticator(sql, null);
   const jobs = new JobRunner(sql, buildJobs(store, { changelogRetentionHours: 1, nodeSlotTtlHours: 1, auditRetentionDays: 1 }), { info: () => {}, error: () => {} });
-  const app = buildServer({ logLevel: "error" }, { pingDatabase: async () => { await sql`SELECT 1`; }, store, schemas, auth, notifier, jobs, ...(opts.ui ? { ui: opts.ui } : {}), debugNodeUrl: opts.debugNodeUrl ?? null });
+  const app = buildServer({ logLevel: "error" }, { pingDatabase: async () => { await sql`SELECT 1`; }, store, schemas, auth, notifier, jobs, ...(opts.ui ? { ui: opts.ui } : {}), debugNodeUrl: opts.debugNodeUrl ?? null, oidc: opts.oidc ? new Oidc(opts.oidc, sql, box) : null });
   await app.ready();
 
   const token: Harness["token"] = async (role, workspaces) =>

@@ -41,7 +41,8 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 | Packaging: images for amd64 and arm64, a Helm chart with a canary track, a systemd unit with zero-downtime binary upgrade, a Terraform reference for AWS, signed releases | Working; the chart and the Terraform reference are linted and validated, not applied by CI |
 | Configuration as files: `apgctl validate`, `diff`, `apply`, `sync`, `dump`; revisions, drift detection and rollback | Working, tested against a running control plane |
 | Admin console at `/ui/`: every resource, a route tester, usage, config review, audit log; light and dark themes; embeddable | Working, tested in a browser with an accessibility scan |
-| Single sign-on (OpenID Connect) for the console, DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook | Not built yet |
+| Single sign-on for the console with OpenID Connect (authorisation code with PKCE), roles and workspaces from a group claim | Working, tested against a stand-in identity provider |
+| DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook | Not built yet |
 
 ## Try it
 

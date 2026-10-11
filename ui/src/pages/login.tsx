@@ -29,16 +29,21 @@ export function Login() {
             <div className="brand-mark" aria-hidden="true">{session.brand.brand_name.charAt(0).toUpperCase()}</div>
             <h1>{session.brand.brand_name}</h1>
           </div>
-          <p style={{ marginTop: 8 }}>Sign in with an admin token to manage the gateway.</p>
+          <p style={{ marginTop: 8 }}>{session.brand.single_sign_on ? "Sign in to manage the gateway." : "Sign in with an admin token to manage the gateway."}</p>
         </div>
         <form className="signin-body" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+          {session.brand.single_sign_on && <>
+            {/* A full page load, not a fetch: the browser has to go to the identity provider and come back. */}
+            <a className="btn btn-primary" href="/v1/session/oidc/login">Sign in with single sign-on</a>
+            <div className="muted" style={{ textAlign: "center", fontSize: 12 }}>or use an admin token</div>
+          </>}
           <ErrorNotice error={error} />
           <Field label="Admin token" hint="It starts with apg_at_. An administrator creates tokens under Settings, or with apgctl tokens create.">
             {(id, describedBy) => (
-              <input id={id} className="input mono" type="password" autoComplete="off" autoFocus required aria-describedby={describedBy} value={token} onChange={(e) => setToken(e.target.value)} />
+              <input id={id} className="input mono" type="password" autoComplete="off" autoFocus={!session.brand.single_sign_on} required aria-describedby={describedBy} value={token} onChange={(e) => setToken(e.target.value)} />
             )}
           </Field>
-          <button type="submit" className="btn btn-primary" disabled={busy || token.trim() === ""}>{busy ? "Signing in…" : "Sign in"}</button>
+          <button type="submit" className={`btn ${session.brand.single_sign_on ? "btn-ghost" : "btn-primary"}`} disabled={busy || token.trim() === ""}>{busy ? "Signing in…" : session.brand.single_sign_on ? "Sign in with a token" : "Sign in"}</button>
         </form>
         <div className="signin-footer">The token is exchanged for a session and is not kept in this browser.</div>
       </main>

@@ -14,6 +14,7 @@ import { ConfigError, loadConfig } from "./config.js";
 import { SecretBox } from "./crypto.js";
 import { connect, migrateDown, migrateStatus, migrateUp } from "./db.js";
 import { JobRunner, buildJobs } from "./jobs.js";
+import { Oidc } from "./oidc.js";
 import { buildOpenApi } from "./openapi.js";
 import { ENDPOINTS, registerApi } from "./routes/api.js";
 import { registerConfig } from "./routes/config.js";
@@ -56,10 +57,11 @@ async function main(argv: string[]): Promise<void> {
   const schemas = new SchemaRegistry();
   if (config.migrateOnBoot) await migrateUp(sql);
 
+  const box = new SecretBox(config.secretKey, config.secretKeyPrevious ?? undefined);
   const store = new Store({
     sql,
     schemas,
-    box: new SecretBox(config.secretKey, config.secretKeyPrevious ?? undefined),
+    box,
     domainVerification: config.domainVerification,
     egressAllow: config.egressAllow,
     backendAllow: config.backendAllow,
@@ -71,7 +73,7 @@ async function main(argv: string[]): Promise<void> {
   const pingDatabase = async () => {
     await sql`SELECT 1`;
   };
-  const base = { pingDatabase, store, schemas, auth, notifier, version: VERSION, ui: config.ui, debugNodeUrl: config.debugNodeUrl };
+  const base = { pingDatabase, store, schemas, auth, notifier, version: VERSION, ui: config.ui, debugNodeUrl: config.debugNodeUrl, oidc: config.oidc ? new Oidc(config.oidc, sql, box) : null };
   const app = buildServer(config, { ...base, serve: { api: true, dp: config.dpListen === null } });
   const jobs = new JobRunner(sql, buildJobs(store, config), app.log);
   // The data-plane API can have its own listener, so the network that reaches

@@ -43,7 +43,7 @@ export function securityHeaders(ui: Pick<UiConfig, "embedOrigins" | "logoUrl">):
   };
 }
 
-export function registerUi(app: FastifyInstance, ui: UiConfig, version: string): void {
+export function registerUi(app: FastifyInstance, ui: UiConfig, version: string, singleSignOn = false): void {
   if (!existsSync(join(ui.dir, "index.html"))) {
     app.log.warn({ dir: ui.dir }, "the admin UI is enabled but its files are not there; it will not be served");
     return;
@@ -68,6 +68,7 @@ export function registerUi(app: FastifyInstance, ui: UiConfig, version: string):
       primary_color: ui.primaryColor,
       version,
       embed_origins: ui.embedOrigins,
+      single_sign_on: singleSignOn,
     }));
 
   app.get("/ui/*", async (request, reply) => {

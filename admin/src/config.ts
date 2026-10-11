@@ -11,6 +11,7 @@ import type { BlockList } from "node:net";
 import { fileURLToPath } from "node:url";
 import { parseSecretKey } from "./crypto.js";
 import { parseCidrList } from "./egress.js";
+import type { OidcConfig, RoleGrant } from "./oidc.js";
 
 /** Variables this module reads. Checked against schemas/process-config.yaml by a test. */
 export const READ_VARIABLES = [
@@ -23,7 +24,8 @@ export const READ_VARIABLES = [
   "APG_EGRESS_ALLOW_CIDRS", "APG_BACKEND_ALLOW_CIDRS", "APG_LOG_LEVEL", "APG_LOG_FORMAT",
   "APG_USAGE_ROLLUP_INTERVAL_SECS", "APG_USAGE_RAW_RETENTION_DAYS", "APG_USAGE_HOURLY_RETENTION_DAYS", "APG_USAGE_WEBHOOK_URL",
   "APG_UI_ENABLED", "APG_UI_DIR", "APG_UI_BRAND_NAME", "APG_UI_LOGO_URL", "APG_UI_PRIMARY_COLOR", "APG_UI_EMBED_ORIGINS",
-  "APG_DEBUG_NODE_URL", "APG_OIDC_ISSUER",
+  "APG_DEBUG_NODE_URL", "APG_OIDC_ISSUER", "APG_OIDC_CLIENT_ID", "APG_OIDC_CLIENT_SECRET", "APG_OIDC_ROLE_CLAIM", "APG_OIDC_ROLE_MAP",
+  "APG_OIDC_SCOPES", "APG_PUBLIC_URL",
 ] as const;
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
@@ -61,6 +63,8 @@ export interface UiConfig {
 /** Parsed admin configuration. */
 export interface Config {
   ui: UiConfig;
+  /** Single sign-on for the console, or null. */
+  oidc: OidcConfig | null;
   /** Management address of a node that answers the route tester (spec RT-6), or null. */
   debugNodeUrl: string | null;
   databaseUrl: string;
@@ -120,9 +124,6 @@ export function loadConfig(env: Env = process.env): Config {
   if (get(env, "APG_USAGE_WEBHOOK_URL") !== null) {
     throw new ConfigError("APG_USAGE_WEBHOOK_URL is not available in this build yet; read usage through GET /v1/usage");
   }
-  if (get(env, "APG_OIDC_ISSUER") !== null) {
-    throw new ConfigError("APG_OIDC_ISSUER: single sign-on is not available in this build yet; sign in to the UI with an admin token");
-  }
   const primaryColor = get(env, "APG_UI_PRIMARY_COLOR");
   if (primaryColor !== null && !/^#[0-9a-fA-F]{6}$/.test(primaryColor)) {
     throw new ConfigError(`APG_UI_PRIMARY_COLOR must look like #2563eb; got '${primaryColor}'`);
@@ -154,6 +155,7 @@ export function loadConfig(env: Env = process.env): Config {
       }),
     },
     debugNodeUrl: debugNodeUrl?.replace(/\/$/, "") ?? null,
+    oidc: oidcConfig(env),
     databaseUrl: required(env, "APG_DATABASE_URL"),
     listen: parseAddress("APG_ADMIN_LISTEN", get(env, "APG_ADMIN_LISTEN") ?? "0.0.0.0:9000"),
     dpListen: dp === null ? null : parseAddress("APG_DP_LISTEN", dp),
@@ -193,7 +195,60 @@ function secretKeySource(env: Env): string {
   throw new ConfigError("required environment variable APG_SECRET_KEY (or APG_SECRET_KEY_FILE) is not set");
 }
 
+function oidcConfig(env: Env): OidcConfig | null {
+  const issuer = get(env, "APG_OIDC_ISSUER");
+  if (issuer === null) {
+    for (const key of ["APG_OIDC_CLIENT_ID", "APG_OIDC_CLIENT_SECRET", "APG_OIDC_ROLE_MAP"]) {
+      if (get(env, key) !== null) throw new ConfigError(`${key} is set but APG_OIDC_ISSUER is not`);
+    }
+    return null;
+  }
+  const url = (key: string, value: string): string => {
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      throw new ConfigError(`${key} must be a URL; got '${value}'`);
+    }
+    if (parsed.protocol !== "https:" && !["localhost", "127.0.0.1"].includes(parsed.hostname)) {
+      throw new ConfigError(`${key} must use https`);
+    }
+    return value.replace(/\/+$/, "");
+  };
+  let map: unknown;
+  try {
+    map = JSON.parse(required(env, "APG_OIDC_ROLE_MAP"));
+  } catch (err) {
+    if (err instanceof ConfigError) throw err;
+    throw new ConfigError("APG_OIDC_ROLE_MAP must be JSON, for example {\"gateway-admins\":{\"role\":\"admin\",\"workspaces\":[\"*\"]}}");
+  }
+  if (typeof map !== "object" || map === null || Array.isArray(map) || Object.keys(map).length === 0) {
+    // Without a map nobody could sign in, and "everyone is an admin" must never be the fallback.
+    throw new ConfigError("APG_OIDC_ROLE_MAP must map at least one claim value to a role");
+  }
+  const roleMap = Object.entries(map as Record<string, unknown>).map(([value, grant]): [string, RoleGrant] => {
+    const g = grant as { role?: unknown; workspaces?: unknown };
+    if (!["admin", "editor", "viewer"].includes(g?.role as string)) throw new ConfigError(`APG_OIDC_ROLE_MAP: '${value}' needs a role of admin, editor or viewer`);
+    const workspaces = g.workspaces ?? ["*"];
+    if (!Array.isArray(workspaces) || workspaces.length === 0 || !workspaces.every((w) => typeof w === "string" && w !== "")) {
+      throw new ConfigError(`APG_OIDC_ROLE_MAP: '${value}' needs workspaces as ["*"] or a list of workspace names`);
+    }
+    return [value, { role: g.role as RoleGrant["role"], workspaces: workspaces as string[] }];
+  });
+  return {
+    issuer: url("APG_OIDC_ISSUER", issuer),
+    clientId: required(env, "APG_OIDC_CLIENT_ID"),
+    clientSecret: get(env, "APG_OIDC_CLIENT_SECRET"),
+    roleClaim: get(env, "APG_OIDC_ROLE_CLAIM") ?? "groups",
+    roleMap,
+    // The identity provider sends browsers back here, so it cannot be guessed from a request.
+    publicUrl: url("APG_PUBLIC_URL", required(env, "APG_PUBLIC_URL")),
+    scopes: get(env, "APG_OIDC_SCOPES") ?? "openid profile email",
+  };
+}
+
 function jwtConfig(env: Env): JwtConfig | null {
+
   const jwksUrl = get(env, "APG_ADMIN_JWT_JWKS_URL");
   const publicKeyPem = get(env, "APG_ADMIN_JWT_PUBLIC_KEY")?.replace(/\\n/g, "\n") ?? null;
   if (jwksUrl === null && publicKeyPem === null) return null;

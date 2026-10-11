@@ -26,6 +26,8 @@ export interface Brand {
   primary_color: string | null;
   version: string;
   embed_origins: string[];
+  /** True when the control plane offers sign-in through an identity provider. */
+  single_sign_on: boolean;
 }
 
 export interface Session {
@@ -46,7 +48,7 @@ export interface Session {
   signOut: () => Promise<void>;
 }
 
-const DEFAULT_BRAND: Brand = { brand_name: "valkv-apg", logo_url: null, primary_color: null, version: "", embed_origins: [] };
+const DEFAULT_BRAND: Brand = { brand_name: "valkv-apg", logo_url: null, primary_color: null, version: "", embed_origins: [], single_sign_on: false };
 const Ctx = createContext<Session | null>(null);
 
 export function useSession(): Session {

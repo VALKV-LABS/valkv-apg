@@ -85,6 +85,8 @@ variables:
   - { name: APG_OIDC_CLIENT_SECRET, component: admin, type: secret, phase: "4", description: "OIDC client secret." }
   - { name: APG_OIDC_ROLE_CLAIM, component: admin, type: string, phase: "4", description: "Claim mapped to a role." }
   - { name: APG_OIDC_ROLE_MAP, component: admin, type: json, phase: "4", description: "Claim value to { role, workspaces }." }
+  - { name: APG_OIDC_SCOPES, component: admin, type: string, default: "openid profile email", phase: "4", description: "Scopes asked of the identity provider." }
+  - { name: APG_PUBLIC_URL, component: admin, type: url, required_when: "OIDC is on", phase: "4", description: "How browsers reach the admin; the identity provider sends them back here." }
   - { name: APG_DOMAIN_VERIFICATION, component: admin, type: enum, values: [none, dns_txt], default: none, phase: "1", description: "Whether a Domain must be proven before it becomes active." }
   - { name: APG_CHANGELOG_RETENTION_HOURS, component: admin, type: integer, default: 168, phase: "1", description: "Age at which changelog rows are deleted (CFG-9)." }
   - { name: APG_NODE_SLOT_TTL_HOURS, component: admin, type: integer, default: 24, phase: "1", description: "Silence after which a node's replication slot is dropped (CFG-15)." }

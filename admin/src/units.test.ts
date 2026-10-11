@@ -16,6 +16,7 @@ import { canonical, credentialName, diffFields, pluginName } from "./declarative
 import { cookieOf } from "./server.js";
 import { securityHeaders } from "./ui.js";
 import { loadConfig } from "./config.js";
+import { grantFor } from "./oidc.js";
 import { SchemaRegistry } from "./schemas.js";
 import { pluginTemplateFaults, templateFault } from "./template.js";
 import { loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
@@ -303,7 +304,43 @@ describe("declarative configuration helpers", () => {
   });
 });
 
+describe("single sign-on settings", () => {
+  const base = { APG_DATABASE_URL: "postgres://x/y", APG_SECRET_KEY: Buffer.alloc(32, 1).toString("base64") };
+  const oidc = { ...base, APG_OIDC_ISSUER: "https://idp.example.com/", APG_OIDC_CLIENT_ID: "apg", APG_PUBLIC_URL: "https://admin.example.com", APG_OIDC_ROLE_MAP: '{"gw-admins":{"role":"admin"},"acme-devs":{"role":"editor","workspaces":["acme"]}}' };
+
+  it("is off unless an issuer is named, and complete when it is", () => {
+    expect(loadConfig(base).oidc).toBeNull();
+    expect(loadConfig(oidc).oidc).toEqual({
+      issuer: "https://idp.example.com", clientId: "apg", clientSecret: null, roleClaim: "groups", publicUrl: "https://admin.example.com", scopes: "openid profile email",
+      roleMap: [["gw-admins", { role: "admin", workspaces: ["*"] }], ["acme-devs", { role: "editor", workspaces: ["acme"] }]],
+    });
+  });
+
+  it("refuses a setup in which nobody, or everybody, could sign in", () => {
+    const without = (key: string) => Object.fromEntries(Object.entries(oidc).filter(([k]) => k !== key));
+    expect(() => loadConfig(without("APG_OIDC_ROLE_MAP"))).toThrow(/APG_OIDC_ROLE_MAP/);
+    expect(() => loadConfig(without("APG_PUBLIC_URL"))).toThrow(/APG_PUBLIC_URL/);
+    expect(() => loadConfig(without("APG_OIDC_CLIENT_ID"))).toThrow(/APG_OIDC_CLIENT_ID/);
+    expect(() => loadConfig({ ...oidc, APG_OIDC_ROLE_MAP: "{}" })).toThrow(/at least one/);
+    expect(() => loadConfig({ ...oidc, APG_OIDC_ROLE_MAP: '{"x":{"role":"node"}}' })).toThrow(/admin, editor or viewer/);
+    expect(() => loadConfig({ ...oidc, APG_OIDC_ROLE_MAP: '{"x":{"role":"viewer","workspaces":[]}}' })).toThrow(/workspaces/);
+    expect(() => loadConfig({ ...oidc, APG_OIDC_ROLE_MAP: "not json" })).toThrow(/must be JSON/);
+    expect(() => loadConfig({ ...oidc, APG_OIDC_ISSUER: "http://idp.example.com" })).toThrow(/https/);
+    expect(() => loadConfig({ ...base, APG_OIDC_CLIENT_ID: "apg" })).toThrow(/APG_OIDC_ISSUER is not/);
+  });
+
+  it("grants by the first matching entry of the map, and nothing when none matches", () => {
+    const map = loadConfig(oidc).oidc!.roleMap;
+    expect(grantFor(["staff", "acme-devs", "gw-admins"], map)).toEqual({ role: "admin", workspaces: ["*"] });
+    expect(grantFor("acme-devs", map)).toEqual({ role: "editor", workspaces: ["acme"] });
+    expect(grantFor(["staff"], map)).toBeNull();
+    expect(grantFor(undefined, map)).toBeNull();
+    expect(grantFor([{ name: "gw-admins" }], map)).toBeNull();
+  });
+});
+
 describe("the UI host", () => {
+
   it("nobody may frame the UI unless an origin is listed", () => {
     expect(securityHeaders({ embedOrigins: [], logoUrl: null })["content-security-policy"]).toContain("frame-ancestors 'none'");
     const csp = securityHeaders({ embedOrigins: ["https://portal.example.com"], logoUrl: "https://cdn.example.com/logo.svg" })["content-security-policy"]!;
@@ -325,6 +362,5 @@ describe("the UI host", () => {
     expect(() => loadConfig({ ...base, APG_UI_PRIMARY_COLOR: "blue" })).toThrow(/APG_UI_PRIMARY_COLOR/);
     expect(() => loadConfig({ ...base, APG_UI_LOGO_URL: "javascript:alert(1)" })).toThrow(/APG_UI_LOGO_URL/);
     expect(() => loadConfig({ ...base, APG_DEBUG_NODE_URL: "node:9100" })).toThrow(/APG_DEBUG_NODE_URL/);
-    expect(() => loadConfig({ ...base, APG_OIDC_ISSUER: "https://idp.example.com" })).toThrow(/not available/);
   });
 });

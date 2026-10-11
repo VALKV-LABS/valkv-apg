@@ -46,6 +46,21 @@ describe("signing in", () => {
     expect(JSON.stringify({ ...localStorage })).not.toContain("apg_at_good");
   });
 
+  it("offers single sign-on when the control plane has it, next to the token", async () => {
+    serve({}, { actor: null, brand: { single_sign_on: true } });
+    open();
+    const link = await screen.findByRole("link", { name: "Sign in with single sign-on" });
+    expect(link).toHaveAttribute("href", "/v1/session/oidc/login");
+    expect(screen.getByRole("button", { name: "Sign in with a token" })).toBeDisabled();
+  });
+
+  it("shows who is signed in through single sign-on, with their role", async () => {
+    serve({}, { actor: { kind: "oidc", id: "u1", name: "ada@example.com", role: "editor", workspaces: ["ws-acme"], fleet_admin: false } });
+    open();
+    expect(await screen.findByText("ada@example.com")).toBeInTheDocument();
+    expect(screen.getByText(/editor · scoped/)).toBeInTheDocument();
+  });
+
   it("signs out, and returns to sign-in when the session ends on its own", async () => {
     let alive = true;
     const server = serve({

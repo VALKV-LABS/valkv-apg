@@ -18,7 +18,7 @@ export type Role = "admin" | "editor" | "viewer" | "node";
 
 /** Who is making a request. */
 export interface Actor {
-  kind: "token" | "jwt" | "system";
+  kind: "token" | "jwt" | "oidc" | "system";
   id: string;
   name: string;
   role: Role;
@@ -204,6 +204,16 @@ export class Authenticator {
    * {@link SESSION_HOURS}.
    */
   async openSession(actor: Actor): Promise<{ id: string; csrf: string; expiresAt: Date }> {
+    if (actor.kind === "oidc") {
+      // Signed in through the identity provider: the session holds what was granted then.
+      const id = generateToken("apg_s_");
+      const csrf = generateToken("");
+      const [row] = await this.sql<Array<{ expires_at: Date }>>`
+        INSERT INTO apg_sessions (id_hash, actor, csrf, expires_at)
+        VALUES (${sha256(id)}, ${this.sql.json(actor as never)}, ${csrf}, now() + make_interval(hours => ${SESSION_HOURS}))
+        RETURNING expires_at`;
+      return { id, csrf, expiresAt: row!.expires_at };
+    }
     if (actor.kind !== "token") {
       throw new ApiError("BAD_REQUEST", "sessions are opened with an admin token; send a delegated token as a bearer on each request");
     }
@@ -221,16 +231,17 @@ export class Authenticator {
   /** Resolves a session cookie. A request that changes something must carry the session's CSRF token. */
   async fromSession(cookie: string, method: string, csrfHeader: string | undefined): Promise<{ actor: Actor; csrf: string; expiresAt: Date }> {
     const denied = new ApiError("UNAUTHENTICATED", "missing or invalid credentials");
-    const [row] = await this.sql<Array<{ id: string; name: string; role: Role; workspaces: string[]; csrf: string; expires_at: Date }>>`
-      SELECT t.id, t.name, t.role, t.workspaces, s.csrf, s.expires_at
-      FROM apg_sessions s JOIN apg_admin_tokens t ON t.id = s.token_id
-      WHERE s.id_hash = ${sha256(cookie)} AND s.expires_at > now() AND (t.expires_at IS NULL OR t.expires_at > now())`;
+    const [row] = await this.sql<Array<{ id: string; name: string; role: Role; workspaces: string[]; csrf: string; expires_at: Date; actor: Actor | null }>>`
+      SELECT t.id, t.name, t.role, t.workspaces, s.csrf, s.expires_at, s.actor
+      FROM apg_sessions s LEFT JOIN apg_admin_tokens t ON t.id = s.token_id
+      WHERE s.id_hash = ${sha256(cookie)} AND s.expires_at > now()
+        AND (s.token_id IS NULL OR t.expires_at IS NULL OR t.expires_at > now())`;
     if (!row) throw denied;
     if (!["GET", "HEAD", "OPTIONS"].includes(method) && !(typeof csrfHeader === "string" && safeEqual(csrfHeader, row.csrf))) {
       throw new ApiError("FORBIDDEN", "the X-Apg-Csrf header is missing or does not match this session");
     }
     return {
-      actor: { kind: "token", id: row.id, name: row.name, role: row.role, workspaces: row.workspaces.includes("*") ? "*" : row.workspaces },
+      actor: row.actor ?? { kind: "token", id: row.id, name: row.name, role: row.role, workspaces: row.workspaces.includes("*") ? "*" : row.workspaces },
       csrf: row.csrf,
       expiresAt: row.expires_at,
     };

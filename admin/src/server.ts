@@ -10,6 +10,7 @@ import type { Authenticator } from "./auth.js";
 import { CallerRateLimiter, SESSION_COOKIE } from "./auth.js";
 import type { Config, UiConfig } from "./config.js";
 import { registerConfig } from "./routes/config.js";
+import { type Oidc, registerOidc } from "./oidc.js";
 import { registerUi } from "./ui.js";
 import { ApiError, toErrorResponse } from "./errors.js";
 import type { JobRunner } from "./jobs.js";
@@ -35,10 +36,13 @@ export interface ServerDeps {
   ui?: UiConfig;
   /** A node's management address, for the route tester (spec RT-6). */
   debugNodeUrl?: string | null;
+  /** Single sign-on for the console. */
+  oidc?: Oidc | null;
 }
 
 const REQUEST_ID = /^[A-Za-z0-9._-]{1,128}$/;
-const OPEN_PATHS = new Set(["/healthz", "/readyz", "/metrics", "/v1/openapi.json"]);
+// The single sign-on endpoints are reached by a browser that is not signed in yet.
+const OPEN_PATHS = new Set(["/healthz", "/readyz", "/metrics", "/v1/openapi.json", "/v1/session/oidc/login", "/v1/session/oidc/callback"]);
 
 /** Creates the server. The caller listens and closes. */
 export function buildServer(config: Pick<Config, "logLevel"> & Partial<Pick<Config, "tls">>, deps: ServerDeps): FastifyInstance {
@@ -167,7 +171,8 @@ export function buildServer(config: Pick<Config, "logLevel"> & Partial<Pick<Conf
     if (serve.dp && deps.notifier) registerDp(app, deps.store, deps.notifier);
   }
 
-  if (serve.api && deps.ui?.enabled) registerUi(app, deps.ui, deps.version ?? "0.1.0");
+  if (serve.api && deps.oidc && deps.auth) registerOidc(app, deps.oidc, deps.auth, { secureCookies: Boolean(config.tls) });
+  if (serve.api && deps.ui?.enabled) registerUi(app, deps.ui, deps.version ?? "0.1.0", Boolean(deps.oidc));
 
   return app;
 }

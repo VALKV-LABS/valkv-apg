@@ -50,6 +50,9 @@ the project uses [Semantic Versioning](https://semver.org/).
   routes with a route tester, plugins with schema-driven forms, consumers, usage with
   CSV export, nodes, config review and revisions, audit log, settings and tokens. Light
   and dark themes, usable from 360 px, keyboard operable, embeddable in another page.
+- Single sign-on for the console with OpenID Connect: `APG_OIDC_ISSUER`, `_CLIENT_ID`,
+  `_CLIENT_SECRET`, `_ROLE_CLAIM`, `_ROLE_MAP` and `APG_PUBLIC_URL`. Roles and workspaces
+  come from a claim; someone in no mapped group gets no session.
 - Browser sessions for the console: `POST /v1/session` exchanges an admin token for an
   HttpOnly cookie and a CSRF token.
 - Route tester: nodes answer `GET /debug/match` on the management listener with the
