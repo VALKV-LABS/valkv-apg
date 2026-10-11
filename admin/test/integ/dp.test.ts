@@ -172,6 +172,55 @@ describe("nodes", () => {
   });
 });
 
+describe("backend health", () => {
+  // spec OBS-4
+  it("puts what each live node reports side by side, and claims nothing nobody reported", async () => {
+    const created = await h.call("POST", "/v1/workspaces/default/services", { body: { name: "health-svc", backends: [{ target: "10.0.0.1:80" }, { target: "10.0.0.2:80" }, { target: "10.0.0.3:80", status: "down" }], health_check: { active: { type: "tcp" } } } });
+    expect(created.status).toBe(201);
+    const id = created.json.id;
+    await h.call("POST", "/v1/workspaces/default/services", { body: { name: "health-unseen", backends: [{ target: "10.0.0.9:80" }] } });
+    const report = (backends: unknown[]) => [{ service_id: id, name: "health-svc", backends }];
+    const beat = (nodeId: string, backends: unknown[]) => h.call("POST", "/dp/heartbeat", { ...node(), body: { node_id: nodeId, applied_seq: 1, backends: report(backends) } });
+    await beat("h1", [
+      { target: "10.0.0.1:80", state: "healthy", in_rotation: true, health_check: true, circuit: "closed", seen_at: 1760000000 },
+      { target: "10.0.0.2:80", state: "healthy", in_rotation: true, health_check: true, circuit: "closed" },
+    ]);
+    await beat("h2", [
+      { target: "10.0.0.1:80", state: "unhealthy", reason: "connection refused", in_rotation: false, health_check: true, circuit: "open" },
+      { target: "10.0.0.2:80", state: "healthy", in_rotation: true, health_check: true, circuit: "closed" },
+    ]);
+    // A node from before per-backend reports says nothing about any backend.
+    await h.call("POST", "/dp/heartbeat", { ...node(), body: { node_id: "h-old", applied_seq: 1, backends: [{ service_id: id, name: "health-svc", healthy: 2, unhealthy: 0 }] } });
+
+    const one = (await h.call("GET", "/v1/workspaces/default/services/health-svc/health")).json;
+    expect([one.state, one.healthy, one.unhealthy, one.unknown, one.health_check]).toEqual(["unhealthy", 1, 1, 0, true]);
+    const [first, second, third] = one.backends;
+    expect([first.target, first.state, first.reason]).toEqual(["10.0.0.1:80", "unhealthy", "connection refused"]);
+    expect(first.nodes.map((n: any) => [n.node_id, n.state, n.in_rotation])).toEqual([["h1", "healthy", true], ["h2", "unhealthy", false]]);
+    expect(first.nodes[0].seen_at).toBe("2025-10-09T08:53:20.000Z");
+    expect([second.state, second.reason]).toEqual(["healthy", undefined]);
+    expect([third.state, third.nodes]).toEqual(["down", []]);
+    expect(one.live_nodes).toBeGreaterThanOrEqual(3);
+    expect((await h.call("GET", `/v1/workspaces/default/services/${id}/health`)).json.name).toBe("health-svc");
+
+    const all = (await h.call("GET", "/v1/workspaces/default/health")).json;
+    const unseen = all.data.find((s: any) => s.name === "health-unseen");
+    expect([unseen.state, unseen.unknown, unseen.health_check, unseen.nodes_reporting]).toEqual(["unknown", 1, false, 0]);
+    expect(all.data.find((s: any) => s.name === "health-svc").state).toBe("unhealthy");
+
+    // A node that stopped reporting is not counted.
+    await h.sql`UPDATE apg_nodes SET last_seen = now() - interval '5 minutes' WHERE node_id = 'h2'`;
+    expect((await h.call("GET", "/v1/workspaces/default/services/health-svc/health")).json.state).toBe("healthy");
+
+    // Readable by a viewer of the workspace and by nobody outside it.
+    const viewer = await h.token("viewer", [(await h.call("GET", "/v1/workspaces/default")).json.id]);
+    expect((await h.call("GET", "/v1/workspaces/default/health", { token: viewer })).status).toBe(200);
+    await h.call("POST", "/v1/workspaces", { body: { name: "health-other" } });
+    expect((await h.call("GET", "/v1/workspaces/health-other/health", { token: viewer })).status).toBe(404);
+    expect((await h.call("GET", "/v1/workspaces/default/services/no-such/health")).status).toBe(404);
+  });
+});
+
 describe("certificate coordination", () => {
   it("one node holds a lease; a second is refused until it expires or is released", async () => {
     const a = await h.call("POST", "/dp/certs/lease", { ...node(), body: { hostname: "lease.example.com", node_id: "n1" } });

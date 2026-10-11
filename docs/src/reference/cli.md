@@ -25,6 +25,7 @@ Resources
   apgctl route match --host <h> --path <p> [--method <m>] [--header 'Name: value']...
   apgctl cache purge <route>
   apgctl nodes
+  apgctl health [service]                      backend health as each node reports it; exits 1 if a backend is failing
   apgctl usage [--from <time>] [--to <time>] [--granularity minute|hour|day] [--group-by a,b] [--all-workspaces]
 
 Connection

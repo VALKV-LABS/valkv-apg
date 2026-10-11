@@ -67,6 +67,59 @@ curl http://localhost:9100/readyz     # ready, stale, applied_seq
 curl http://localhost:9100/status     # counts of what it holds, per kind
 ```
 
+## Is a backend up?
+
+Each node works out backend health for itself and reports it. There are three answers, not two:
+
+| State | Means |
+|---|---|
+| healthy | The node's last health check, or the last request it sent there, was answered |
+| failing | The last check or request failed, or the circuit breaker has cut the backend off. The reason is given: `connection refused`, `the host name does not resolve`, `connecting timed out`, `the health check at /healthz answered 503`, and so on |
+| not checked | The node has sent nothing to the backend yet, so it knows nothing about it |
+
+A backend is never called healthy before something has been sent to it. Without a health check a node learns about a backend only from real requests, so a backend that gets no traffic stays "not checked", and two nodes can differ: the one that tried it says failing, the one that did not says not checked. Give the service a health check and every node finds out for itself within a few seconds:
+
+```yaml
+version: 1
+services:
+  - name: orders
+    backends:
+      - target: "10.0.0.1:8080"
+    health_check:
+      active: { type: tcp }
+routes:
+  - name: orders
+    service: orders
+    paths: [/orders]
+```
+
+`type: tcp` only opens a connection. The default, `http`, requests `path` (default `/healthz`) and expects a 2xx or 3xx status. A service created in the console starts with a `tcp` check.
+
+Where to look:
+
+- **The console.** The overview lists every failing backend with the reason and how many nodes see it. The Services page shows a state per service, and the health button on a row shows each backend as each node sees it.
+- **`apgctl health`**, or `apgctl health <service>`. It exits 1 when a backend is failing, so it can gate a script.
+- **The Admin API**, with any token that can read the workspace:
+
+  ```sh
+  curl -H "Authorization: Bearer $APG_ADMIN_TOKEN" https://admin.example.com/v1/workspaces/default/health
+  curl -H "Authorization: Bearer $APG_ADMIN_TOKEN" https://admin.example.com/v1/workspaces/default/services/orders/health
+  ```
+
+  The answer has each backend's state, the reason, and what each live node reported. Nodes report every ten seconds, so it can be that old.
+- **A node itself**, on its management port. This is the only view in standalone mode, and it is immediate:
+
+  ```sh
+  curl http://localhost:9100/upstreams
+  curl 'http://localhost:9100/upstreams?service=orders'
+  curl 'http://localhost:9100/upstreams?service=orders&backend=10.0.0.1:8080'
+  ```
+
+  The management port takes no token. It is bound to loopback by default and is meant to stay on a private network, like `/metrics`. A node cannot check an admin token: it holds no list of them.
+- **Metrics**: `apg_backend_healthy` (only for services with a health check) and `apg_backend_circuit_open`.
+
+**A backend on the same machine as a node in a container.** Inside a container, `localhost` and `127.0.0.1` are the container itself, so a backend given as `127.0.0.1:18080` fails with `connection refused` even though that port answers on the machine. Use the name the backend has on the container network (`echo:8080` in the Compose files here), or `host.docker.internal:18080` for something listening on the machine itself. The Compose files map that name for the node.
+
 ## Why did this request go there?
 
 The route tester: the console's **Routes** page, `apgctl route match --host … --path …`, or `GET /debug/match` on a node's management port. It names the route that would be chosen and, for every other candidate, why it was not.

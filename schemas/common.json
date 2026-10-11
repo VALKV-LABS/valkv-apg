@@ -23,7 +23,7 @@
       "pattern": "^(\\*\\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
     },
     "target": {
-      "description": "host:port, where host is an IP address or DNS name.",
+      "description": "host:port, where host is an IP address or DNS name, as a node reaches it. For a node that runs in a container, localhost and 127.0.0.1 are that container, not the machine it runs on.",
       "type": "string", "maxLength": 261,
       "pattern": "^(\\[[0-9a-fA-F:]+\\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?):[0-9]{1,5}$"
     },

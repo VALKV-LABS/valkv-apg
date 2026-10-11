@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, Hasher};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use apg_core::model::{ActiveCheck, Backend, CaCertificate, Certificate, Service};
@@ -196,6 +196,15 @@ impl Circuit {
     pub fn is_closed(&self) -> bool {
         *self.phase.lock() == Phase::Closed
     }
+
+    /// The phase by name, for status reports.
+    pub fn phase_name(&self) -> &'static str {
+        match *self.phase.lock() {
+            Phase::Closed => "closed",
+            Phase::Open { .. } => "open",
+            Phase::HalfOpen { .. } => "half_open",
+        }
+    }
 }
 
 // ── Per-backend and per-service state ────────────────────────────────────────
@@ -206,11 +215,34 @@ pub struct BackendState {
     /// Whether an active probe runs for this backend, and what it last concluded.
     probed: AtomicBool,
     healthy: AtomicBool,
+    /// What the node last saw of this backend, from a probe or a request: one of `SEEN_*`.
+    seen: AtomicU8,
+    /// Unix seconds of that observation.
+    seen_at: AtomicU64,
+    /// Why the last failed probe or request failed.
+    reason: Mutex<Option<String>>,
+}
+
+/// Nothing has been sent to the backend yet, so nothing is known about it.
+const SEEN_NOTHING: u8 = 0;
+const SEEN_ANSWER: u8 = 1;
+const SEEN_FAILURE: u8 = 2;
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
 impl Default for BackendState {
     fn default() -> Self {
-        Self { in_flight: AtomicUsize::new(0), circuit: Circuit::default(), probed: AtomicBool::new(false), healthy: AtomicBool::new(true) }
+        Self {
+            in_flight: AtomicUsize::new(0),
+            circuit: Circuit::default(),
+            probed: AtomicBool::new(false),
+            healthy: AtomicBool::new(true),
+            seen: AtomicU8::new(SEEN_NOTHING),
+            seen_at: AtomicU64::new(0),
+            reason: Mutex::new(None),
+        }
     }
 }
 
@@ -222,6 +254,22 @@ impl BackendState {
     /// Healthy by active check. A backend nobody probes counts as healthy.
     pub fn healthy(&self) -> bool {
         !self.probed.load(Ordering::Relaxed) || self.healthy.load(Ordering::Relaxed)
+    }
+
+    /// Remembers how a probe or a request to the backend ended, for status
+    /// reports. It has no part in choosing a backend.
+    fn observe(&self, outcome: Result<(), &str>) {
+        self.seen_at.store(unix_now(), Ordering::Relaxed);
+        match outcome {
+            Ok(()) => self.seen.store(SEEN_ANSWER, Ordering::Relaxed),
+            Err(reason) => {
+                self.seen.store(SEEN_FAILURE, Ordering::Relaxed);
+                let mut current = self.reason.lock();
+                if current.as_deref() != Some(reason) {
+                    *current = Some(reason.to_string());
+                }
+            }
+        }
     }
 }
 
@@ -268,6 +316,13 @@ impl ServiceState {
 pub struct Picked {
     pub backend: Backend,
     state: Arc<BackendState>,
+}
+
+impl Picked {
+    /// Notes why the attempt failed, so that a status report can say more than "failing".
+    pub fn failed_because(&self, reason: &str) {
+        self.state.observe(Err(reason));
+    }
 }
 
 impl Drop for Picked {
@@ -588,25 +643,89 @@ impl Upstreams {
         Some(Picked { backend: (*backend).clone(), state: bs.clone() })
     }
 
-    /// How many backends of each service this node would send traffic to right now (spec OBS-4).
-    pub fn health_summary(&self, snapshot: &Snapshot) -> Vec<serde_json::Value> {
+    /// What this node knows about one backend (spec OBS-4).
+    ///
+    /// `state` is what the evidence says: `healthy` after an answer,
+    /// `unhealthy` after a failure, and `unknown` while nothing has been sent,
+    /// because a backend nobody has talked to is not known to work. It is
+    /// separate from `in_rotation`, which is what `select` does with it.
+    fn backend_health(&self, state: &ServiceState, backend: &Backend) -> serde_json::Value {
+        let bs = state.backend(&backend.target);
+        let probed = bs.probed.load(Ordering::Relaxed);
+        let circuit = bs.circuit.phase_name();
+        let unresolved = split_target(&backend.target).is_some_and(|(host, _)| self.dns.cache.get(host).is_some_and(|a| a.is_empty()));
+        let seen = bs.seen.load(Ordering::Relaxed);
+        let (health, reason) = if backend.status == "down" {
+            ("down", None)
+        } else if unresolved {
+            ("unhealthy", Some("the host name does not resolve".to_string()))
+        } else if seen == SEEN_FAILURE || circuit != "closed" || (probed && !bs.healthy.load(Ordering::Relaxed)) {
+            ("unhealthy", bs.reason.lock().clone())
+        } else if seen == SEEN_ANSWER {
+            ("healthy", None)
+        } else {
+            ("unknown", None)
+        };
+        let mut out = serde_json::json!({
+            "target": backend.target,
+            "status": backend.status,
+            "state": health,
+            "in_rotation": backend.status == "active" && backend.weight > 0 && bs.healthy() && circuit == "closed",
+            "health_check": probed,
+            "circuit": circuit,
+            "in_flight": bs.in_flight(),
+        });
+        if let Some(reason) = reason {
+            out["reason"] = reason.into();
+        }
+        let at = bs.seen_at.load(Ordering::Relaxed);
+        if at > 0 {
+            out["seen_at"] = at.into();
+        }
+        out
+    }
+
+    /// The health of every service's backends as this node sees it, at most
+    /// `services` of them with at most `backends` each, failing ones first
+    /// (spec OBS-4). The counts cover every backend that is not marked down.
+    pub fn health(&self, snapshot: &Snapshot, services: usize, backends: usize) -> Vec<serde_json::Value> {
         snapshot
             .services()
-            .take(500)
+            .take(services)
             .map(|entry| {
                 let state = self.service(entry);
-                let (mut healthy, mut unhealthy) = (0u32, 0u32);
-                for backend in entry.spec.backends.iter().filter(|b| b.status == "active") {
-                    let bs = state.backend(&backend.target);
-                    if bs.healthy() && bs.circuit.is_closed() { healthy += 1 } else { unhealthy += 1 }
-                }
-                serde_json::json!({ "service_id": entry.id, "name": entry.spec.name, "healthy": healthy, "unhealthy": unhealthy })
+                let mut detail: Vec<serde_json::Value> = entry.spec.backends.iter().map(|b| self.backend_health(&state, b)).collect();
+                let count = |wanted: &str| detail.iter().filter(|b| b["state"] == wanted).count();
+                let (healthy, unhealthy, unknown) = (count("healthy"), count("unhealthy"), count("unknown"));
+                let total = detail.len();
+                detail.sort_by_key(|b| match b["state"].as_str() {
+                    Some("unhealthy") => 0,
+                    Some("unknown") => 1,
+                    _ => 2,
+                });
+                detail.truncate(backends);
+                serde_json::json!({
+                    "service_id": entry.id,
+                    "workspace_id": entry.workspace_id,
+                    "name": entry.spec.name,
+                    "healthy": healthy,
+                    "unhealthy": unhealthy,
+                    "unknown": unknown,
+                    "backends": detail,
+                    "backends_total": total,
+                })
             })
             .collect()
     }
 
     /// Records how an attempt ended, for the circuit breaker.
     pub fn record(&self, snapshot: &Snapshot, service: &ServiceEntry, picked: &Picked, ok: bool) {
+        if ok {
+            picked.state.observe(Ok(()));
+        } else if picked.state.seen.swap(SEEN_FAILURE, Ordering::Relaxed) != SEEN_FAILURE {
+            // The caller gives the reason with `failed_because`; this only makes sure the failure counts.
+            picked.state.seen_at.store(unix_now(), Ordering::Relaxed);
+        }
         let passive = &service.spec.health_check.passive;
         if !passive.enabled || !snapshot.flag("circuit_breaker") {
             return;
@@ -732,8 +851,11 @@ impl Upstreams {
         tokio::time::sleep(jitter(interval, 100)).await;
         let (mut passed, mut failed) = (0u32, 0u32);
         loop {
-            let ok = tokio::time::timeout(Duration::from_millis(spec.check.timeout_ms), self.probe_once(&connector, &spec)).await.unwrap_or(false);
-            if ok {
+            let outcome = tokio::time::timeout(Duration::from_millis(spec.check.timeout_ms), self.probe_once(&connector, &spec))
+                .await
+                .unwrap_or_else(|_| Err(format!("the health check got no answer within {} ms", spec.check.timeout_ms)));
+            spec.state.observe(outcome.as_ref().map(|_| ()).map_err(String::as_str));
+            if outcome.is_ok() {
                 passed += 1;
                 failed = 0;
             } else {
@@ -744,7 +866,7 @@ impl Upstreams {
             if healthy && failed >= spec.check.unhealthy_threshold {
                 spec.state.healthy.store(false, Ordering::Relaxed);
                 metrics::BACKEND_HEALTHY.with_label_values(&labels).set(0);
-                tracing::warn!(service = labels[1], backend = labels[2], "backend is unhealthy: health checks keep failing");
+                tracing::warn!(service = labels[1], backend = labels[2], reason = outcome.as_ref().err().map_or("", String::as_str), "backend is unhealthy: health checks keep failing");
             } else if !healthy && passed >= spec.check.healthy_threshold {
                 spec.state.healthy.store(true, Ordering::Relaxed);
                 metrics::BACKEND_HEALTHY.with_label_values(&labels).set(1);
@@ -756,25 +878,56 @@ impl Upstreams {
 
     /// One probe. HTTP probes travel the same connection path as real traffic
     /// (TLS settings, HTTP version), so they fail for the same reasons it would.
-    async fn probe_once(&self, connector: &Connector, spec: &ProbeSpec) -> bool {
-        let Ok(addr) = self.address(&spec.service, &spec.backend, None).await else { return false };
+    async fn probe_once(&self, connector: &Connector, spec: &ProbeSpec) -> Result<(), String> {
+        let addr = self.address(&spec.service, &spec.backend, None).await?;
         if spec.check.kind == "tcp" {
-            return tokio::net::TcpStream::connect(addr).await.is_ok();
+            return tokio::net::TcpStream::connect(addr).await.map(|_| ()).map_err(|e| connect_failure(&e));
         }
         let budget = Duration::from_millis(spec.check.timeout_ms);
-        let Ok(peer) = self.peer(&spec.service, &spec.backend, addr, Some(budget)) else { return false };
-        let Ok((mut session, _)) = connector.get_http_session(&peer).await else { return false };
+        let peer = self.peer(&spec.service, &spec.backend, addr, Some(budget))?;
+        let (mut session, _) = connector.get_http_session(&peer).await.map_err(|e| failure_reason(&e))?;
         let host = spec.check.host_header.clone().unwrap_or_else(|| spec.backend.target.clone());
-        let Ok(mut request) = RequestHeader::build("GET", spec.check.path.as_bytes(), None) else { return false };
-        if request.insert_header("host", host).is_err() || request.insert_header("user-agent", "valkv-apg-health-check").is_err() {
-            return false;
-        }
-        if session.write_request_header(Box::new(request)).await.is_err() || session.finish_request_body().await.is_err() || session.read_response_header().await.is_err() {
-            return false;
-        }
+        let invalid = |_| "the health check request could not be built".to_string();
+        let mut request = RequestHeader::build("GET", spec.check.path.as_bytes(), None).map_err(invalid)?;
+        request.insert_header("host", host).map_err(invalid)?;
+        request.insert_header("user-agent", "valkv-apg-health-check").map_err(invalid)?;
+        session.write_request_header(Box::new(request)).await.map_err(|e| failure_reason(&e))?;
+        session.finish_request_body().await.map_err(|e| failure_reason(&e))?;
+        session.read_response_header().await.map_err(|e| failure_reason(&e))?;
         let status = session.response_header().map(|h| h.status.as_u16());
         session.shutdown().await;
-        status.is_some_and(|s| spec.check.expected_statuses.iter().any(|(low, high)| (*low..=*high).contains(&s)))
+        match status {
+            Some(s) if spec.check.expected_statuses.iter().any(|(low, high)| (*low..=*high).contains(&s)) => Ok(()),
+            Some(s) => Err(format!("the health check at {} answered {s}", spec.check.path)),
+            None => Err("the health check got no answer".to_string()),
+        }
+    }
+}
+
+/// Why a connection attempt failed, in words an operator can act on.
+fn connect_failure(e: &std::io::Error) -> String {
+    match e.kind() {
+        std::io::ErrorKind::ConnectionRefused => "connection refused".to_string(),
+        std::io::ErrorKind::TimedOut => "connecting timed out".to_string(),
+        _ => format!("cannot connect: {e}"),
+    }
+}
+
+/// Why an attempt to use a backend failed, without the addresses and
+/// internals an error carries: this is shown in status reports.
+pub fn failure_reason(e: &pingora_core::Error) -> String {
+    use pingora_core::ErrorType::*;
+    match e.etype() {
+        ConnectRefused => "connection refused".to_string(),
+        ConnectTimedout => "connecting timed out".to_string(),
+        ConnectNoRoute => "no route to the address".to_string(),
+        TLSHandshakeFailure => "the TLS handshake failed".to_string(),
+        TLSHandshakeTimedout => "the TLS handshake timed out".to_string(),
+        InvalidCert => "the certificate was not accepted".to_string(),
+        ReadTimedout | WriteTimedout => "no answer in time".to_string(),
+        ConnectionClosed => "the connection was closed before an answer".to_string(),
+        InvalidHTTPHeader | H1Error | H2Error | InvalidH2 => "the answer was not valid HTTP".to_string(),
+        other => other.as_str().to_string(),
     }
 }
 
@@ -1054,6 +1207,68 @@ mod tests {
         assert_eq!(targets(&up, &snap, snap.service("s").unwrap(), 1), ["a:1"]);
         assert!(up.service(snap.service("s").unwrap()).backend("a:1").circuit.is_closed());
         assert_eq!(up.services.len(), 1);
+    }
+
+    // spec OBS-4
+    #[tokio::test]
+    async fn health_reports_what_was_seen_and_claims_nothing_before_that() {
+        let service = json!({ "name": "s", "backends": [{ "target": "10.0.0.1:80" }, { "target": "10.0.0.2:80" }, { "target": "10.0.0.3:80", "status": "down" }, { "target": "no-such-host.invalid:80" }],
+            "health_check": { "passive": { "consecutive_failures": 2 } } });
+        let (up, snap, svc) = setup(service, &[]);
+        let report = |up: &Upstreams| up.health(&snap, 10, 10).remove(0);
+        let of = |report: &Value, target: &str| report["backends"].as_array().unwrap().iter().find(|b| b["target"] == target).unwrap().clone();
+
+        let fresh = report(&up);
+        assert_eq!((fresh["healthy"].as_u64(), fresh["unhealthy"].as_u64(), fresh["unknown"].as_u64()), (Some(0), Some(0), Some(3)), "a backend nobody has talked to is not called healthy");
+        assert_eq!(of(&fresh, "10.0.0.3:80")["state"], "down");
+        assert_eq!(of(&fresh, "10.0.0.1:80")["in_rotation"], true, "unknown backends still get traffic");
+
+        let pick = |target: &str| loop {
+            let p = up.select(&snap, &svc, None, &[]).unwrap();
+            if p.backend.target == target {
+                break p;
+            }
+        };
+        // One failed request is enough to say so, with the reason, before the circuit opens.
+        let a = pick("10.0.0.1:80");
+        a.failed_because("connection refused");
+        up.record(&snap, &svc, &a, false);
+        let b = pick("10.0.0.2:80");
+        up.record(&snap, &svc, &b, true);
+        let after = report(&up);
+        let failing = of(&after, "10.0.0.1:80");
+        assert_eq!((failing["state"].as_str(), failing["reason"].as_str(), failing["circuit"].as_str()), (Some("unhealthy"), Some("connection refused"), Some("closed")));
+        assert_eq!(failing["in_rotation"], true);
+        assert!(failing["seen_at"].as_u64().unwrap() > 0);
+        assert_eq!(of(&after, "10.0.0.2:80")["state"], "healthy");
+        assert_eq!(after["backends"][0]["target"], "10.0.0.1:80", "failing backends are listed first");
+
+        // The circuit opens: out of rotation. An answer later closes it and clears the verdict.
+        up.record(&snap, &svc, &a, false);
+        let open = of(&report(&up), "10.0.0.1:80");
+        assert_eq!((open["circuit"].as_str(), open["in_rotation"].as_bool()), (Some("open"), Some(false)));
+        up.record(&snap, &svc, &a, true);
+        let closed = of(&report(&up), "10.0.0.1:80");
+        assert_eq!((closed["state"].as_str(), closed["reason"].as_str()), (Some("healthy"), None));
+
+        // A name that does not resolve is known to be unusable without sending anything.
+        let _ = up.address(&svc, &svc.spec.backends[3], None).await;
+        let unresolved = of(&report(&up), "no-such-host.invalid:80");
+        assert_eq!((unresolved["state"].as_str(), unresolved["reason"].as_str()), (Some("unhealthy"), Some("the host name does not resolve")));
+
+        // The limits bound the report; the counts still cover everything.
+        let short = up.health(&snap, 10, 1).remove(0);
+        assert_eq!((short["backends"].as_array().unwrap().len(), short["backends_total"].as_u64()), (1, Some(4)));
+        assert!(up.health(&snap, 0, 10).is_empty());
+    }
+
+    #[test]
+    fn failures_are_described_without_addresses() {
+        use pingora_core::{Error, ErrorType};
+        assert_eq!(failure_reason(&Error::explain(ErrorType::ConnectRefused, "10.0.0.1:80")), "connection refused");
+        assert_eq!(failure_reason(&Error::explain(ErrorType::ReadTimedout, "x")), "no answer in time");
+        assert!(!failure_reason(&Error::explain(ErrorType::ConnectError, "10.0.0.1:80")).contains("10.0.0.1"));
+        assert_eq!(connect_failure(&std::io::ErrorKind::ConnectionRefused.into()), "connection refused");
     }
 
     #[tokio::test]

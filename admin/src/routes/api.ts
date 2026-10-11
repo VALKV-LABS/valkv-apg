@@ -9,6 +9,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { createToken, requireAdmin, requireRead, requireWrite } from "../auth.js";
 import { ApiError } from "../errors.js";
+import { summarize as summarizeHealth } from "../health.js";
 import { bodyOf, ctxOf, pageOf, sendResource, writeOptions } from "../http.js";
 import { KINDS, type KindName, verifyDomain } from "../kinds.js";
 import type { SchemaRegistry } from "../schemas.js";
@@ -302,6 +303,33 @@ export function registerApi(app: FastifyInstance, store: Store, schemas: SchemaR
     const last = Number(meta?.value ?? 0);
     const rows = await sql<Row[]>`SELECT *, (last_seen > now() - interval '30 seconds') AS live FROM apg_nodes ORDER BY node_id`;
     return { data: rows.map((r) => ({ ...r, lag: Math.max(0, last - r["applied_seq"]) })), last_seq: last };
+  });
+
+  // ── Backend health, as nodes report it (spec OBS-4) ────────────────────────
+
+  // Nodes keep health to themselves and report it every ten seconds, so this is
+  // up to that old. Only nodes heard from in the last 30 seconds are counted.
+  async function health(request: FastifyRequest, ref?: string): Promise<{ services: Json[]; nodes: number }> {
+    const ws = await store.workspace(sql, (request.params as P)["ws"]!, ctxOf(request).actor);
+    const services = await sql<Row[]>`
+      SELECT id, name, spec FROM apg_services
+      WHERE workspace_id = ${ws["id"]} ${ref === undefined ? sql`` : isUuid(ref) ? sql`AND id = ${ref}` : sql`AND name = ${ref}`}
+      ORDER BY name`;
+    if (ref !== undefined && services.length === 0) throw new ApiError("NOT_FOUND", "service not found");
+    const nodes = await sql<Row[]>`SELECT node_id, info FROM apg_nodes WHERE last_seen > now() - interval '30 seconds' ORDER BY node_id`;
+    return { services: summarizeHealth(services, nodes), nodes: nodes.length };
+  }
+
+  doc({ method: "get", path: "/v1/workspaces/{ws}/health", summary: "Health of every service's backends, as each live node reports it", tag: "services", success: 200, roles: "viewer" });
+  app.get("/v1/workspaces/:ws/health", async (request) => {
+    const h = await health(request);
+    return { data: h.services, live_nodes: h.nodes };
+  });
+
+  doc({ method: "get", path: "/v1/workspaces/{ws}/services/{ref}/health", summary: "Health of one service's backends, as each live node reports it", tag: "services", success: 200, roles: "viewer" });
+  app.get("/v1/workspaces/:ws/services/:ref/health", async (request) => {
+    const h = await health(request, (request.params as P)["ref"]!);
+    return { ...h.services[0], live_nodes: h.nodes };
   });
 
   doc({ method: "get", path: "/v1/usage", summary: "Usage by time bucket, grouped and filtered by workspace, service, route, consumer or region", tag: "usage", success: 200, roles: "viewer" });

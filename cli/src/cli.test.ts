@@ -249,6 +249,24 @@ describe("resources and the rest", () => {
     expect(miss.out).toContain("no route matches");
   });
 
+  it("health lists each backend with what nodes say, and exits 1 when one is failing", async () => {
+    const svc = (name: string, backends: unknown[]) => ({ name, backends });
+    const all = await cli(["health"], { answers: [{ body: { live_nodes: 2, data: [
+      svc("orders", [{ target: "10.0.0.1:80", state: "unhealthy", reason: "connection refused", nodes: [{ node_id: "n1", state: "unhealthy" }, { node_id: "n2", state: "healthy" }] }]),
+      svc("users", [{ target: "10.0.0.2:80", state: "unknown", nodes: [] }]),
+    ] } }] });
+    expect(all.calls[0]!.url).toBe("http://admin:9000/v1/workspaces/default/health");
+    expect(all.code).toBe(1);
+    expect(all.out).toMatch(/orders\s+10\.0\.0\.1:80\s+unhealthy\s+1 of 2\s+connection refused/);
+    expect(all.out).toMatch(/users\s+10\.0\.0\.2:80\s+unknown\s+none reporting/);
+    expect(all.err).toContain("no node has sent anything");
+
+    const one = await cli(["health", "orders"], { answers: [{ body: svc("orders", [{ target: "10.0.0.1:80", state: "healthy", nodes: [{ node_id: "n1", state: "healthy" }] }]) }] });
+    expect(one.calls[0]!.url).toBe("http://admin:9000/v1/workspaces/default/services/orders/health");
+    expect([one.code, one.err]).toEqual([0, ""]);
+    expect(one.out).toMatch(/orders\s+10\.0\.0\.1:80\s+healthy\s+1 of 1/);
+  });
+
   it("shows the server's own error, with its pointers", async () => {
     const r = await cli(["apply", "-f", tempFile("a.yaml", DOC)], { answers: [{ status: 422, body: { error: { code: "VALIDATION_FAILED", message: "route 'all': bad", details: [{ pointer: "/routes/0/service", message: "service 'echo' does not exist" }] } } }] });
     expect(r.code).toBe(1);

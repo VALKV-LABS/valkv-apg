@@ -15,6 +15,8 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 
 **Documentation:** [`docs/src`](docs/src/SUMMARY.md) (build it with `make docs`). Start with [a gateway from one file, in five minutes](docs/src/getting-started/standalone.md), or see [how it compares with other gateways](docs/src/guides/coming-from-other-gateways.md).
 
+**New here?** The [product guide](docs/src/product-guide.md) explains every feature in plain terms, and [architecture and components](docs/src/architecture.md) shows how the parts fit together.
+
 ## Why another gateway
 
 - **Runs alone.** One binary and one YAML file are a complete gateway. No database.

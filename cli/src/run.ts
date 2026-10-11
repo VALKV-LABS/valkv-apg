@@ -47,6 +47,7 @@ Resources
   apgctl route match --host <h> --path <p> [--method <m>] [--header 'Name: value']...
   apgctl cache purge <route>
   apgctl nodes
+  apgctl health [service]                      backend health as each node reports it; exits 1 if a backend is failing
   apgctl usage [--from <time>] [--to <time>] [--granularity minute|hour|day] [--group-by a,b] [--all-workspaces]
 
 Connection
@@ -335,6 +336,23 @@ async function dispatch(args: Args, io: Io): Promise<number> {
       const route = await c.call("POST", `${inWs("routes")(c.workspace)}/${encodeURIComponent(rest[1])}/cache/purge`);
       io.out(render(format, route, () => `purged cached responses of route ${route.name}\n`));
       return 0;
+    }
+
+    case "health": {
+      allow(args);
+      const c = client();
+      const result = await c.call("GET", rest[0] ? `${inWs("services")(c.workspace)}/${encodeURIComponent(rest[0])}/health` : inWs("health")(c.workspace));
+      const services = (rest[0] ? [result] : result.data) as Json[];
+      const rows = services.flatMap((s) => (s["backends"] as Json[]).map((b) => {
+        const nodes = (b["nodes"] ?? []) as Json[];
+        return {
+          service: s["name"], backend: b["target"], state: b["state"], why: b["reason"] ?? "",
+          nodes: nodes.length === 0 ? "none reporting" : `${nodes.filter((n) => n["state"] === b["state"]).length} of ${nodes.length}`,
+        };
+      }));
+      io.out(render(format, result, () => table(rows, [["SERVICE", "service"], ["BACKEND", "backend"], ["STATE", "state"], ["NODES", "nodes"], ["WHY", "why"]])));
+      if (format === "table" && rows.some((r) => r.state === "unknown")) io.err("unknown: no node has sent anything to the backend yet. A health check on the service finds out before traffic does.\n");
+      return rows.some((r) => r.state === "unhealthy") ? 1 : 0;
     }
 
     case "nodes": {

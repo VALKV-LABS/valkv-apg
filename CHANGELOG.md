@@ -6,6 +6,13 @@ the project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Backend health with reasons. A node reports each backend as healthy, failing (with why:
+  connection refused, the host name does not resolve, a timeout, a bad status) or not
+  checked. `GET /upstreams` on a node's management port; `GET /v1/workspaces/{ws}/health`
+  and `.../services/{name}/health` on the Admin API, per backend and per node;
+  `apgctl health`; a backend-health card on the console's overview and a per-backend
+  view on the Services page.
+- A product guide and an architecture and components page in the documentation.
 - Repository foundation: cargo workspace, admin service skeleton, JSON Schemas for
   every resource, `apg.yaml` and the changelog event (contract version 2), shared
   fixtures, Compose stack, Makefile, CI.

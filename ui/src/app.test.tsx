@@ -148,7 +148,8 @@ describe("forms from the server's schemas", () => {
     await user.click(within(dialog).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     const sent = server.find("POST", "/v1/workspaces/default/services");
-    expect(sent[1]!.body).toEqual({ name: "billing", scheme: "https", backends: [{ target: "10.0.0.5:8080" }] });
+    // A service made here checks its backends unless the operator takes the check out.
+    expect(sent[1]!.body).toEqual({ name: "billing", scheme: "https", backends: [{ target: "10.0.0.5:8080" }], health_check: { active: { type: "tcp" } } });
     expect(sent[1]!.headers["x-apg-csrf"]).toBe("csrf-1");
   });
 
@@ -275,5 +276,58 @@ describe("config", () => {
     await user.click(screen.getByRole("button", { name: "Show changes" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("not valid YAML");
     expect(server.find("POST", "/v1/config/diff")).toEqual([]);
+  });
+});
+
+describe("backend health", () => {
+  const failing = { target: "10.0.0.1:8080", status: "active", state: "unhealthy", reason: "connection refused", nodes: [{ node_id: "n1", state: "unhealthy", reason: "connection refused", in_rotation: false }, { node_id: "n2", state: "unknown", in_rotation: true }] };
+  const report = (over: object) => ({ service_id: "s1", name: "orders", health_check: false, healthy: 0, unhealthy: 0, unknown: 0, nodes_reporting: 2, backends: [], ...over });
+
+  it("the overview names each failing backend, why, and on how many nodes", async () => {
+    serve({ "GET /v1/workspaces/default/health": { body: { live_nodes: 2, data: [report({ state: "unhealthy", unhealthy: 1, backends: [failing] })] } } });
+    open("/");
+    expect(await screen.findByText("connection refused")).toBeInTheDocument();
+    const row = screen.getByText("connection refused").closest("tr")!;
+    expect(within(row).getByText("orders")).toBeInTheDocument();
+    expect(within(row).getByText("10.0.0.1:8080")).toBeInTheDocument();
+    expect(within(row).getByText("1 of 2")).toBeInTheDocument();
+    expect(screen.getByText("Backends failing").parentElement).toHaveTextContent("1");
+  });
+
+  it("the overview says so when nothing is failing, and when no node reports", async () => {
+    serve({ "GET /v1/workspaces/default/health": { body: { live_nodes: 1, data: [report({ state: "unknown", healthy: 2, unknown: 1 })] } } });
+    const first = open("/");
+    expect(await screen.findByText("No backend is failing")).toBeInTheDocument();
+    expect(screen.getByText("2 answering, 1 not checked yet.")).toBeInTheDocument();
+    first.unmount();
+    serve({ "GET /v1/workspaces/default/health": { body: { live_nodes: 0, data: [] } } });
+    open("/");
+    expect(await screen.findByText("No node is reporting")).toBeInTheDocument();
+  });
+
+  it("a backend nobody has checked is not called healthy, and the breakdown shows what each node saw", async () => {
+    let health: object = { live_nodes: 2, data: [report({ state: "unknown", unknown: 1, backends: [{ target: "10.0.0.1:8080", status: "active", state: "unknown", nodes: [] }] })] };
+    serve({
+      "GET /v1/workspaces/default/services": { body: { data: [SERVICE], next_cursor: null } },
+      "GET /v1/workspaces/default/health": () => ({ body: health }),
+    });
+    const user = userEvent.setup();
+    const page = open("/services");
+    expect(await screen.findByText("not checked")).toBeInTheDocument();
+    expect(screen.queryByText("healthy")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Health of orders" }));
+    let dialog = await screen.findByRole("dialog", { name: "Health of orders" });
+    expect(within(dialog).getByText("No node has reported on it")).toBeInTheDocument();
+    expect(within(dialog).getByText(/has no health check/)).toBeInTheDocument();
+    page.unmount();
+
+    health = { live_nodes: 2, data: [report({ state: "unhealthy", unhealthy: 1, health_check: true, backends: [failing] })] };
+    open("/services");
+    expect(await screen.findByText("1 of 1 failing")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Health of orders" }));
+    dialog = await screen.findByRole("dialog", { name: "Health of orders" });
+    expect(within(dialog).getByText(/failing, connection refused/)).toHaveTextContent("n1: failing, connection refused; not sending it traffic");
+    expect(within(dialog).getByText(/nothing sent yet/)).toHaveTextContent("n2: nothing sent yet");
+    expect(within(dialog).queryByText(/has no health check/)).not.toBeInTheDocument();
   });
 });

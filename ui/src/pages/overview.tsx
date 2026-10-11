@@ -3,6 +3,7 @@ import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { type Json, api, formatNumber, formatTime, relativeTime } from "../api";
 import { BarChart, byBucket } from "../components/chart";
+import { HealthCard, healthTotals, useHealth } from "../components/health";
 import { Card, Empty, ErrorState, Loading, PageHead, Tag } from "../components/ui";
 import { useCollection, useNames, useUsage } from "../hooks";
 import { useSession } from "../session";
@@ -31,6 +32,8 @@ export function Overview() {
   const byWorkspace = useUsage({ granularity: "hour", group_by: "workspace", ...range }, fleetAdmin);
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => api<{ data: Json[] }>("GET", "/v1/nodes"), enabled: fleetAdmin, refetchInterval: 15_000 });
   const certificates = useCollection("certificates");
+  const health = useHealth();
+  const backends = healthTotals(health.data);
   const audit = useQuery({ queryKey: ["audit", workspace, "recent"], queryFn: () => api<{ data: Json[] }>("GET", "/v1/audit", { query: { workspace, limit: 8 } }) });
   const routeNames = useNames("routes");
   const { workspaces } = useSession();
@@ -67,6 +70,7 @@ export function Overview() {
         <Stat label="Requests" value={usage.data ? formatNumber(totals.requests) : "…"} note={usage.data ? `${formatNumber(totals.requests / 86400)} per second on average` : undefined} />
         <Stat label="Server errors" value={usage.data ? (totals.requests > 0 ? `${((totals.errors / totals.requests) * 100).toFixed(2)}%` : "0%") : "…"} note={usage.data ? `${formatNumber(totals.errors)} responses with a 5xx status` : undefined} />
         <Stat label="Average latency" value={usage.data ? `${Math.round(totals.latency)} ms` : "…"} note="Measured at the gateway" />
+        <Stat label="Backends failing" value={health.data ? String(backends.unhealthy) : "…"} note={health.data ? `${backends.healthy} answering${backends.unknown > 0 ? `, ${backends.unknown} not checked yet` : ""}` : undefined} />
         {fleetAdmin && <Stat label="Nodes" value={nodes.data ? String(live.length) : "…"} note={nodes.data ? (worstLag === 0 ? "All up to date" : `Furthest behind by ${worstLag} change${worstLag === 1 ? "" : "s"}`) : undefined} />}
       </div>
 
@@ -78,6 +82,8 @@ export function Overview() {
             ? <Empty title="No traffic yet">Requests appear here about a minute after nodes report them.</Empty>
             : <div className="card-body"><BarChart points={byBucket(usage.data.data)} label="Requests per hour" /></div>)}
         </Card>
+
+        <HealthCard />
 
         <div className="split">
           <Card title="Busiest routes" actions={<Link to="/usage" className="btn btn-ghost btn-sm">Explore usage</Link>}>

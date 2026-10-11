@@ -8,6 +8,9 @@ set -eu
 image=${APG_IMAGE:-valkv-labs/valkv-apg:dev}
 net=apg-quickstart-$$
 work=$(mktemp -d)
+# mktemp makes the directory private to this user; the gateway in the
+# container runs as another one and must be able to read the file in it.
+chmod 755 "$work"
 export MSYS_NO_PATHCONV=1
 # Docker on Windows wants a Windows path for a bind mount.
 mount=$( (cd "$work" && pwd -W) 2>/dev/null || echo "$work")

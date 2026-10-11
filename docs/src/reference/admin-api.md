@@ -141,6 +141,7 @@ Everything the console and `apgctl` do, they do through this API. The machine-re
 
 | Method | Path | What it does | Role |
 |---|---|---|---|
+| GET | `/v1/workspaces/{ws}/health` | Health of every service's backends, as each live node reports it | viewer |
 | GET | `/v1/workspaces/{ws}/services` | List services | viewer |
 | POST | `/v1/workspaces/{ws}/services` | Create a service | editor |
 | DELETE | `/v1/workspaces/{ws}/services/{ref}` | Delete a service | editor |
@@ -150,6 +151,7 @@ Everything the console and `apgctl` do, they do through this API. The machine-re
 | POST | `/v1/workspaces/{ws}/services/{ref}/backends` | Add a backend | editor |
 | DELETE | `/v1/workspaces/{ws}/services/{ref}/backends/{backend}` | Remove a backend | editor |
 | PATCH | `/v1/workspaces/{ws}/services/{ref}/backends/{backend}` | Change a backend's weight, status or labels | editor |
+| GET | `/v1/workspaces/{ws}/services/{ref}/health` | Health of one service's backends, as each live node reports it | viewer |
 
 ## session
 

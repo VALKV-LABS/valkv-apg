@@ -1,10 +1,11 @@
 /** Routes, services and consumers. */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { FlaskConical, KeyRound, Layers, Plus, Trash2 } from "lucide-react";
+import { Activity, FlaskConical, KeyRound, Layers, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { type Json, api, formatNumber, formatTime, ws } from "../api";
 import { BarChart, byBucket } from "../components/chart";
+import { HealthDialog, HealthTag, useHealth } from "../components/health";
 import { ResourceEditor, ResourcePage, type ResourceSpec } from "../components/resource";
 import { Card, Confirm, Dialog, Empty, ErrorNotice, ErrorState, Field, Loading, PageHead, SecretOnce, Tag, Tags } from "../components/ui";
 import { useCollection, useNames, useUsage } from "../hooks";
@@ -146,30 +147,18 @@ export function Routes() {
 // ── Services ─────────────────────────────────────────────────────────────────
 
 export function Services() {
-  const { fleetAdmin } = useSession();
+  const [inspect, setInspect] = useState<Json | null>(null);
   const certificates = useNames("certificates");
   const certificateChoices = [...certificates].map(([value, label]) => ({ value, label }));
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => api<{ data: Json[] }>("GET", "/v1/nodes"), enabled: fleetAdmin, refetchInterval: 15_000 });
-  // Health as each live node reports it, summed per service.
-  const health = useMemo(() => {
-    const map = new Map<string, { healthy: number; unhealthy: number; nodes: number }>();
-    for (const node of (nodes.data?.data ?? []).filter((n) => n["live"])) {
-      for (const b of (node["info"]?.["backends"] ?? []) as Json[]) {
-        const e = map.get(b["service_id"]) ?? { healthy: 0, unhealthy: 0, nodes: 0 };
-        e.healthy += Number(b["healthy"]);
-        e.unhealthy += Number(b["unhealthy"]);
-        e.nodes += 1;
-        map.set(b["service_id"], e);
-      }
-    }
-    return map;
-  }, [nodes.data]);
+  const reported = useHealth();
+  const health = useMemo(() => new Map((reported.data?.data ?? []).map((s) => [s["service_id"] as string, s])), [reported.data]);
 
   const spec: ResourceSpec = {
     title: "Services", singular: "service", segment: "services", schemaPath: "resources/service.json",
     hide: ["plugins", "egress_restricted", "drain_timeout_ms"],
     choices: { client_certificate: certificateChoices },
-    blank: { backends: [{ target: "" }] },
+    // A new service checks that each backend accepts connections, so that a dead one shows without waiting for traffic.
+    blank: { backends: [{ target: "" }], health_check: { active: { type: "tcp" } } },
     emptyHint: "A service is one upstream application and the backends that serve it.",
     columns: [
       { head: "Name", cell: (r) => <span className="row-link">{r["name"]}</span> },
@@ -180,22 +169,16 @@ export function Services() {
       ) },
       { head: "Protocol", cell: (r) => `${r["scheme"]}, HTTP/${r["http_version"]}` },
       { head: "Balancing", cell: (r) => r["load_balancing"]?.["strategy"] ?? "round_robin" },
-      ...(fleetAdmin ? [{
-        head: "Health",
-        cell: (r: Json) => {
-          const h = health.get(r["id"]);
-          if (!h) return <span className="dim">not reported</span>;
-          return h.unhealthy === 0
-            ? <Tag tone="ok" dot>healthy on {h.nodes} node{h.nodes === 1 ? "" : "s"}</Tag>
-            : <Tag tone={h.healthy === 0 ? "danger" : "warn"} dot>{h.unhealthy} of {h.healthy + h.unhealthy} checks failing</Tag>;
-        },
-      }] : []),
+      { head: "Health", cell: (r) => <HealthTag health={health.get(r["id"])} live={reported.data?.live_nodes} /> },
     ],
   };
   return (
     <div className="page stack">
       <PageHead title="Services">Where requests are sent. To drain a backend, edit the service and set the backend's status to draining.</PageHead>
-      <ResourcePage spec={spec} />
+      <ResourcePage spec={spec} rowActions={(row) => (
+        <button type="button" className="icon-btn" aria-label={`Health of ${row["name"]}`} title="Health of each backend" onClick={() => setInspect(row)}><Activity size={14} aria-hidden="true" /></button>
+      )} />
+      {inspect && <HealthDialog name={inspect["name"]} health={health.get(inspect["id"])} onClose={() => setInspect(null)} />}
     </div>
   );
 }

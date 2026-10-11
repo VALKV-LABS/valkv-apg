@@ -68,7 +68,7 @@ Under `services`. A named upstream: backends plus load-balancing, health, timeou
 | `shared` | boolean | `false` | System workspace only: routes in any workspace may reference this service. |
 | `backends[]` (required) | list of objects |  |  |
 | `backends[].id` | string |  |  |
-| `backends[].target` (required) | string |  | host:port, where host is an IP address or DNS name. |
+| `backends[].target` (required) | string |  | host:port, where host is an IP address or DNS name, as a node reaches it. For a node that runs in a container, localhost and 127.0.0.1 are that container, not the machine it runs on. |
 | `backends[].weight` | integer (≥ 0, ≤ 1000) | `1` |  |
 | `backends[].status` | `active`, `draining`, `down` | `active` |  |
 | `backends[].labels` | object |  |  |

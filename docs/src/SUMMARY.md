@@ -1,6 +1,8 @@
 # Summary
 
 [What valkv-apg is](index.md)
+[Product guide](product-guide.md)
+[Architecture and components](architecture.md)
 
 # Getting started
 

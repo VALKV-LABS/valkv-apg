@@ -189,6 +189,29 @@ step("with retries off the failure reaches the client as 502 UPSTREAM_ERROR", as
   assertGatewayError(failed, 502, "UPSTREAM_ERROR");
 });
 
+/** What the node reports about one service's backends on its management port. */
+async function health(service, query = "") {
+  const res = await fetch(`${MGMT}/upstreams?service=up-${service}${query}`);
+  return res.status === 200 ? (await res.json()).services[0] : res.status;
+}
+const backendOf = (report, name) => report.backends.find((b) => b.target === target(name));
+
+step("a node says what it knows about each backend, and why one is failing (OBS-4)", async () => {
+  const report = await health("noretry");
+  assert.equal(backendOf(report, "dead").state, "unhealthy");
+  assert.equal(backendOf(report, "dead").reason, "connection refused");
+  assert.equal(backendOf(report, "a").state, "healthy");
+  assert.deepEqual([report.healthy, report.unhealthy, report.unknown], [1, 1, 0]);
+  assert.equal(report.backends[0].target, target("dead"), "the failing backend is listed first");
+  // Nothing has been sent to this service yet, so nothing is claimed about it.
+  const untouched = await health("deadline");
+  assert.deepEqual([untouched.backends[0].state, untouched.unknown, untouched.backends[0].in_rotation], ["unknown", 1, true]);
+  // One backend by its target; something the node does not have is a 404.
+  const one = await health("noretry", `&backend=${target("a")}`);
+  assert.deepEqual(one.backends.map((b) => b.target), [target("a")]);
+  assert.equal(await health("no-such-service"), 404);
+});
+
 step("an upstream that does not answer within read_ms is a 504 UPSTREAM_TIMEOUT (UP-8)", async () => {
   const { res, ms } = await timed(() => call("timeout", "/hang"));
   assertGatewayError(res, 504, "UPSTREAM_TIMEOUT");
@@ -235,6 +258,8 @@ step("a backend failing its health check is taken out and put back (§7.2)", asy
   answers.health.b = 503;
   await until(async () => (await metric(MGMT, "apg_backend_healthy", labels)) === 0, { what: "the backend to be marked unhealthy" });
   assert.deepEqual(await tally("health", 10), { a: 10 });
+  const failing = backendOf(await health("health"), "b");
+  assert.deepEqual([failing.state, failing.reason, failing.in_rotation, failing.health_check], ["unhealthy", "the health check at /healthz answered 503", false, true]);
 
   answers.health.b = 200;
   await until(async () => (await metric(MGMT, "apg_backend_healthy", labels)) === 1, { what: "the backend to be marked healthy again" });

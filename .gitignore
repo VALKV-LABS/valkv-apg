@@ -10,6 +10,8 @@ dist/
 coverage/
 docs/book/
 
+todo.md
+
 # Local environment and editor files
 .env
 .env.*

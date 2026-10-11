@@ -40,7 +40,7 @@ use crate::mtls::ClientCert;
 use crate::net::{Cidr, client_ip, normalize_host};
 use crate::response_cache::{self, Pending, lifetime, storable_headers};
 use crate::transform::{BodyRewrite, Compression, Rendered, Vars, is_json};
-use crate::upstream::{Picked, hash_parts, weighted_pick};
+use crate::upstream::{Picked, failure_reason, hash_parts, weighted_pick};
 
 /// Settings the pipeline needs that do not change while the node runs.
 pub struct ProxySettings {
@@ -284,8 +284,9 @@ impl ApgProxy {
 
     /// The attempt in progress failed: the circuit breaker hears about it and
     /// a retry will avoid this backend.
-    fn attempt_failed(&self, ctx: &mut Ctx) {
+    fn attempt_failed(&self, ctx: &mut Ctx, reason: &str) {
         if let (Some(snapshot), Some(service), Some(picked)) = (&ctx.snapshot, &ctx.service, ctx.picked.take()) {
+            picked.failed_because(reason);
             self.gateway.upstreams.record(snapshot, service, &picked, false);
             ctx.tried.push(picked.backend.target.clone());
         }
@@ -991,7 +992,7 @@ impl ProxyHttp for ApgProxy {
             };
             // A backend that cannot even be dialled counts as a connection failure.
             tracing::warn!(service = %service.spec.name, backend = %backend.target, %reason, "backend cannot be used");
-            self.attempt_failed(ctx);
+            self.attempt_failed(ctx, &reason);
             if !Self::may_retry(ctx, "connect_failure") {
                 return Self::refuse(ctx, UPSTREAM_ERROR);
             }
@@ -1244,7 +1245,7 @@ impl ProxyHttp for ApgProxy {
     /// No connection was made, so nothing was sent and another backend may
     /// always be tried (spec UP-10).
     fn fail_to_connect(&self, session: &mut Session, _peer: &HttpPeer, ctx: &mut Self::CTX, mut e: Box<Error>) -> Box<Error> {
-        self.attempt_failed(ctx);
+        self.attempt_failed(ctx, &failure_reason(&e));
         let timed_out = matches!(e.etype(), ErrorType::ConnectTimedout | ErrorType::TLSHandshakeTimedout);
         let again = (Self::may_retry(ctx, "connect_failure") || (timed_out && Self::may_retry(ctx, "timeout"))) && !session.as_ref().retry_buffer_truncated();
         e.set_retry(again);
@@ -1271,7 +1272,7 @@ impl ProxyHttp for ApgProxy {
             return e;
         }
 
-        self.attempt_failed(ctx);
+        self.attempt_failed(ctx, &failure_reason(&e));
         let timed_out = matches!(e.etype(), ErrorType::ReadTimedout | ErrorType::WriteTimedout);
         e.set_retry(timed_out && replayable && Self::may_retry(ctx, "timeout"));
         e
@@ -1325,6 +1326,9 @@ impl ProxyHttp for ApgProxy {
             && !ctx.recorded
         {
             let failed = service.spec.health_check.passive.statuses.contains(&upstream_status);
+            if failed {
+                picked.failed_because(&format!("answered {upstream_status}"));
+            }
             self.gateway.upstreams.record(snapshot, service, picked, !failed);
         }
         if let Some(e) = e {

@@ -23,6 +23,8 @@ It is built for platforms that serve many tenants from one gateway, and it stays
 
 ## Where to start
 
+- To learn what it does, feature by feature: the [product guide](product-guide.md).
+- To see how the parts fit together: [architecture and components](architecture.md).
 - To see it work: [a gateway from one file, in five minutes](getting-started/standalone.md).
 - To run it for a team: [with a control plane and the console](getting-started/control-plane.md).
 - To understand it first: [architecture and the two modes](concepts/architecture.md).
