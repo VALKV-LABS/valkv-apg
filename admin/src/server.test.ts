@@ -84,7 +84,7 @@ describe("error shape", () => {
   });
 
   it("every code maps to one status in the documented set", () => {
-    expect(new Set(Object.values(ERROR_STATUS))).toEqual(new Set([400, 401, 403, 404, 409, 410, 412, 422, 429, 500]));
+    expect(new Set(Object.values(ERROR_STATUS))).toEqual(new Set([400, 401, 403, 404, 409, 410, 412, 422, 429, 500, 503]));
   });
 });
 

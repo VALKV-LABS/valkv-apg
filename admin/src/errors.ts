@@ -22,6 +22,7 @@ export const ERROR_STATUS = {
   EGRESS_NOT_ALLOWED: 422,
   RATE_LIMITED: 429,
   INTERNAL_ERROR: 500,
+  UNAVAILABLE: 503,
 } as const;
 
 /** One of the codes in {@link ERROR_STATUS}. */

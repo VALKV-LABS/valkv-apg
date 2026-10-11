@@ -7,8 +7,10 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { Authenticator } from "./auth.js";
-import { CallerRateLimiter } from "./auth.js";
-import type { Config } from "./config.js";
+import { CallerRateLimiter, SESSION_COOKIE } from "./auth.js";
+import type { Config, UiConfig } from "./config.js";
+import { registerConfig } from "./routes/config.js";
+import { registerUi } from "./ui.js";
 import { ApiError, toErrorResponse } from "./errors.js";
 import type { JobRunner } from "./jobs.js";
 import { buildOpenApi } from "./openapi.js";
@@ -29,6 +31,10 @@ export interface ServerDeps {
   /** Which route groups this listener serves. Default: both. */
   serve?: { api: boolean; dp: boolean };
   version?: string;
+  /** The admin UI; absent or disabled serves none. */
+  ui?: UiConfig;
+  /** A node's management address, for the route tester (spec RT-6). */
+  debugNodeUrl?: string | null;
 }
 
 const REQUEST_ID = /^[A-Za-z0-9._-]{1,128}$/;
@@ -64,9 +70,19 @@ export function buildServer(config: Pick<Config, "logLevel"> & Partial<Pick<Conf
   // Authentication for everything except health, metrics and the API description.
   app.addHook("onRequest", async (request) => {
     const path = request.url.split("?")[0]!;
-    if (OPEN_PATHS.has(path) || !deps.auth) return;
+    if (OPEN_PATHS.has(path) || path === "/" || path === "/ui" || path.startsWith("/ui/") || !deps.auth) return;
     if (!path.startsWith("/v1/") && !path.startsWith("/dp/")) return; // falls through to NOT_FOUND
-    const actor = await deps.auth.authenticate(request.headers.authorization);
+    // A bearer credential wins; a browser session is the fallback (spec API-5).
+    const cookie = request.headers.authorization === undefined ? cookieOf(request.headers.cookie, SESSION_COOKIE) : undefined;
+    let actor;
+    if (cookie !== undefined) {
+      const header = request.headers["x-apg-csrf"];
+      const session = await deps.auth.fromSession(cookie, request.method, typeof header === "string" ? header : undefined);
+      actor = session.actor;
+      request.session = { cookie, csrf: session.csrf, expiresAt: session.expiresAt };
+    } else {
+      actor = await deps.auth.authenticate(request.headers.authorization);
+    }
     // A node token opens the data-plane API and nothing else.
     if (actor.role === "node" && !path.startsWith("/dp/")) throw new ApiError("FORBIDDEN", "node tokens can call /dp/* only");
     if (!limiter.take(actor.id)) throw new ApiError("RATE_LIMITED", "too many requests");
@@ -75,7 +91,7 @@ export function buildServer(config: Pick<Config, "logLevel"> & Partial<Pick<Conf
 
   app.setErrorHandler(async (err, request, reply) => {
     const { status, body } = toErrorResponse(err, request.id);
-    if (status >= 500) request.log.error({ err }, "unhandled error");
+    if (status === 500) request.log.error({ err }, "unhandled error");
     // Refused changes are audited too (spec API-9). Best effort: a failure to
     // record must not turn a 403 into a 500.
     if ((status === 401 || status === 403) && request.method !== "GET" && deps.store) {
@@ -144,11 +160,23 @@ export function buildServer(config: Pick<Config, "logLevel"> & Partial<Pick<Conf
   if (deps.store && deps.schemas) {
     if (serve.api) {
       registerApi(app, deps.store, deps.schemas);
+      if (deps.auth) registerConfig(app, deps.store, deps.auth, { debugNodeUrl: deps.debugNodeUrl ?? null, secureCookies: Boolean(config.tls) });
       const document = buildOpenApi(ENDPOINTS, deps.schemas, deps.version ?? "0.1.0");
       app.get("/v1/openapi.json", async () => document);
     }
     if (serve.dp && deps.notifier) registerDp(app, deps.store, deps.notifier);
   }
 
+  if (serve.api && deps.ui?.enabled) registerUi(app, deps.ui, deps.version ?? "0.1.0");
+
   return app;
+}
+
+/** The value of one cookie in a `Cookie` header. */
+export function cookieOf(header: string | undefined, name: string): string | undefined {
+  for (const part of (header ?? "").split(";")) {
+    const i = part.indexOf("=");
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return undefined;
 }

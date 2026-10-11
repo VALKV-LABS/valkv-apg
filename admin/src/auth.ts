@@ -9,7 +9,7 @@
 
 import { createRemoteJWKSet, importSPKI, jwtVerify, type JWTPayload, type JWTVerifyGetKey, type KeyLike } from "jose";
 import type { JwtConfig } from "./config.js";
-import { generateToken, sha256, uuidv7 } from "./crypto.js";
+import { generateToken, safeEqual, sha256, uuidv7 } from "./crypto.js";
 import type { Db, Sql } from "./db.js";
 import { ApiError } from "./errors.js";
 
@@ -30,6 +30,10 @@ export interface Actor {
 export const SYSTEM_ACTOR: Actor = { kind: "system", id: "system", name: "system", role: "admin", workspaces: "*" };
 
 const TOKEN_PREFIX = "apg_at_";
+/** Longest life of a browser session. */
+export const SESSION_HOURS = 12;
+/** Name of the session cookie. */
+export const SESSION_COOKIE = "apg_session";
 const JWT_ALGORITHMS = ["RS256", "RS384", "RS512", "ES256", "ES384", "EdDSA"];
 
 // ── Decisions (pure; unit-tested without a database) ─────────────────────────
@@ -192,7 +196,52 @@ export class Authenticator {
     };
   }
 
+  // ── Browser sessions (spec API-5) ──────────────────────────────────────────
+
+  /**
+   * Opens a session for an admin token. The cookie value is random and only
+   * its hash is stored; the session lasts as long as the token does, at most
+   * {@link SESSION_HOURS}.
+   */
+  async openSession(actor: Actor): Promise<{ id: string; csrf: string; expiresAt: Date }> {
+    if (actor.kind !== "token") {
+      throw new ApiError("BAD_REQUEST", "sessions are opened with an admin token; send a delegated token as a bearer on each request");
+    }
+    const id = generateToken("apg_s_");
+    const csrf = generateToken("");
+    const [row] = await this.sql<Array<{ expires_at: Date }>>`
+      INSERT INTO apg_sessions (id_hash, token_id, csrf, expires_at)
+      SELECT ${sha256(id)}, t.id, ${csrf}, LEAST(now() + make_interval(hours => ${SESSION_HOURS}), COALESCE(t.expires_at, 'infinity'))
+      FROM apg_admin_tokens t WHERE t.id = ${actor.id}
+      RETURNING expires_at`;
+    if (!row) throw new ApiError("UNAUTHENTICATED", "missing or invalid credentials");
+    return { id, csrf, expiresAt: row.expires_at };
+  }
+
+  /** Resolves a session cookie. A request that changes something must carry the session's CSRF token. */
+  async fromSession(cookie: string, method: string, csrfHeader: string | undefined): Promise<{ actor: Actor; csrf: string; expiresAt: Date }> {
+    const denied = new ApiError("UNAUTHENTICATED", "missing or invalid credentials");
+    const [row] = await this.sql<Array<{ id: string; name: string; role: Role; workspaces: string[]; csrf: string; expires_at: Date }>>`
+      SELECT t.id, t.name, t.role, t.workspaces, s.csrf, s.expires_at
+      FROM apg_sessions s JOIN apg_admin_tokens t ON t.id = s.token_id
+      WHERE s.id_hash = ${sha256(cookie)} AND s.expires_at > now() AND (t.expires_at IS NULL OR t.expires_at > now())`;
+    if (!row) throw denied;
+    if (!["GET", "HEAD", "OPTIONS"].includes(method) && !(typeof csrfHeader === "string" && safeEqual(csrfHeader, row.csrf))) {
+      throw new ApiError("FORBIDDEN", "the X-Apg-Csrf header is missing or does not match this session");
+    }
+    return {
+      actor: { kind: "token", id: row.id, name: row.name, role: row.role, workspaces: row.workspaces.includes("*") ? "*" : row.workspaces },
+      csrf: row.csrf,
+      expiresAt: row.expires_at,
+    };
+  }
+
+  async closeSession(cookie: string): Promise<void> {
+    await this.sql`DELETE FROM apg_sessions WHERE id_hash = ${sha256(cookie)}`;
+  }
+
   private async fromJwt(token: string): Promise<Actor> {
+
     const jwt = this.jwt!;
     const options = {
       algorithms: JWT_ALGORITHMS,

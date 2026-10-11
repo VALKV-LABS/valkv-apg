@@ -35,6 +35,7 @@ services:
       APG_SECRET_KEY: ZGV2LW9ubHktZGV2LW9ubHktZGV2LW9ubHktZGV2LW8=
       APG_BOOTSTRAP_ADMIN_TOKEN: apg_at_dev-only-admin-token-do-not-use
       APG_BOOTSTRAP_NODE_TOKEN: apg_at_dev-only-node-token-do-not-use
+      APG_DEBUG_NODE_URL: http://node:9100
       # Short, so tests see rollups soon. The default is 60.
       APG_USAGE_ROLLUP_INTERVAL_SECS: "5"
     ports:

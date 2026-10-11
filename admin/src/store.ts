@@ -51,6 +51,12 @@ export interface WriteOptions {
   dryRun?: boolean;
   /** Required revision of the existing resource (`If-Match`). */
   ifMatch?: number | undefined;
+  /**
+   * Run inside this transaction instead of opening one, so several writes
+   * land together or not at all (declarative apply, spec DEC-7). The caller
+   * owns commit, rollback and dry runs.
+   */
+  tx?: Tx | undefined;
 }
 
 /** Thrown inside a transaction to roll it back while still returning a value. */
@@ -76,6 +82,13 @@ export class Store {
   // ── Transactions, events, audit ────────────────────────────────────────────
 
   private async transact<T>(opts: WriteOptions, fn: (tx: Tx) => Promise<T>): Promise<T> {
+    if (opts.tx) {
+      try {
+        return await fn(opts.tx);
+      } catch (err) {
+        throw translate(err);
+      }
+    }
     try {
       return (await this.sql.begin(async (tx) => {
         const result = await fn(tx);

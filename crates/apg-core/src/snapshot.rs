@@ -188,7 +188,92 @@ impl Entry {
     }
 }
 
-fn parse_query(query: &str) -> Vec<(String, String)> {
+impl RouteIndex {
+    /// Every entry a request for this host could match, in RT-2 order.
+    fn ordered(&self, host: &str) -> Vec<&Entry> {
+        let exact = self.exact.get(host).into_iter().flatten();
+        let wild = host.find('.').and_then(|i| self.wildcard.get(&host[i..])).into_iter().flatten();
+        let mut all: Vec<&Entry> = exact.chain(wild).chain(self.any.iter()).collect();
+        all.sort_by(|a, b| a.key.cmp(&b.key));
+        all
+    }
+}
+
+impl Entry {
+    /// Why this entry does not match, in words; `None` when it does.
+    /// Mirrors [`Entry::matches`]; a test holds the two together.
+    fn why_not(&self, req: &Request<'_>) -> Option<String> {
+        let path_ok = match &self.path {
+            PathMatcher::Any => true,
+            PathMatcher::Exact(p) => p == req.path,
+            PathMatcher::Prefix(p) => prefix_matches(p, req.path),
+            PathMatcher::Regex(re) => re.is_match(req.path),
+        };
+        if !path_ok {
+            return Some(format!("the path does not match {}", self.describe_path()));
+        }
+        let r = &self.route;
+        if !r.methods.is_empty() && !r.methods.iter().any(|m| m.eq_ignore_ascii_case(req.method)) {
+            return Some(format!("the method is not one of {}", r.methods.join(", ")));
+        }
+        if let Some(p) = r.headers.iter().find(|p| !p.matches((req.header)(&p.name).as_deref())) {
+            return Some(format!("the header '{}' is missing or does not match", p.name));
+        }
+        if !r.query.is_empty() {
+            let pairs = parse_query(req.query);
+            if let Some(p) = r.query.iter().find(|p| !p.matches(pairs.iter().find(|(k, _)| *k == p.name).map(|(_, v)| v.as_str()))) {
+                return Some(format!("the query parameter '{}' is missing or does not match", p.name));
+            }
+        }
+        None
+    }
+
+    fn describe_path(&self) -> String {
+        match &self.path {
+            PathMatcher::Any => "any path".into(),
+            PathMatcher::Exact(p) => format!("exact {p}"),
+            PathMatcher::Prefix(p) => format!("prefix {p}"),
+            PathMatcher::Regex(re) => format!("regex {}", re.as_str()),
+        }
+    }
+}
+
+/// One route the matcher considered, for [`Snapshot::explain`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Candidate {
+    pub route_id: String,
+    pub route: String,
+    pub workspace_id: String,
+    /// `system` routes are tried before `workspace` routes (spec RT-1).
+    pub tier: &'static str,
+    pub path: String,
+    /// True when every predicate of the route holds for the request.
+    pub matches: bool,
+    /// True for the one candidate the request would be sent to.
+    pub selected: bool,
+    /// Why it is not the selected one. Empty when it is.
+    pub reason: String,
+}
+
+/// Which route a request would hit, and why not the others (spec RT-6).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Explanation {
+    pub host: String,
+    pub path: String,
+    pub method: String,
+    /// The workspace that owns the host, if any does.
+    pub host_owner: Option<String>,
+    pub selected: Option<Candidate>,
+    pub candidates: Vec<Candidate>,
+    /// True when there were more candidates than are listed.
+    pub truncated: bool,
+}
+
+/// Most candidates [`Snapshot::explain`] lists.
+const EXPLAIN_LIMIT: usize = 100;
+
+/// Splits a raw query string into decoded pairs.
+pub fn parse_query(query: &str) -> Vec<(String, String)> {
     query
         .split('&')
         .filter(|s| !s.is_empty())
@@ -598,6 +683,58 @@ impl Snapshot {
         Some(Matched { route: entry.route.clone(), matched_prefix: prefix, workspace_id: owner.to_string() })
     }
 
+    /// Answers "which route would this request hit, and why not the others",
+    /// with the same index and the same predicates as [`Snapshot::match_request`].
+    pub fn explain(&self, req: &Request<'_>) -> Explanation {
+        let owner = self.host_owner(req.host);
+        let mut tiers: Vec<(&'static str, Vec<&Entry>)> = vec![("system", self.system_routes.ordered(req.host))];
+        if let Some(index) = owner.and_then(|o| self.workspace_routes.get(o)) {
+            tiers.push(("workspace", index.ordered(req.host)));
+        }
+        let mut candidates = Vec::new();
+        let mut selected: Option<Candidate> = None;
+        let mut truncated = false;
+        for (tier, entries) in tiers {
+            for entry in entries {
+                let why = entry.why_not(req);
+                let matches = why.is_none();
+                let wins = matches && selected.is_none();
+                let reason = match (&why, &selected) {
+                    (Some(w), _) => w.clone(),
+                    (None, Some(s)) => format!("matches, but '{}' is ahead of it in match order", s.route),
+                    (None, None) => String::new(),
+                };
+                let candidate = Candidate {
+                    route_id: entry.route.id.clone(),
+                    route: entry.route.name.clone(),
+                    workspace_id: entry.route.workspace_id.clone(),
+                    tier,
+                    path: entry.describe_path(),
+                    matches,
+                    selected: wins,
+                    reason,
+                };
+                if wins {
+                    selected = Some(candidate.clone());
+                }
+                if candidates.len() < EXPLAIN_LIMIT {
+                    candidates.push(candidate);
+                } else {
+                    truncated = true;
+                }
+            }
+        }
+        Explanation {
+            host: req.host.to_string(),
+            path: req.path.to_string(),
+            method: req.method.to_string(),
+            host_owner: owner.map(str::to_string),
+            selected,
+            candidates,
+            truncated,
+        }
+    }
+
     pub fn service(&self, id: &str) -> Option<&Arc<ServiceEntry>> {
         self.services.get(id)
     }
@@ -685,6 +822,41 @@ mod tests {
 
     fn find_full(snap: &Snapshot, method: &str, host: &str, path: &str, query: &str, header: &dyn Fn(&str) -> Option<String>) -> Option<Matched> {
         snap.match_request(&Request { host, path, method, query, header })
+    }
+
+    #[test]
+    fn explain_agrees_with_the_matcher_and_says_why_not() {
+        let mut r = base();
+        domain(&mut r, ACME, "shop.example.com", "active");
+        route(&mut r, "sys-health", SYS, "svc-sys", json!({ "paths": [{ "type": "exact", "value": "/healthz" }] }));
+        route(&mut r, "acme-post", ACME, "svc-acme", json!({ "hosts": ["shop.example.com"], "paths": ["/cart"], "methods": ["POST"] }));
+        route(&mut r, "acme-beta", ACME, "svc-acme", json!({ "hosts": ["shop.example.com"], "paths": ["/cart"], "headers": [{ "name": "X-Beta", "value": "1" }], "priority": 10 }));
+        route(&mut r, "acme-all", ACME, "svc-acme", json!({ "hosts": ["shop.example.com"], "paths": ["/"] }));
+        let s = Snapshot::build(&r);
+
+        for (method, path, header) in [("GET", "/cart", None), ("POST", "/cart", None), ("GET", "/cart", Some("1")), ("GET", "/healthz", None), ("GET", "/other", None)] {
+            let lookup = |name: &str| (name == "x-beta").then(|| header.map(str::to_string)).flatten();
+            let req = Request { host: "shop.example.com", path, method, query: "", header: &lookup };
+            let e = s.explain(&req);
+            assert_eq!(e.selected.as_ref().map(|c| c.route_id.clone()), s.match_request(&req).map(|m| m.route.id.clone()), "{method} {path}");
+            assert_eq!(e.candidates.iter().filter(|c| c.selected).count(), usize::from(e.selected.is_some()));
+            assert!(e.candidates.iter().all(|c| c.selected == c.reason.is_empty()));
+        }
+
+        let e = s.explain(&Request { host: "shop.example.com", path: "/cart", method: "GET", query: "", header: &|_| None });
+        assert_eq!(e.host_owner.as_deref(), Some(ACME));
+        assert_eq!(e.selected.as_ref().unwrap().route, "acme-all");
+        let reason = |name: &str| e.candidates.iter().find(|c| c.route == name).unwrap().reason.clone();
+        assert!(reason("acme-post").contains("method"), "{}", reason("acme-post"));
+        assert!(reason("acme-beta").contains("x-beta"), "{}", reason("acme-beta"));
+        assert!(reason("sys-health").contains("exact /healthz"), "{}", reason("sys-health"));
+        assert_eq!(e.candidates[0].tier, "system");
+
+        // A host nobody owns reaches system routes only.
+        let e = s.explain(&Request { host: "unknown.example.org", path: "/cart", method: "GET", query: "", header: &|_| None });
+        assert_eq!(e.host_owner, None);
+        assert!(e.selected.is_none());
+        assert!(e.candidates.iter().all(|c| c.tier == "system"));
     }
 
     #[test]

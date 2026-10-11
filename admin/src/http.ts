@@ -9,6 +9,8 @@ declare module "fastify" {
   interface FastifyRequest {
     /** Set by the authentication hook on every authenticated route. */
     actor?: Actor;
+    /** Set when the caller authenticated with a browser session. */
+    session?: { cookie: string; csrf: string; expiresAt: Date };
   }
 }
 

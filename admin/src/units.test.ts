@@ -11,6 +11,11 @@ import { hostCovered } from "./kinds.js";
 import { buildOpenApi } from "./openapi.js";
 import { PLUGIN_TYPES } from "./plugin-types.js";
 import { ENDPOINTS, registerApi } from "./routes/api.js";
+import { registerConfig } from "./routes/config.js";
+import { canonical, credentialName, diffFields, pluginName } from "./declarative.js";
+import { cookieOf } from "./server.js";
+import { securityHeaders } from "./ui.js";
+import { loadConfig } from "./config.js";
 import { SchemaRegistry } from "./schemas.js";
 import { pluginTemplateFaults, templateFault } from "./template.js";
 import { loadUnbuilt, unbuiltFaults } from "./unbuilt.js";
@@ -184,6 +189,7 @@ describe("plugin type table", () => {
 describe("OpenAPI document", () => {
   const schemas = new SchemaRegistry(fileURLToPath(new URL("../../schemas/", import.meta.url)));
   registerApi(Fastify(), { deps: { sql: undefined } } as never, schemas);
+  registerConfig(Fastify(), { deps: { sql: undefined } } as never, undefined as never, { debugNodeUrl: null, secureCookies: false });
   const document = buildOpenApi(ENDPOINTS, schemas, "0.1.0");
 
   it("is a valid OpenAPI 3.1 document", async () => {
@@ -264,5 +270,61 @@ describe("templates are checked on write, by the node's rules (TPL-1)", () => {
     ]);
     expect(pluginTemplateFaults("access_log", { custom_fields: { tenant: "{{ workspace.slug }}" } })).toEqual([]);
     expect(pluginTemplateFaults("rate_limit", { scope: "{{ not a template field }}" })).toEqual([]);
+  });
+});
+
+describe("declarative configuration helpers", () => {
+  it("canonical JSON ignores key order and nothing else", () => {
+    expect(canonical({ b: 1, a: [2, { d: 1, c: null }] })).toBe(canonical({ a: [2, { c: null, d: 1 }], b: 1 }));
+    expect(canonical({ a: [1, 2] })).not.toBe(canonical({ a: [2, 1] }));
+    expect(canonical({ a: undefined, b: 1 })).toBe(canonical({ b: 1 }));
+    expect(canonical(new Date(0))).toBe('"1970-01-01T00:00:00.000Z"');
+  });
+
+  it("a diff lists leaf changes by pointer and compares lists whole", () => {
+    expect(diffFields({ a: 1, t: { x: 1, y: 2 }, l: [1, 2] }, { a: 1, t: { x: 1, y: 3 }, l: [1, 2, 3], n: true })).toEqual([
+      { pointer: "/l", before: [1, 2], after: [1, 2, 3] },
+      { pointer: "/n", after: true },
+      { pointer: "/t/y", before: 2, after: 3 },
+    ]);
+    expect(diffFields({ "a/b": 1 }, { "a/b": 2 })[0]!.pointer).toBe("/a~1b");
+    expect(diffFields({ a: { b: 1 } }, { a: { b: 1 } })).toEqual([]);
+  });
+
+  it("unnamed plugins and credentials get the same name every time", () => {
+    expect(pluginName({ type: "key_auth", scope: "route", scope_ref: "orders-api" })).toBe("key_auth.route.orders-api");
+    expect(pluginName({ type: "rate_limit", scope: "workspace", consumer: "mobile" })).toBe("rate_limit.workspace.c-mobile");
+    expect(pluginName({ type: "cors", scope: "route", scope_ref: "x".repeat(200) })).toHaveLength(128);
+    expect(credentialName({ type: "basic", username: "Mobile User" })).toBe("basic-mobile-user");
+    expect(credentialName({ type: "key", key: "0123456789abcdef" })).toBe(credentialName({ type: "key", key: { $secret: "0123456789abcdef" } }));
+    // a key the server is to generate, or to keep, cannot name itself
+    expect(credentialName({ type: "key" })).toBeNull();
+    expect(credentialName({ type: "key", key: { $secret: "***" } })).toBeNull();
+  });
+});
+
+describe("the UI host", () => {
+  it("nobody may frame the UI unless an origin is listed", () => {
+    expect(securityHeaders({ embedOrigins: [], logoUrl: null })["content-security-policy"]).toContain("frame-ancestors 'none'");
+    const csp = securityHeaders({ embedOrigins: ["https://portal.example.com"], logoUrl: "https://cdn.example.com/logo.svg" })["content-security-policy"]!;
+    expect(csp).toContain("frame-ancestors https://portal.example.com");
+    expect(csp).toContain("img-src 'self' data: https://cdn.example.com");
+  });
+
+  it("reads one cookie out of a header", () => {
+    expect(cookieOf("a=1; apg_session=abc; b=2", "apg_session")).toBe("abc");
+    expect(cookieOf("xapg_session=abc", "apg_session")).toBeUndefined();
+    expect(cookieOf(undefined, "apg_session")).toBeUndefined();
+  });
+
+  it("checks its settings at start", () => {
+    const base = { APG_DATABASE_URL: "postgres://x/y", APG_SECRET_KEY: Buffer.alloc(32, 1).toString("base64") };
+    expect(loadConfig(base).ui).toMatchObject({ enabled: true, brandName: "valkv-apg", embedOrigins: [] });
+    expect(loadConfig({ ...base, APG_UI_EMBED_ORIGINS: "https://a.example.com, https://b.example.com/" }).ui.embedOrigins).toEqual(["https://a.example.com", "https://b.example.com"]);
+    expect(() => loadConfig({ ...base, APG_UI_EMBED_ORIGINS: "https://a.example.com/portal" })).toThrow(/origin only/);
+    expect(() => loadConfig({ ...base, APG_UI_PRIMARY_COLOR: "blue" })).toThrow(/APG_UI_PRIMARY_COLOR/);
+    expect(() => loadConfig({ ...base, APG_UI_LOGO_URL: "javascript:alert(1)" })).toThrow(/APG_UI_LOGO_URL/);
+    expect(() => loadConfig({ ...base, APG_DEBUG_NODE_URL: "node:9100" })).toThrow(/APG_DEBUG_NODE_URL/);
+    expect(() => loadConfig({ ...base, APG_OIDC_ISSUER: "https://idp.example.com" })).toThrow(/not available/);
   });
 });

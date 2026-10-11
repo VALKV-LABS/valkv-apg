@@ -8,6 +8,7 @@
 
 import { readFileSync } from "node:fs";
 import type { BlockList } from "node:net";
+import { fileURLToPath } from "node:url";
 import { parseSecretKey } from "./crypto.js";
 import { parseCidrList } from "./egress.js";
 
@@ -21,6 +22,8 @@ export const READ_VARIABLES = [
   "APG_DOMAIN_VERIFICATION", "APG_CHANGELOG_RETENTION_HOURS", "APG_NODE_SLOT_TTL_HOURS", "APG_AUDIT_RETENTION_DAYS",
   "APG_EGRESS_ALLOW_CIDRS", "APG_BACKEND_ALLOW_CIDRS", "APG_LOG_LEVEL", "APG_LOG_FORMAT",
   "APG_USAGE_ROLLUP_INTERVAL_SECS", "APG_USAGE_RAW_RETENTION_DAYS", "APG_USAGE_HOURLY_RETENTION_DAYS", "APG_USAGE_WEBHOOK_URL",
+  "APG_UI_ENABLED", "APG_UI_DIR", "APG_UI_BRAND_NAME", "APG_UI_LOGO_URL", "APG_UI_PRIMARY_COLOR", "APG_UI_EMBED_ORIGINS",
+  "APG_DEBUG_NODE_URL", "APG_OIDC_ISSUER",
 ] as const;
 
 const LOG_LEVELS = ["trace", "debug", "info", "warn", "error"] as const;
@@ -42,8 +45,24 @@ export interface JwtConfig {
   roleClaim: string | null;
 }
 
+/** The admin UI (spec §15). */
+export interface UiConfig {
+  enabled: boolean;
+  /** Directory holding the built UI. */
+  dir: string;
+  brandName: string;
+  logoUrl: string | null;
+  /** `#rrggbb`, or null for the built-in colour. */
+  primaryColor: string | null;
+  /** Origins allowed to frame the UI (spec UI-7). Empty: nobody may. */
+  embedOrigins: string[];
+}
+
 /** Parsed admin configuration. */
 export interface Config {
+  ui: UiConfig;
+  /** Management address of a node that answers the route tester (spec RT-6), or null. */
+  debugNodeUrl: string | null;
   databaseUrl: string;
   listen: Address;
   /** Separate listener for `/dp/*`; null serves it on `listen`. */
@@ -101,7 +120,40 @@ export function loadConfig(env: Env = process.env): Config {
   if (get(env, "APG_USAGE_WEBHOOK_URL") !== null) {
     throw new ConfigError("APG_USAGE_WEBHOOK_URL is not available in this build yet; read usage through GET /v1/usage");
   }
+  if (get(env, "APG_OIDC_ISSUER") !== null) {
+    throw new ConfigError("APG_OIDC_ISSUER: single sign-on is not available in this build yet; sign in to the UI with an admin token");
+  }
+  const primaryColor = get(env, "APG_UI_PRIMARY_COLOR");
+  if (primaryColor !== null && !/^#[0-9a-fA-F]{6}$/.test(primaryColor)) {
+    throw new ConfigError(`APG_UI_PRIMARY_COLOR must look like #2563eb; got '${primaryColor}'`);
+  }
+  const logoUrl = get(env, "APG_UI_LOGO_URL");
+  if (logoUrl !== null && !/^(https:\/\/|\/)/.test(logoUrl)) {
+    throw new ConfigError("APG_UI_LOGO_URL must be an https URL or a path on this server");
+  }
+  const debugNodeUrl = get(env, "APG_DEBUG_NODE_URL");
+  if (debugNodeUrl !== null && !/^https?:\/\/[^/]+\/?$/.test(debugNodeUrl)) {
+    throw new ConfigError(`APG_DEBUG_NODE_URL must be a node's management address such as http://node:9100; got '${debugNodeUrl}'`);
+  }
   return {
+    ui: {
+      enabled: bool("APG_UI_ENABLED", get(env, "APG_UI_ENABLED") ?? "true"),
+      dir: get(env, "APG_UI_DIR") ?? fileURLToPath(new URL("../ui/", import.meta.url)),
+      brandName: get(env, "APG_UI_BRAND_NAME") ?? "valkv-apg",
+      logoUrl,
+      primaryColor,
+      embedOrigins: (get(env, "APG_UI_EMBED_ORIGINS") ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((origin) => {
+        let parsed: URL;
+        try {
+          parsed = new URL(origin);
+        } catch {
+          throw new ConfigError(`APG_UI_EMBED_ORIGINS: '${origin}' is not an origin such as https://portal.example.com`);
+        }
+        if (parsed.origin !== origin.replace(/\/$/, "")) throw new ConfigError(`APG_UI_EMBED_ORIGINS: '${origin}' must be an origin only, without a path`);
+        return parsed.origin;
+      }),
+    },
+    debugNodeUrl: debugNodeUrl?.replace(/\/$/, "") ?? null,
     databaseUrl: required(env, "APG_DATABASE_URL"),
     listen: parseAddress("APG_ADMIN_LISTEN", get(env, "APG_ADMIN_LISTEN") ?? "0.0.0.0:9000"),
     dpListen: dp === null ? null : parseAddress("APG_DP_LISTEN", dp),

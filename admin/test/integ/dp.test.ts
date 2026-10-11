@@ -24,13 +24,13 @@ describe("migrations", () => {
     url.pathname = "/apg_test_migrations";
     const sql = connect(url.href, 2);
     try {
-      expect(await migrateUp(sql)).toEqual([1, 2]);
+      expect(await migrateUp(sql)).toEqual([1, 2, 3]);
       expect(await migrateUp(sql)).toEqual([]); // idempotent
       const tables = async () => (await sql`SELECT count(*)::int AS n FROM information_schema.tables WHERE table_name LIKE 'apg\_%' AND table_name <> 'apg_migrations'`)[0]!["n"];
       expect(await tables()).toBeGreaterThan(15);
-      expect((await migrateDown(sql, 2)).sort()).toEqual([1, 2]);
+      expect((await migrateDown(sql, 3)).sort()).toEqual([1, 2, 3]);
       expect(await tables()).toBe(0);
-      expect(await migrateUp(sql)).toEqual([1, 2]);
+      expect(await migrateUp(sql)).toEqual([1, 2, 3]);
       expect((await migrateStatus(sql)).every((m) => m.applied)).toBe(true);
       // the system workspace and the cluster identity exist from the first migration
       expect((await sql`SELECT name FROM apg_workspaces WHERE system`)[0]!["name"]).toBe("default");
@@ -51,7 +51,7 @@ describe("migrations", () => {
     const b = connect(url.href, 2);
     try {
       const results = await Promise.all([migrateUp(a), migrateUp(b)]);
-      expect(results.flat().sort()).toEqual([1, 2]);
+      expect(results.flat().sort()).toEqual([1, 2, 3]);
     } finally {
       await a.end();
       await b.end();

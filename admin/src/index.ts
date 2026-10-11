@@ -16,6 +16,7 @@ import { connect, migrateDown, migrateStatus, migrateUp } from "./db.js";
 import { JobRunner, buildJobs } from "./jobs.js";
 import { buildOpenApi } from "./openapi.js";
 import { ENDPOINTS, registerApi } from "./routes/api.js";
+import { registerConfig } from "./routes/config.js";
 import { ChangeNotifier } from "./routes/dp.js";
 import { SchemaRegistry } from "./schemas.js";
 import { buildServer } from "./server.js";
@@ -30,6 +31,7 @@ async function main(argv: string[]): Promise<void> {
     // Needs no database: register the routes on a throwaway server to collect their descriptions.
     const schemas = new SchemaRegistry();
     registerApi(Fastify(), { deps: { sql: undefined } } as never, schemas);
+    registerConfig(Fastify(), { deps: { sql: undefined } } as never, undefined as never, { debugNodeUrl: null, secureCookies: false });
     process.stdout.write(JSON.stringify(buildOpenApi(ENDPOINTS, schemas, VERSION), null, 2) + "\n");
     return;
   }
@@ -69,7 +71,7 @@ async function main(argv: string[]): Promise<void> {
   const pingDatabase = async () => {
     await sql`SELECT 1`;
   };
-  const base = { pingDatabase, store, schemas, auth, notifier, version: VERSION };
+  const base = { pingDatabase, store, schemas, auth, notifier, version: VERSION, ui: config.ui, debugNodeUrl: config.debugNodeUrl };
   const app = buildServer(config, { ...base, serve: { api: true, dp: config.dpListen === null } });
   const jobs = new JobRunner(sql, buildJobs(store, config), app.log);
   // The data-plane API can have its own listener, so the network that reaches

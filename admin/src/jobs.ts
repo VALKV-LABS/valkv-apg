@@ -74,6 +74,11 @@ export function buildJobs(store: Store, s: JobSettings): Job[] {
         (await tx`DELETE FROM apg_usage_hourly WHERE bucket < now() - make_interval(days => ${s.usageHourlyRetentionDays ?? 400})`).count,
     },
     {
+      name: "session_cleanup",
+      everyMs: 3600_000,
+      run: async (tx) => (await tx`DELETE FROM apg_sessions WHERE expires_at <= now()`).count,
+    },
+    {
       name: "idempotency_cleanup",
       everyMs: 3600_000,
       run: async (tx) => (await tx`DELETE FROM apg_idempotency_keys WHERE created_at < now() - interval '24 hours'`).count,

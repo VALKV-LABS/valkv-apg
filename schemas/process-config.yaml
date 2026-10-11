@@ -101,6 +101,8 @@ variables:
   - { name: APG_UI_LOGO_URL, component: admin, type: url, phase: "4", description: "Logo shown in the console." }
   - { name: APG_UI_PRIMARY_COLOR, component: admin, type: string, phase: "4", description: "Accent colour of the console." }
   - { name: APG_UI_EMBED_ORIGINS, component: admin, type: string-list, default: "", phase: "4", description: "Origins allowed to frame the console (UI-7)." }
+  - { name: APG_UI_DIR, component: admin, type: path, default: "ui/ next to the service", phase: "4", description: "Directory holding the built console." }
+  - { name: APG_DEBUG_NODE_URL, component: admin, type: url, phase: "4", description: "Management address of one node. It answers the route tester (RT-6)." }
   - { name: APG_LOG_LEVEL, component: admin, type: enum, values: [trace, debug, info, warn, error], default: info, phase: "0", description: "Log level." }
   - { name: APG_LOG_FORMAT, component: admin, type: enum, values: [json, text], default: json, phase: "0", description: "Log format." }
 
