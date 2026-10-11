@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/domain.json",
+  "title": "Domain",
+  "description": "A hostname owned by exactly one workspace, with a TLS policy (spec §4.3).",
+  "type": "object",
+  "required": ["hostname"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "hostname": { "$ref": "../common.json#/$defs/hostname" },
+    "tls": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["acme", "manual", "none"], "default": "acme" },
+        "challenge": { "enum": ["http01", "dns01"], "default": "http01" },
+        "certificate": { "description": "Certificate name or id. Required when mode is manual.", "$ref": "../common.json#/$defs/ref" }
+      },
+      "if": { "properties": { "mode": { "const": "manual" } }, "required": ["mode"] },
+      "then": { "required": ["certificate"] }
+    },
+    "verification": {
+      "type": "object", "readOnly": true,
+      "properties": {
+        "method": { "enum": ["none", "dns_txt"] },
+        "token": { "type": "string" },
+        "verified_at": { "$ref": "../common.json#/$defs/timestamp" }
+      }
+    },
+    "status": { "enum": ["pending", "active", "failed"], "readOnly": true },
+    "status_reason": { "type": "string", "readOnly": true },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  },
+  "allOf": [
+    { "if": { "properties": { "hostname": { "pattern": "^\\*\\." } } },
+      "then": { "not": { "properties": { "tls": { "properties": { "mode": { "const": "acme" }, "challenge": { "const": "http01" } }, "required": ["challenge"] } }, "required": ["tls"] } } }
+  ]
+}

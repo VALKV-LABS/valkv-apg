@@ -1,0 +1,11 @@
+[package]
+name         = "apg-plugin-sdk"
+description  = "Plugin phases, ordering and (from build phase 2e) the Plugin trait for valkv-apg."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true

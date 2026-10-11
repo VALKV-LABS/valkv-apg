@@ -1,0 +1,297 @@
+//! Resources as a node receives them, and the event that carries them.
+//!
+//! These types mirror `schemas/`. Defaults here must equal the `default`
+//! values in the schemas: the admin does not send nested objects the caller
+//! omitted, so the node fills them in. Unknown fields are ignored, never an
+//! error, so a node one release behind the admin keeps working (spec PKG-2).
+
+use std::collections::HashMap;
+
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// One row of the changelog, or one line of a snapshot (contract version 2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ChangeEvent {
+    pub v: u32,
+    pub kind: String,
+    pub op: String,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+impl ChangeEvent {
+    /// An `upsert` event.
+    pub fn upsert(kind: &str, id: impl Into<String>, workspace_id: Option<String>, data: Value) -> Self {
+        Self { v: 2, kind: kind.to_string(), op: "upsert".into(), id: id.into(), workspace_id, revision: Some(1), data: Some(data) }
+    }
+}
+
+/// Event kinds this build understands. Anything else is skipped and counted.
+pub const KINDS: &[&str] = &[
+    "workspace", "domain", "certificate", "ca_certificate", "service", "route", "plugin", "consumer",
+    "credential", "wasm_module", "flag", "setting", "acme_challenge",
+];
+
+fn d_true() -> bool { true }
+fn d_one() -> u32 { 1 }
+fn d_active() -> String { "active".into() }
+fn d_http() -> String { "http".into() }
+fn d_http11() -> String { "1.1".into() }
+fn d_preserve() -> String { "preserve".into() }
+fn d_acme() -> String { "acme".into() }
+fn d_http01() -> String { "http01".into() }
+fn d_idle() -> u64 { 300_000 }
+fn d_drain() -> u64 { 30_000 }
+fn d_round_robin() -> String { "round_robin".into() }
+fn d_client_ip() -> String { "client_ip".into() }
+fn d_exact() -> String { "exact".into() }
+
+/// The tenancy unit (spec §4.2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Workspace {
+    pub name: String,
+    pub slug: String,
+    #[serde(default)]
+    pub system: bool,
+    #[serde(default = "d_active")]
+    pub status: String,
+}
+
+/// TLS policy of a domain.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DomainTls {
+    #[serde(default = "d_acme")]
+    pub mode: String,
+    #[serde(default = "d_http01")]
+    pub challenge: String,
+    #[serde(default)]
+    pub certificate: Option<String>,
+}
+
+impl Default for DomainTls {
+    fn default() -> Self {
+        Self { mode: d_acme(), challenge: d_http01(), certificate: None }
+    }
+}
+
+/// A hostname owned by one workspace (spec §4.3).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Domain {
+    pub hostname: String,
+    #[serde(default)]
+    pub tls: DomainTls,
+    #[serde(default = "d_active")]
+    pub status: String,
+}
+
+/// One upstream address.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct Backend {
+    #[serde(default)]
+    pub id: String,
+    pub target: String,
+    #[serde(default = "d_one")]
+    pub weight: u32,
+    #[serde(default = "d_active")]
+    pub status: String,
+}
+
+/// How a service picks a backend.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoadBalancing {
+    #[serde(default = "d_round_robin")]
+    pub strategy: String,
+    #[serde(default = "d_client_ip")]
+    pub hash_key: String,
+}
+
+impl Default for LoadBalancing {
+    fn default() -> Self {
+        Self { strategy: d_round_robin(), hash_key: d_client_ip() }
+    }
+}
+
+/// TLS towards the upstream (spec §7.6).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ServiceTls {
+    #[serde(default = "d_true")]
+    pub verify: bool,
+    #[serde(default)]
+    pub sni: Option<String>,
+}
+
+impl Default for ServiceTls {
+    fn default() -> Self {
+        Self { verify: true, sni: None }
+    }
+}
+
+/// A named upstream (spec §4.5).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Service {
+    pub name: String,
+    #[serde(default)]
+    pub shared: bool,
+    #[serde(default = "d_http")]
+    pub scheme: String,
+    #[serde(default = "d_http11")]
+    pub http_version: String,
+    pub backends: Vec<Backend>,
+    #[serde(default)]
+    pub load_balancing: LoadBalancing,
+    #[serde(default)]
+    pub tls: ServiceTls,
+    #[serde(default = "d_preserve")]
+    pub host_header: String,
+    #[serde(default = "d_drain")]
+    pub drain_timeout_ms: u64,
+}
+
+/// One path predicate. A bare string in configuration means `prefix`.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(untagged)]
+pub enum PathSpec {
+    Shorthand(String),
+    Full {
+        #[serde(rename = "type")]
+        kind: String,
+        value: String,
+    },
+}
+
+impl PathSpec {
+    /// `(type, value)`, with the shorthand expanded.
+    pub fn parts(&self) -> (&str, &str) {
+        match self {
+            PathSpec::Shorthand(v) => ("prefix", v),
+            PathSpec::Full { kind, value } => (kind, value),
+        }
+    }
+}
+
+/// A header or query predicate.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Predicate {
+    pub name: String,
+    #[serde(rename = "type", default = "d_exact")]
+    pub kind: String,
+    #[serde(default)]
+    pub value: Option<String>,
+}
+
+/// One side of a traffic split. `service` holds a service id.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SplitTarget {
+    pub service: String,
+    pub weight: u32,
+}
+
+/// Path rewrite applied after `strip_path` (spec §4.6).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Rewrite {
+    Regex { regex: String, replacement: String },
+    Path { path: String },
+    Prefix { prefix: String },
+}
+
+/// A custom gateway error response (spec ERR-2).
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct ErrorResponseSpec {
+    #[serde(default)]
+    pub status: Option<u16>,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+/// Match predicates that send a request to a service (spec §4.6).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Route {
+    pub name: String,
+    #[serde(default)]
+    pub service: Option<String>,
+    #[serde(default)]
+    pub split: Option<Vec<SplitTarget>>,
+    #[serde(default)]
+    pub split_key: Option<String>,
+    #[serde(default)]
+    pub hosts: Vec<String>,
+    #[serde(default)]
+    pub paths: Vec<PathSpec>,
+    #[serde(default)]
+    pub methods: Vec<String>,
+    #[serde(default)]
+    pub headers: Vec<Predicate>,
+    #[serde(default)]
+    pub query: Vec<Predicate>,
+    #[serde(default)]
+    pub priority: i64,
+    #[serde(default)]
+    pub strip_path: bool,
+    #[serde(default)]
+    pub rewrite: Option<Rewrite>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    #[serde(default = "d_idle")]
+    pub idle_timeout_ms: u64,
+    #[serde(default)]
+    pub error_responses: HashMap<String, ErrorResponseSpec>,
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+}
+
+/// A plugin instance as nodes receive it: references are ids (spec §9.1).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Plugin {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub scope: String,
+    #[serde(default)]
+    pub service_id: Option<String>,
+    #[serde(default)]
+    pub route_id: Option<String>,
+    #[serde(default)]
+    pub consumer_id: Option<String>,
+    #[serde(default)]
+    pub target_workspace: Option<String>,
+    #[serde(default = "d_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub priority: Option<i32>,
+    #[serde(default)]
+    pub config: Value,
+}
+
+/// One entry of the `workspace_base_domains` setting (spec DOM-2).
+#[derive(Debug, Clone, Deserialize)]
+pub struct BaseDomain {
+    pub domain: String,
+}
+
+/// A certificate. In file mode `cert_file`/`key_file` name files the node reads;
+/// from a control plane the key arrives as ciphertext (handled in build phase 2d).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Certificate {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub cert_pem: Option<String>,
+    #[serde(default)]
+    pub key_pem: Option<String>,
+    #[serde(default)]
+    pub cert_file: Option<String>,
+    #[serde(default)]
+    pub key_file: Option<String>,
+    #[serde(default)]
+    pub hosts: Vec<String>,
+}

@@ -1,0 +1,140 @@
+# Database-mode development stack (spec §18.1). Started by `make up`.
+#
+# Phase 0 runs Postgres, the admin and a sample upstream. Nodes join this file
+# in build phase 2b, when the admin serves the config API they poll.
+name: valkv-apg
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    # wal_level=logical is needed only by db_tail nodes; set here so one stack serves every mode.
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=16", "-c", "max_wal_senders=16"]
+    environment:
+      POSTGRES_USER: apg
+      POSTGRES_PASSWORD: apg-dev-only
+      POSTGRES_DB: apg
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U apg -d apg"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  admin:
+    image: valkv-labs/valkv-apg-admin:dev
+    build:
+      context: ../..
+      dockerfile: admin/Dockerfile
+      target: runtime
+    environment:
+      APG_DATABASE_URL: postgres://apg:apg-dev-only@postgres:5432/apg
+      APG_ADMIN_LISTEN: 0.0.0.0:9000
+      APG_LOG_LEVEL: info
+      # Development values only. Real deployments read these from a secret store.
+      APG_SECRET_KEY: ZGV2LW9ubHktZGV2LW9ubHktZGV2LW9ubHktZGV2LW8=
+      APG_BOOTSTRAP_ADMIN_TOKEN: apg_at_dev-only-admin-token-do-not-use
+      APG_BOOTSTRAP_NODE_TOKEN: apg_at_dev-only-node-token-do-not-use
+    ports:
+      - "127.0.0.1:9000:9000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Answers every request with a JSON description of what it received.
+  echo:
+    image: mendhak/http-https-echo:35
+    environment:
+      HTTP_PORT: "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Admin integration tests against this Postgres (each test file creates its own database).
+  admin-integ:
+    image: valkv-apg-admin:test
+    build:
+      context: ../..
+      dockerfile: admin/Dockerfile
+      target: test
+    profiles: ["test"]
+    environment:
+      APG_TEST_DATABASE_URL: postgres://apg:apg-dev-only@postgres:5432/apg
+    command: ["npm", "run", "test:integ"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # A node that polls the admin's config API. It holds no database connection.
+  node:
+    image: valkv-labs/valkv-apg:dev
+    build:
+      context: ../..
+      dockerfile: crates/apg-proxy/Dockerfile
+      target: runtime
+      args:
+        CARGO_PROFILE: ${CARGO_PROFILE:-dev}
+    environment: &node-env
+      APG_CONFIG_SOURCE: api_poll
+      APG_CONFIG_URL: http://admin:9000/dp
+      APG_NODE_TOKEN: apg_at_dev-only-node-token-do-not-use
+      APG_NODE_ID: node-1
+      APG_HTTP_MODE: proxy
+      # Short long-poll in the dev stack so an outage is noticed quickly in tests.
+      APG_POLL_WAIT_MS: "5000"
+    volumes:
+      - node1-cache:/var/lib/apg
+    ports:
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      admin:
+        condition: service_healthy
+      echo:
+        condition: service_healthy
+
+  # A second node: default HTTP behaviour (redirect to HTTPS), a health path on
+  # the traffic port, and the container network trusted as a proxy tier.
+  node-redirect:
+    image: valkv-labs/valkv-apg:dev
+    environment:
+      <<: *node-env
+      APG_NODE_ID: node-redirect
+      APG_HTTP_MODE: redirect
+      APG_TRAFFIC_HEALTH_PATH: /_apg/health
+      APG_TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    depends_on:
+      admin:
+        condition: service_healthy
+      echo:
+        condition: service_healthy
+
+  # Test runner. Not started by `up`; run with `make integ`.
+  e2e:
+    image: node:22-slim
+    profiles: ["test"]
+    working_dir: /repo/tests/e2e
+    volumes:
+      - ../..:/repo:ro
+    environment:
+      ADMIN_URL: http://admin:9000
+      ADMIN_TOKEN: apg_at_dev-only-admin-token-do-not-use
+      NODE_TOKEN: apg_at_dev-only-node-token-do-not-use
+      ECHO_URL: http://echo:8080
+      MODE: ${MODE:-api_poll}
+      SUITE: ${SUITE:-}
+      NODE_HTTP: http://node:8080
+      NODE_HTTPS: https://node:8443
+      NODE_MGMT: http://node:9100
+      REDIRECT_HTTP: http://node-redirect:8080
+      REDIRECT_HTTPS: https://node-redirect:8443
+    command: ["node", "run.js"]
+    depends_on:
+      echo:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  node1-cache:

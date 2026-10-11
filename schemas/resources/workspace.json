@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/workspace.json",
+  "title": "Workspace",
+  "description": "The tenancy unit (spec §4.2).",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "description": "May be supplied at creation so an embedding platform can use its own tenant id.", "$ref": "../common.json#/$defs/id" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "slug": { "description": "DNS label used for base-domain hosts.", "type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" },
+    "system": { "type": "boolean", "default": false, "readOnly": true },
+    "status": { "enum": ["active", "suspended"], "default": "active" },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "max_routes": { "type": "integer", "minimum": 0 },
+        "max_services": { "type": "integer", "minimum": 0 },
+        "max_domains": { "type": "integer", "minimum": 0 },
+        "max_consumers": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  }
+}

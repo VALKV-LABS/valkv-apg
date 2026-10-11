@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/bandwidth_limit.json",
+  "title": "bandwidth_limit",
+  "description": "Byte-budget token bucket: admission before proxying, debit after the response (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "bytes_per_second": { "type": "number", "exclusiveMinimum": 0, "default": 5000000 },
+    "burst_bytes": { "type": "number", "minimum": 1, "default": 20000000 },
+    "scope": { "$ref": "../common.json#/$defs/limitScope", "default": "workspace" }
+  }
+}

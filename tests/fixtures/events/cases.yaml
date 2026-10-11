@@ -1,0 +1,84 @@
+# Changelog events (contract version 2, spec §5.1). `valid: false` cases must be
+# rejected by schemas/changelog-event.json. Run by both languages.
+- name: route upsert
+  valid: true
+  event:
+    v: 2
+    kind: route
+    op: upsert
+    id: 0193f2a0-0000-7000-8000-0000000000aa
+    workspace_id: default
+    revision: 3
+    data: { name: orders-api, service_id: 0193f2a0-0000-7000-8000-0000000000bb, priority: 10 }
+- name: route delete carries no data
+  valid: true
+  event: { v: 2, kind: route, op: delete, id: 0193f2a0-0000-7000-8000-0000000000aa, workspace_id: default }
+- name: flag upsert
+  valid: true
+  event: { v: 2, kind: flag, op: upsert, id: usage_metering, revision: 1, data: { enabled: false } }
+- name: certificate upsert carries ciphertext
+  valid: true
+  event:
+    v: 2
+    kind: certificate
+    op: upsert
+    id: 0193f2a0-0000-7000-8000-0000000000cc
+    workspace_id: default
+    revision: 1
+    data: { cert_pem: "-----BEGIN CERTIFICATE-----", key_ciphertext: "djE6...", hosts: [api.example.com] }
+- name: acme challenge
+  valid: true
+  event:
+    v: 2
+    kind: acme_challenge
+    op: upsert
+    id: tok123
+    revision: 1
+    data: { token: tok123, key_authorization: tok123.abc, expires_at: "2026-10-10T12:00:00Z" }
+- name: unknown fields inside data are allowed (forward compatibility)
+  valid: true
+  event:
+    v: 2
+    kind: workspace
+    op: upsert
+    id: 0193f2a0-0000-7000-8000-000000000001
+    revision: 1
+    data: { name: acme, slug: acme, some_future_field: true }
+- name: contract version 1 is rejected
+  valid: false
+  event: { v: 1, kind: route, op: delete, id: x, workspace_id: default }
+- name: unknown kind
+  valid: false
+  event: { v: 2, kind: tenant, op: delete, id: x }
+- name: upsert without data
+  valid: false
+  event: { v: 2, kind: flag, op: upsert, id: usage_metering, revision: 1 }
+- name: upsert without revision
+  valid: false
+  event: { v: 2, kind: flag, op: upsert, id: usage_metering, data: { enabled: true } }
+- name: delete with data
+  valid: false
+  event: { v: 2, kind: flag, op: delete, id: usage_metering, data: { enabled: true } }
+- name: workspace-owned kind without workspace_id
+  valid: false
+  event: { v: 2, kind: route, op: delete, id: 0193f2a0-0000-7000-8000-0000000000aa }
+- name: certificate with a private key in clear (CFG-6)
+  valid: false
+  event:
+    v: 2
+    kind: certificate
+    op: upsert
+    id: 0193f2a0-0000-7000-8000-0000000000cc
+    workspace_id: default
+    revision: 1
+    data: { cert_pem: "-----BEGIN CERTIFICATE-----", key_ciphertext: "djE6...", key_pem: "-----BEGIN PRIVATE KEY-----" }
+- name: credential with a password in clear (CFG-6)
+  valid: false
+  event:
+    v: 2
+    kind: credential
+    op: upsert
+    id: 0193f2a0-0000-7000-8000-0000000000dd
+    workspace_id: default
+    revision: 1
+    data: { type: basic, consumer_id: 0193f2a0-0000-7000-8000-0000000000ee, username: u, password: hunter2 }

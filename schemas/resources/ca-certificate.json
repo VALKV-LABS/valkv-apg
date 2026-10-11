@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/ca-certificate.json",
+  "title": "CaCertificate",
+  "description": "A PEM bundle used to verify upstreams or client certificates (spec §4.4).",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "cert_pem": { "type": "string", "maxLength": 262144 },
+    "cert_file": { "description": "File mode only.", "type": "string" },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  },
+  "oneOf": [{ "required": ["cert_pem"] }, { "required": ["cert_file"] }]
+}

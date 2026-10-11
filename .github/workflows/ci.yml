@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Clippy, warnings denied
+        run: make lint-rust
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Rust unit tests
+        run: make unit-rust
+      - name: Admin type-check, unit tests and shared fixtures
+        run: make unit-admin
+
+  e2e-file:
+    name: end to end, standalone node
+    runs-on: ubuntu-latest
+    needs: [unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: make e2e MODE=file
+
+  integ:
+    name: integration and end to end, control plane
+    runs-on: ubuntu-latest
+    needs: [unit]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: make up
+      - run: make integ
+      - run: make e2e-resilience
+      - if: failure()
+        run: docker compose -f deploy/compose/database.yml -p valkv-apg logs --no-color --tail=200
+      - if: always()
+        run: make down

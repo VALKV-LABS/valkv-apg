@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/service.json",
+  "title": "Service",
+  "description": "A named upstream: backends plus load-balancing, health, timeout and retry policy (spec §4.5, §7).",
+  "type": "object",
+  "required": ["name", "backends"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "scheme": { "enum": ["http", "https"], "default": "http" },
+    "http_version": { "enum": ["1.1", "2"], "default": "1.1" },
+    "shared": { "description": "System workspace only: routes in any workspace may reference this service.", "type": "boolean", "default": false },
+    "backends": {
+      "type": "array", "minItems": 1, "maxItems": 1000,
+      "items": {
+        "type": "object", "required": ["target"], "additionalProperties": false,
+        "properties": {
+          "id": { "$ref": "../common.json#/$defs/id" },
+          "target": { "$ref": "../common.json#/$defs/target" },
+          "weight": { "type": "integer", "minimum": 0, "maximum": 1000, "default": 1 },
+          "status": { "enum": ["active", "draining", "down"], "default": "active" },
+          "labels": { "$ref": "../common.json#/$defs/labels" }
+        }
+      }
+    },
+    "load_balancing": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "strategy": { "enum": ["round_robin", "least_connections", "random", "hash"], "default": "round_robin" },
+        "hash_key": { "$ref": "../common.json#/$defs/keySelector", "default": "client_ip" }
+      }
+    },
+    "timeouts": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "connect_ms": { "type": "integer", "minimum": 1, "maximum": 600000, "default": 5000 },
+        "read_ms": { "type": "integer", "minimum": 1, "maximum": 3600000, "default": 60000 },
+        "write_ms": { "type": "integer", "minimum": 1, "maximum": 3600000, "default": 60000 }
+      }
+    },
+    "retries": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "attempts": { "type": "integer", "minimum": 0, "maximum": 10, "default": 1 },
+        "on": {
+          "type": "array", "uniqueItems": true, "default": ["connect_failure"],
+          "items": { "oneOf": [{ "enum": ["connect_failure", "timeout"] }, { "type": "integer", "minimum": 500, "maximum": 599 }] }
+        },
+        "non_idempotent": { "type": "boolean", "default": false },
+        "buffer_bytes": { "type": "integer", "minimum": 0, "maximum": 10485760, "default": 65536 }
+      }
+    },
+    "health_check": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "active": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "type": { "enum": ["http", "tcp"], "default": "http" },
+            "path": { "type": "string", "pattern": "^/", "default": "/healthz" },
+            "interval_ms": { "type": "integer", "minimum": 500, "maximum": 3600000, "default": 5000 },
+            "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 60000, "default": 2000 },
+            "healthy_threshold": { "type": "integer", "minimum": 1, "maximum": 20, "default": 2 },
+            "unhealthy_threshold": { "type": "integer", "minimum": 1, "maximum": 20, "default": 3 },
+            "expected_statuses": {
+              "description": "Inclusive ranges, e.g. [[200, 399]].",
+              "type": "array", "default": [[200, 399]],
+              "items": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "type": "integer", "minimum": 100, "maximum": 599 } }
+            },
+            "host_header": { "type": "string" }
+          }
+        },
+        "passive": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": true },
+            "consecutive_failures": { "type": "integer", "minimum": 1, "maximum": 100, "default": 3 },
+            "open_ms": { "type": "integer", "minimum": 100, "maximum": 3600000, "default": 30000 },
+            "statuses": { "type": "array", "uniqueItems": true, "default": [502, 503, 504], "items": { "type": "integer", "minimum": 500, "maximum": 599 } }
+          }
+        }
+      }
+    },
+    "tls": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "verify": { "type": "boolean", "default": true },
+        "sni": { "type": "string" },
+        "ca_certificates": { "type": "array", "items": { "$ref": "../common.json#/$defs/ref" } },
+        "client_certificate": { "$ref": "../common.json#/$defs/ref" }
+      }
+    },
+    "keepalive": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "idle_ms": { "type": "integer", "minimum": 0, "maximum": 3600000, "default": 60000 },
+        "max_idle_per_backend": { "type": "integer", "minimum": 0, "maximum": 10000, "default": 64 }
+      }
+    },
+    "host_header": { "description": "preserve, backend, or a literal Host value.", "type": "string", "default": "preserve" },
+    "drain_timeout_ms": { "type": "integer", "minimum": 0, "maximum": 3600000, "default": 30000 },
+    "plugins": { "description": "Declarative config only: plugin instances attached to this service.", "type": "array", "items": { "$ref": "plugin.json#/$defs/nested" } },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  }
+}

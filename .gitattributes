@@ -1,0 +1,6 @@
+# Text files are stored with LF endings whatever the contributor's platform:
+# shell scripts and Dockerfiles break with CRLF.
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.wasm binary

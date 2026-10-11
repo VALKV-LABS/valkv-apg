@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/settings.json",
+  "title": "Settings",
+  "description": "Global routing configuration that is not a resource (spec §4.8). Each property is one Setting.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "workspace_base_domains": {
+      "description": "Every workspace implicitly owns {slug}.{domain} for each entry (DOM-2).",
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["domain"], "additionalProperties": false,
+        "properties": {
+          "domain": { "description": "An exact host; no wildcard.", "type": "string", "maxLength": 253,
+                      "pattern": "^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$" },
+          "tls": {
+            "type": "object", "additionalProperties": false,
+            "properties": {
+              "mode": { "enum": ["acme", "manual", "none"], "default": "acme" },
+              "certificate": { "$ref": "../common.json#/$defs/ref" }
+            }
+          }
+        }
+      }
+    },
+    "workspace_resolvers": {
+      "description": "How a request matched by a system route is attributed to a workspace (spec §6.4).",
+      "type": "array", "uniqueItems": true, "default": ["host", "consumer"],
+      "items": { "type": "string", "pattern": "^(host|consumer|jwt_claim:[A-Za-z0-9_.-]{1,64}|header:[A-Za-z0-9_-]{1,64})$" }
+    },
+    "workspace_plugin_types": {
+      "description": "Plugin types a non-admin role may create (PL-7). Default: every type except wasm.",
+      "type": "array", "uniqueItems": true, "items": { "$ref": "plugin.json#/$defs/type" }
+    },
+    "error_responses": { "$ref": "../common.json#/$defs/errorResponses" },
+    "identity_headers": { "type": "boolean", "default": true },
+    "access_log": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "sink": { "type": "string", "pattern": "^(stdout|off|file:.+|https?://.+)$", "default": "stdout" },
+        "sample_rate": { "type": "number", "minimum": 0, "maximum": 1, "default": 1 },
+        "custom_fields": { "type": "object", "additionalProperties": { "$ref": "../common.json#/$defs/template" } }
+      }
+    }
+  }
+}

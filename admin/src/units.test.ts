@@ -1,0 +1,207 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import Fastify from "fastify";
+import { Validator } from "@seriousme/openapi-schema-validator";
+import { describe, expect, it } from "vitest";
+import { type Actor, CallerRateLimiter, canRead, canWrite, isAdmin, requireAdmin, requireNode, requireRead, requireWrite } from "./auth.js";
+import { SecretBox, generateToken, parseSecretKey, safeEqual, sha256, uuidv7 } from "./crypto.js";
+import { egressViolation, isNonPublic, parseCidrList } from "./egress.js";
+import { slotNameFor } from "./jobs.js";
+import { hostCovered } from "./kinds.js";
+import { buildOpenApi } from "./openapi.js";
+import { PLUGIN_TYPES } from "./plugin-types.js";
+import { ENDPOINTS, registerApi } from "./routes/api.js";
+import { SchemaRegistry } from "./schemas.js";
+import { mergePatch } from "./store.js";
+
+const actor = (role: Actor["role"], workspaces: Actor["workspaces"]): Actor => ({ kind: "token", id: "t", name: "t", role, workspaces });
+
+describe("authorisation decisions", () => {
+  it("an editor writes only inside its scope", () => {
+    const a = actor("editor", ["ws-1"]);
+    expect(canWrite(a, "ws-1")).toBe(true);
+    expect(canWrite(a, "ws-2")).toBe(false);
+    expect(canRead(a, "ws-2")).toBe(false);
+  });
+
+  it("a viewer reads but never writes", () => {
+    const a = actor("viewer", "*");
+    expect(canRead(a, "any")).toBe(true);
+    expect(canWrite(a, "any")).toBe(false);
+  });
+
+  it("a node can do nothing on resources", () => {
+    const a = actor("node", "*");
+    expect(canRead(a, "any")).toBe(false);
+    expect(canWrite(a, "any")).toBe(false);
+    expect(() => requireNode(a)).not.toThrow();
+    expect(() => requireNode(actor("editor", "*"))).toThrow(/data-plane/);
+  });
+
+  it("fleet admin means the admin role AND every workspace", () => {
+    expect(isAdmin(actor("admin", "*"))).toBe(true);
+    expect(isAdmin(actor("admin", ["ws-1"]))).toBe(false);
+    expect(() => requireAdmin(actor("editor", "*"))).toThrow();
+  });
+
+  it("out of scope is NOT_FOUND, in scope but read-only is FORBIDDEN (no existence leak)", () => {
+    expect(() => requireRead(actor("editor", ["ws-1"]), "ws-2")).toThrow(expect.objectContaining({ code: "NOT_FOUND" }));
+    expect(() => requireWrite(actor("editor", ["ws-1"]), "ws-2")).toThrow(expect.objectContaining({ code: "NOT_FOUND" }));
+    expect(() => requireWrite(actor("viewer", ["ws-1"]), "ws-1")).toThrow(expect.objectContaining({ code: "FORBIDDEN" }));
+  });
+});
+
+describe("caller rate limiter", () => {
+  it("allows a burst, then refuses, then refills with time", () => {
+    const rl = new CallerRateLimiter(10, 3);
+    expect([rl.take("a", 0), rl.take("a", 0), rl.take("a", 0), rl.take("a", 0)]).toEqual([true, true, true, false]);
+    expect(rl.take("a", 100)).toBe(true); // 100 ms at 10/s refills one token
+    expect(rl.take("b", 0)).toBe(true); // callers are independent
+  });
+
+  it("stays bounded when callers are unbounded", () => {
+    const rl = new CallerRateLimiter(1, 1, 100);
+    for (let i = 0; i < 1000; i++) rl.take(`c${i}`, 0);
+    expect((rl as unknown as { buckets: Map<string, unknown> }).buckets.size).toBeLessThanOrEqual(100);
+  });
+});
+
+describe("secrets", () => {
+  const key = Buffer.alloc(32, 1);
+  const other = Buffer.alloc(32, 2);
+
+  it("round-trips, and the ciphertext does not contain the plaintext", () => {
+    const box = new SecretBox(key);
+    const sealed = box.seal("-----BEGIN PRIVATE KEY-----abc", "certificate:1");
+    expect(sealed).not.toContain("PRIVATE KEY");
+    expect(box.open(sealed, "certificate:1")).toBe("-----BEGIN PRIVATE KEY-----abc");
+  });
+
+  it("is bound to its resource: another resource's id cannot open it", () => {
+    const box = new SecretBox(key);
+    expect(() => box.open(box.seal("s", "certificate:1"), "certificate:2")).toThrow();
+  });
+
+  it("uses a fresh nonce every time", () => {
+    const box = new SecretBox(key);
+    expect(box.seal("s", "a")).not.toBe(box.seal("s", "a"));
+  });
+
+  it("opens values sealed under the previous key during rotation, and fails with neither", () => {
+    const old = new SecretBox(other).seal("s", "a");
+    expect(new SecretBox(key, other).open(old, "a")).toBe("s");
+    expect(() => new SecretBox(key).open(old, "a")).toThrow(/could not be decrypted/);
+  });
+
+  it("rejects a tampered ciphertext", () => {
+    const box = new SecretBox(key);
+    const parts = box.seal("secret", "a").split(":");
+    parts[2] = Buffer.from("tampered").toString("base64");
+    expect(() => box.open(parts.join(":"), "a")).toThrow();
+  });
+
+  it("parseSecretKey accepts exactly 32 bytes", () => {
+    expect(parseSecretKey(key.toString("base64"))).toHaveLength(32);
+    expect(() => parseSecretKey(Buffer.alloc(16).toString("base64"))).toThrow(/32 random bytes/);
+  });
+
+  it("tokens are long, prefixed and distinct; uuidv7 sorts by time", () => {
+    const a = generateToken("apg_at_");
+    expect(a).toMatch(/^apg_at_[0-9A-Za-z]{43}$/);
+    expect(generateToken("apg_at_")).not.toBe(a);
+    expect(uuidv7(1000) < uuidv7(2000)).toBe(true);
+    expect(uuidv7()).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(sha256("a")).toHaveLength(64);
+    expect(safeEqual("abc", "abc") && !safeEqual("abc", "abd") && !safeEqual("abc", "abcd")).toBe(true);
+  });
+});
+
+describe("egress guard", () => {
+  const none = parseCidrList("", "X");
+
+  it("classifies loopback, private, link-local and metadata addresses as non-public", () => {
+    for (const ip of ["127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "::1", "fe80::1", "fd00::1", "::ffff:10.0.0.1", "0.0.0.0"]) {
+      expect(isNonPublic(ip), ip).toBe(true);
+    }
+    for (const ip of ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "172.32.0.1"]) expect(isNonPublic(ip), ip).toBe(false);
+    expect(isNonPublic("not-an-ip")).toBe(true);
+  });
+
+  it("refuses an address literal in a private range and allows a public one", async () => {
+    expect(await egressViolation("169.254.169.254", none)).toMatch(/not a public address/);
+    expect(await egressViolation("[::1]", none)).toMatch(/not a public address/);
+    expect(await egressViolation("8.8.8.8", none)).toBeNull();
+  });
+
+  it("judges a name by what it resolves to: one private record is enough to refuse", async () => {
+    expect(await egressViolation("ok.example", none, async () => ["93.184.216.34"])).toBeNull();
+    expect(await egressViolation("sneaky.example", none, async () => ["93.184.216.34", "10.0.0.5"])).toMatch(/10\.0\.0\.5/);
+    expect(await egressViolation("gone.example", none, async () => { throw new Error("ENOTFOUND"); })).toMatch(/does not resolve/);
+  });
+
+  it("honours the allow-list", async () => {
+    expect(await egressViolation("10.2.3.4", parseCidrList("10.2.0.0/16", "X"))).toBeNull();
+    expect(await egressViolation("10.3.3.4", parseCidrList("10.2.0.0/16", "X"))).not.toBeNull();
+    expect(() => parseCidrList("10.0.0.0/40", "X")).toThrow(/CIDR/);
+  });
+});
+
+describe("small pure helpers", () => {
+  it("hostCovered: exact, and a wildcard covers exactly one extra label", () => {
+    expect(hostCovered("api.example.com", "api.example.com")).toBe(true);
+    expect(hostCovered("*.example.com", "a.example.com")).toBe(true);
+    expect(hostCovered("*.example.com", "a.b.example.com")).toBe(false);
+    expect(hostCovered("*.example.com", "example.com")).toBe(false);
+    expect(hostCovered("*.example.com", "*.example.com")).toBe(true);
+    expect(hostCovered("api.example.com", "*.example.com")).toBe(false);
+    expect(hostCovered("*.example.com", "evilexample.com")).toBe(false);
+  });
+
+  it("mergePatch follows RFC 7386", () => {
+    expect(mergePatch({ a: 1, b: { c: 2, d: 3 }, e: [1] }, { b: { c: null, x: 9 }, e: [2, 3], a: null })).toEqual({ b: { d: 3, x: 9 }, e: [2, 3] });
+  });
+
+  it("slotNameFor matches the node's sanitising rule", () => {
+    expect(slotNameFor("proxy-i-0abc123DEF")).toBe("apg_slot_proxy_i_0abc123def");
+  });
+});
+
+describe("plugin type table", () => {
+  it("is identical to the table the node uses (crates/apg-plugin-sdk)", () => {
+    const rust = readFileSync(fileURLToPath(new URL("../../crates/apg-plugin-sdk/src/lib.rs", import.meta.url)), "utf8");
+    const fromRust = [...rust.matchAll(/name: "(\w+)",\s+default_priority: (\d+),\s+phases: &\[([^\]]*)\]/g)].map((m) => ({
+      name: m[1]!,
+      default_priority: Number(m[2]),
+      phases: m[3]!.split(",").map((p) => p.trim()).filter(Boolean).map((p) => p.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase()),
+    }));
+    expect(fromRust).toHaveLength(21);
+    expect(PLUGIN_TYPES).toEqual(fromRust);
+  });
+});
+
+describe("OpenAPI document", () => {
+  const schemas = new SchemaRegistry(fileURLToPath(new URL("../../schemas/", import.meta.url)));
+  registerApi(Fastify(), { deps: { sql: undefined } } as never, schemas);
+  const document = buildOpenApi(ENDPOINTS, schemas, "0.1.0");
+
+  it("is a valid OpenAPI 3.1 document", async () => {
+    const result = await new Validator().validate(structuredClone(document));
+    expect(result.errors ?? []).toEqual([]);
+    expect(result.valid).toBe(true);
+  });
+
+  it("describes every kind's five operations and resolves every $ref", () => {
+    for (const seg of ["domains", "certificates", "ca-certificates", "services", "routes", "consumers", "plugins"]) {
+      expect(Object.keys(document["paths"][`/v1/workspaces/{ws}/${seg}`])).toEqual(expect.arrayContaining(["get", "post"]));
+      expect(Object.keys(document["paths"][`/v1/workspaces/{ws}/${seg}/{ref}`])).toEqual(expect.arrayContaining(["get", "put", "patch", "delete"]));
+    }
+    expect(document["paths"]["/v1/workspaces/{ws}/consumers/{parent}/credentials"]).toBeDefined();
+    const refs = [...JSON.stringify(document).matchAll(/"\$ref":"#\/components\/schemas\/([^"/]+)/g)].map((m) => m[1]!);
+    for (const name of refs) expect(document["components"]["schemas"][name], name).toBeDefined();
+  });
+
+  it("matches the committed admin/openapi.json (run `npm run openapi` after changing routes or schemas)", () => {
+    const committed = JSON.parse(readFileSync(fileURLToPath(new URL("../openapi.json", import.meta.url)), "utf8"));
+    expect(committed).toEqual(JSON.parse(JSON.stringify(document)));
+  });
+});

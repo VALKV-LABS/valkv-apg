@@ -1,0 +1,106 @@
+version: 1
+workspace: default
+settings:
+  workspace_base_domains:
+    - domain: apps.example.com
+      tls: { mode: acme }
+  workspace_resolvers: [host, consumer, "jwt_claim:tenant"]
+  identity_headers: true
+  error_responses:
+    NO_ROUTE:
+      status: 404
+      content_type: text/html
+      body: "<h1>Not found</h1><p>{{ request.id }}</p>"
+  access_log:
+    sink: stdout
+    sample_rate: 0.5
+    custom_fields:
+      tenant: "{{ workspace.slug }}"
+flags:
+  usage_metering: true
+  plugin_wasm: false
+domains:
+  - hostname: api.example.com
+    tls: { mode: acme, challenge: http01 }
+  - hostname: "*.wild.example.com"
+    tls: { mode: acme, challenge: dns01 }
+  - hostname: static.example.com
+    tls: { mode: manual, certificate: static-cert }
+certificates:
+  - name: static-cert
+    cert_file: /etc/apg/certs/static.crt
+    key_file: /etc/apg/certs/static.key
+ca_certificates:
+  - name: internal-ca
+    cert_file: /etc/apg/certs/ca.crt
+services:
+  - name: orders
+    scheme: https
+    http_version: "2"
+    backends:
+      - target: "10.0.0.1:8443"
+        weight: 3
+      - target: "orders-b.internal:8443"
+        status: draining
+    load_balancing: { strategy: hash, hash_key: "header:x-session" }
+    timeouts: { connect_ms: 2000, read_ms: 30000, write_ms: 30000 }
+    retries: { attempts: 2, "on": [connect_failure, timeout, 503] }
+    health_check:
+      active: { path: /healthz, interval_ms: 2000, expected_statuses: [[200, 299]] }
+      passive: { consecutive_failures: 5, open_ms: 10000 }
+    tls: { verify: true, sni: orders.internal, ca_certificates: [internal-ca] }
+    host_header: backend
+    labels: { team: commerce }
+    metadata: { owner: { slack: "#orders" } }
+  - name: orders-canary
+    backends:
+      - target: "10.0.0.9:8080"
+routes:
+  - name: orders-api
+    split:
+      - { service: orders, weight: 95 }
+      - { service: orders-canary, weight: 5 }
+    split_key: consumer
+    hosts: [api.example.com]
+    paths:
+      - /orders
+      - { type: exact, value: /orders/health }
+      - { type: regex, value: "/orders/[0-9]+/items" }
+    methods: [GET, POST]
+    headers:
+      - { name: x-api-version, value: "2" }
+      - { name: x-debug, type: present }
+    query:
+      - { name: format, type: regex, value: "json|xml" }
+    priority: 10
+    strip_path: true
+    rewrite: { prefix: /v2/orders }
+    timeout_ms: 30000
+    plugins:
+      - type: key_auth
+      - type: rate_limit
+        config: { per_second: 50, burst: 100, scope: consumer }
+      - type: bandwidth_limit
+        target_workspace: 0193f2a0-0000-7000-8000-000000000001
+        config: { bytes_per_second: 1000000, burst_bytes: 5000000 }
+consumers:
+  - name: mobile-app
+    custom_id: client-42
+    groups: [partners]
+    credentials:
+      - type: key
+        key: { $env: APG_SECRET_MOBILE_KEY }
+      - type: basic
+        username: mobile
+        password: { $file: /run/secrets/mobile-password }
+      - type: mtls
+        identity: mobile.clients.example.com
+plugins:
+  - type: rate_limit
+    scope: workspace
+    config: { per_second: 500, burst: 1000 }
+  - type: rate_limit
+    scope: route
+    scope_ref: orders-api
+    consumer: mobile-app
+    enabled: false

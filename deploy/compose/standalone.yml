@@ -1,0 +1,99 @@
+# Standalone mode (spec §2.2): one node, one YAML file, nothing else.
+#
+#   docker compose -f deploy/compose/standalone.yml up
+#   curl -k https://localhost:8443/hello
+#
+# The `test` profile adds what the end-to-end suite needs: a second node in
+# redirect mode and a runner that can rewrite the config file to test reloads.
+name: valkv-apg-standalone
+
+services:
+  # Copies the starting configuration into a volume the test runner can write to.
+  config-init:
+    image: alpine:3
+    volumes:
+      - ./standalone:/src:ro
+      - config:/etc/apg
+    command: ["sh", "-c", "cp /src/apg.yaml /etc/apg/apg.yaml && chmod -R a+rwX /etc/apg"]
+
+  node:
+    image: valkv-labs/valkv-apg:dev
+    build:
+      context: ../..
+      dockerfile: crates/apg-proxy/Dockerfile
+      target: runtime
+      args:
+        CARGO_PROFILE: ${CARGO_PROFILE:-dev}
+    environment:
+      APG_CONFIG_SOURCE: file
+      APG_CONFIG_FILE: /etc/apg/apg.yaml
+      APG_NODE_ID: node-1
+      # Serve clear-text HTTP too, as behind a TLS-terminating load balancer.
+      APG_HTTP_MODE: proxy
+      APG_TRUSTED_PROXIES: ${APG_TRUSTED_PROXIES:-}
+      APG_LOG_FORMAT: json
+    volumes:
+      - config:/etc/apg:ro
+    ports:
+      - "127.0.0.1:8443:8443"
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      config-init:
+        condition: service_completed_successfully
+      echo:
+        condition: service_healthy
+
+  # Answers every request with a JSON description of what it received.
+  echo:
+    image: mendhak/http-https-echo:35
+    environment:
+      HTTP_PORT: "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null || exit 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Same image, default HTTP behaviour (redirect to HTTPS), with a health path
+  # on the traffic port and a trusted proxy range.
+  node-redirect:
+    image: valkv-labs/valkv-apg:dev
+    profiles: ["test"]
+    environment:
+      APG_CONFIG_FILE: /etc/apg/apg.yaml
+      APG_NODE_ID: node-redirect
+      APG_TRAFFIC_HEALTH_PATH: /_apg/health
+      # The container network stands in for a load balancer tier.
+      APG_TRUSTED_PROXIES: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+    volumes:
+      - config:/etc/apg:ro
+    depends_on:
+      config-init:
+        condition: service_completed_successfully
+      echo:
+        condition: service_healthy
+
+  e2e:
+    image: node:22-slim
+    profiles: ["test"]
+    working_dir: /repo/tests/e2e
+    volumes:
+      - ../..:/repo:ro
+      - config:/etc/apg
+    environment:
+      MODE: file
+      NODE_HTTP: http://node:8080
+      NODE_HTTPS: https://node:8443
+      NODE_MGMT: http://node:9100
+      REDIRECT_HTTP: http://node-redirect:8080
+      REDIRECT_HTTPS: https://node-redirect:8443
+      CONFIG_FILE: /etc/apg/apg.yaml
+    command: ["node", "run.js"]
+    depends_on:
+      node:
+        condition: service_healthy
+      node-redirect:
+        condition: service_healthy
+
+volumes:
+  config:

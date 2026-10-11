@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/common.json",
+  "title": "Shared definitions",
+  "$defs": {
+    "id": { "type": "string", "format": "uuid" },
+    "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$" },
+    "ref": {
+      "description": "A reference to another resource in the same workspace, by name or id.",
+      "type": "string", "minLength": 1, "maxLength": 128
+    },
+    "labels": {
+      "type": "object", "maxProperties": 32,
+      "propertyNames": { "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$" },
+      "additionalProperties": { "type": "string", "maxLength": 256 }
+    },
+    "metadata": { "description": "Free-form. Never interpreted by the gateway. At most 16 KiB serialised.", "type": "object" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "timestamp": { "type": "string", "format": "date-time" },
+    "hostname": {
+      "description": "Exact host or single-label wildcard (*.example.com). Lower case.",
+      "type": "string", "maxLength": 253,
+      "pattern": "^(\\*\\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)*[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
+    },
+    "target": {
+      "description": "host:port, where host is an IP address or DNS name.",
+      "type": "string", "maxLength": 261,
+      "pattern": "^(\\[[0-9a-fA-F:]+\\]|[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?):[0-9]{1,5}$"
+    },
+    "httpMethod": { "enum": ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "CONNECT", "TRACE"] },
+    "cidr": { "type": "string", "pattern": "^([0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-fA-F:]+(/[0-9]{1,3})?)$" },
+    "template": { "description": "A string that may contain {{ variable }} placeholders (spec §9.5).", "type": "string", "maxLength": 8192 },
+    "keySelector": {
+      "description": "What to key a hash, a limit or a split on.",
+      "type": "string",
+      "pattern": "^(host|client_ip|path|consumer|workspace|(header|cookie|query):[A-Za-z0-9_-]{1,64})$"
+    },
+    "limitScope": {
+      "type": "string",
+      "pattern": "^(workspace|consumer|ip|route|global|header:[A-Za-z0-9_-]{1,64})$"
+    },
+    "secretValue": {
+      "description": "A secret-typed field never takes a bare string (spec §9.6).",
+      "oneOf": [
+        { "type": "object", "required": ["$env"], "additionalProperties": false,
+          "properties": { "$env": { "type": "string", "pattern": "^APG_SECRET_[A-Z0-9_]+$" } } },
+        { "type": "object", "required": ["$file"], "additionalProperties": false,
+          "properties": { "$file": { "type": "string", "minLength": 1 } } },
+        { "type": "object", "required": ["$secret"], "additionalProperties": false,
+          "properties": { "$secret": { "type": "string", "minLength": 1 } } }
+      ]
+    },
+    "errorResponses": {
+      "description": "Custom gateway error responses, keyed by error code (spec ERR-2).",
+      "type": "object",
+      "propertyNames": { "pattern": "^[A-Z][A-Z0-9_]+$" },
+      "additionalProperties": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "status": { "type": "integer", "minimum": 200, "maximum": 599 },
+          "content_type": { "type": "string" },
+          "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+          "body": { "$ref": "#/$defs/template" }
+        }
+      }
+    },
+    "envelope": {
+      "description": "Server-managed fields present on every stored resource.",
+      "type": "object",
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "workspace_id": { "type": "string" },
+        "revision": { "$ref": "#/$defs/revision" },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      }
+    }
+  }
+}

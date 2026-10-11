@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/plugin.json",
+  "title": "Plugin",
+  "description": "A plugin instance attached at a scope (spec §9.1). `config` is validated separately against schemas/plugins/<type>.json.",
+  "type": "object",
+  "required": ["type", "scope"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "type": { "$ref": "#/$defs/type" },
+    "scope": { "enum": ["global", "workspace", "service", "route"] },
+    "scope_ref": { "description": "Service or route name or id. Required for those scopes.", "$ref": "../common.json#/$defs/ref" },
+    "consumer": { "$ref": "../common.json#/$defs/ref" },
+    "target_workspace": { "description": "System routes and services only.", "type": "string" },
+    "enabled": { "type": "boolean", "default": true },
+    "priority": { "type": "integer", "minimum": 0, "maximum": 10000 },
+    "config": { "type": "object", "default": {} },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  },
+  "if": { "properties": { "scope": { "enum": ["service", "route"] } } },
+  "then": { "required": ["scope_ref"] },
+  "else": { "not": { "required": ["scope_ref"] } },
+  "$defs": {
+    "type": {
+      "enum": [
+        "ip_restriction", "cors", "request_size_limit", "mtls_auth", "jwt_auth", "key_auth", "basic_auth",
+        "forward_auth", "acl", "rate_limit", "quota", "bandwidth_limit", "http_callout", "wasm", "redirect",
+        "static_response", "request_transformer", "response_cache", "response_transformer", "compression", "access_log"
+      ]
+    },
+    "nested": {
+      "description": "A plugin written under a route or service in apg.yaml; the scope is implied.",
+      "type": "object", "required": ["type"], "additionalProperties": false,
+      "properties": {
+        "name": { "$ref": "../common.json#/$defs/name" },
+        "type": { "$ref": "#/$defs/type" },
+        "consumer": { "$ref": "../common.json#/$defs/ref" },
+        "target_workspace": { "type": "string" },
+        "enabled": { "type": "boolean", "default": true },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "config": { "type": "object", "default": {} },
+        "labels": { "$ref": "../common.json#/$defs/labels" },
+        "metadata": { "$ref": "../common.json#/$defs/metadata" }
+      }
+    }
+  }
+}

@@ -1,0 +1,105 @@
+# Every environment variable a valkv-apg component reads (spec Appendix B).
+# The docs page is generated from this file. A test in each component fails if
+# the code reads a variable not listed here, or this file lists one the code
+# does not read. `phase` is the build phase in which the code starts reading it.
+#
+# Fields: name, component (node|admin|cli), type, default, required_when, description, phase
+variables:
+  # ── Node ──────────────────────────────────────────────────────────────────
+  - { name: APG_CONFIG_SOURCE, component: node, type: enum, values: [file, api_poll, db_tail], default: file, phase: "0", description: "Where the node reads configuration from. An unknown value fails startup." }
+  - { name: APG_CONFIG_FILE, component: node, type: path, default: /etc/apg/apg.yaml, phase: "2a", description: "File or directory of apg.yaml documents. file source only." }
+  - { name: APG_NODE_ID, component: node, type: string, required_when: "source is api_poll or db_tail", phase: "0", description: "Stable, non-empty identity of this node. Defaults to the host name in file mode." }
+  - { name: APG_CONFIG_URL, component: node, type: url, required_when: "source is api_poll", phase: "0", description: "Base URL of the config API (CFG-12a). With the bundled admin this is <admin>/dp." }
+  - { name: APG_CONFIG_CLIENT_CERT, component: node, type: path, phase: "2b", description: "Client certificate for mutual TLS to the config API." }
+  - { name: APG_CONFIG_CLIENT_KEY, component: node, type: path, phase: "2b", description: "Key for APG_CONFIG_CLIENT_CERT." }
+  - { name: APG_CONFIG_CLIENT_CA, component: node, type: path, phase: "2b", description: "CA bundle used to verify the config API." }
+  - { name: APG_ADMIN_URL, component: node, type: url, required_when: "source is db_tail", phase: "0", description: "Data-plane API of the bundled admin: snapshots, usage, heartbeats, certificate coordination." }
+  - { name: APG_NODE_TOKEN, component: node, type: secret, phase: "0", description: "Bearer token sent to the config API and the admin." }
+  - { name: APG_DATABASE_URL, component: node, type: url, required_when: "source is db_tail", phase: "0", description: "Postgres connection for logical replication." }
+  - { name: APG_SLOT_NAME, component: node, type: string, default: "apg_slot_<node id>", phase: "0", description: "Replication slot. db_tail only." }
+  - { name: APG_POLL_INTERVAL_MS, component: node, type: integer, default: 1000, phase: "0", description: "Delay between polls when long polling is off, and the base of the failure backoff." }
+  - { name: APG_POLL_LIMIT, component: node, type: integer, default: 500, phase: "0", description: "Rows per poll, at most 1000." }
+  - { name: APG_POLL_WAIT_MS, component: node, type: integer, default: 25000, phase: "2b", description: "Long-poll wait. 0 disables long polling." }
+  - { name: APG_LISTEN_HTTPS, component: node, type: address, default: "0.0.0.0:8443", phase: "0", description: "Traffic listener (TLS). Empty disables it." }
+  - { name: APG_LISTEN_HTTP, component: node, type: address, default: "0.0.0.0:8080", phase: "0", description: "ACME challenges, plus redirect or clear-text proxying per APG_HTTP_MODE." }
+  - { name: APG_LISTEN_MGMT, component: node, type: address, default: "127.0.0.1:9100", phase: "0", description: "Health, readiness, metrics, status. Never exposed to clients." }
+  - { name: APG_HTTP_MODE, component: node, type: enum, values: [redirect, proxy], default: redirect, phase: "2a", description: "What the HTTP listener does with non-ACME requests." }
+  - { name: APG_TRAFFIC_HEALTH_PATH, component: node, type: string, phase: "2a", description: "A path the node answers itself on traffic listeners, for load balancers that cannot probe the management port (DP-3)." }
+  - { name: APG_DATA_DIR, component: node, type: path, default: /var/lib/apg, phase: "0", description: "Local config cache. One directory per node." }
+  - { name: APG_SECRET_KEY, component: node, type: secret, required_when: "the node handles certificates or $secret values in database mode", phase: "2d", description: "32 random bytes, base64 (SEC-1)." }
+  - { name: APG_SECRET_KEY_FILE, component: node, type: path, phase: "2d", description: "File holding APG_SECRET_KEY." }
+  - { name: APG_SECRET_KEY_PREVIOUS, component: node, type: secret, phase: "2d", description: "Previous key, accepted for decryption during rotation." }
+  - { name: APG_TRUSTED_PROXIES, component: node, type: cidr-list, default: "", phase: "2a", description: "Peers whose X-Forwarded-For is honoured (HDR-2)." }
+  - { name: APG_REGION, component: node, type: string, phase: "0", description: "Reported in heartbeats and usage." }
+  - { name: APG_NODE_LABELS, component: node, type: kv-list, phase: "2b", description: "Reported in heartbeats." }
+  - { name: APG_TLS_FALLBACK_CERT, component: node, type: path, phase: "2d", description: "Certificate served when no Domain matches the SNI." }
+  - { name: APG_TLS_FALLBACK_KEY, component: node, type: path, phase: "2d", description: "Key for APG_TLS_FALLBACK_CERT." }
+  - { name: APG_TLS_MIN_VERSION, component: node, type: enum, values: ["1.2", "1.3"], default: "1.2", phase: "2d", description: "Minimum TLS version." }
+  - { name: APG_ACME_EMAIL, component: node, type: string, required_when: "any Domain uses tls.mode acme", phase: "0", description: "ACME account contact." }
+  - { name: APG_ACME_DIRECTORY_URL, component: node, type: url, default: "Let's Encrypt production", phase: "2d", description: "ACME directory." }
+  - { name: APG_ACME_DNS_PROVIDER, component: node, type: enum, values: [cloudflare, route53, webhook], phase: "2d", description: "Provider for dns01 challenges." }
+  - { name: APG_CLOUDFLARE_API_TOKEN, component: node, type: secret, phase: "0", description: "Token for the cloudflare DNS provider." }
+  - { name: APG_ACME_DNS_WEBHOOK_URL, component: node, type: url, phase: "2d", description: "Endpoint for the webhook DNS provider." }
+  - { name: APG_ACME_DNS_WEBHOOK_SECRET, component: node, type: secret, phase: "2d", description: "Signs webhook DNS provider requests." }
+  - { name: APG_USAGE_FLUSH_INTERVAL_SECS, component: node, type: integer, default: 60, phase: "0", description: "Usage window length." }
+  - { name: APG_USAGE_BY_CONSUMER, component: node, type: boolean, default: false, phase: "2f", description: "Add the consumer dimension to usage." }
+  - { name: APG_USAGE_SINK, component: node, type: string, default: none, phase: "2f", description: "none or file:<path>. Used when no admin receives usage." }
+  - { name: APG_REDIS_URL, component: node, type: url, phase: "2e", description: "Needed only by plugins with store: redis." }
+  - { name: APG_CACHE_MEMORY_BYTES, component: node, type: integer, default: 268435456, phase: "2e", description: "Memory budget of the response cache." }
+  - { name: APG_METRICS_MAX_SERIES, component: node, type: integer, default: 10000, phase: "2f", description: "Label sets kept before collapsing into route=_other." }
+  - { name: APG_METRICS_WORKSPACE_LABEL, component: node, type: boolean, default: false, phase: "2f", description: "Add a workspace label to request metrics." }
+  - { name: APG_LOG_LEVEL, component: node, type: enum, values: [trace, debug, info, warn, error], default: info, phase: "2a", description: "Log level." }
+  - { name: APG_LOG_FORMAT, component: node, type: enum, values: [json, text], default: json, phase: "2a", description: "Log format." }
+  - { name: APG_LOG_REDACT_QUERY, component: node, type: string-list, default: "apikey,token,access_token,signature", phase: "2f", description: "Query parameters masked in access logs." }
+  - { name: APG_OTLP_ENDPOINT, component: node, type: url, phase: "2f", description: "OpenTelemetry collector." }
+  - { name: APG_TRACE_SAMPLE_RATIO, component: node, type: number, default: 0, phase: "2f", description: "Sampling ratio for new traces." }
+  - { name: APG_TEMPLATE_ENV_ALLOW, component: node, type: string-list, default: "", phase: "2e", description: "Names templates may read as env.<NAME>." }
+  - { name: APG_SHUTDOWN_GRACE_SECS, component: node, type: integer, default: 30, phase: "2a", description: "Time in-flight requests get on SIGTERM." }
+  - { name: APG_STUB_UPSTREAM, component: node, type: boolean, default: false, phase: "0", description: "Tests only: answer with a description of the routing decision instead of forwarding." }
+  - { name: APG_ALLOW_TEST_MODES, component: node, type: boolean, default: false, phase: "2a", description: "Must be true for APG_STUB_UPSTREAM to be accepted." }
+
+  # ── Admin ─────────────────────────────────────────────────────────────────
+  - { name: APG_DATABASE_URL, component: admin, type: url, required_when: always, phase: "0", description: "Postgres connection." }
+  - { name: APG_ADMIN_LISTEN, component: admin, type: address, default: "0.0.0.0:9000", phase: "0", description: "Admin API, UI and (unless APG_DP_LISTEN is set) the data-plane API." }
+  - { name: APG_DP_LISTEN, component: admin, type: address, phase: "1", description: "Separate listener for /dp/*." }
+  - { name: APG_ADMIN_TLS_CERT, component: admin, type: path, phase: "1", description: "Serve the Admin API over TLS." }
+  - { name: APG_ADMIN_TLS_KEY, component: admin, type: path, phase: "1", description: "Key for APG_ADMIN_TLS_CERT." }
+  - { name: APG_SECRET_KEY, component: admin, type: secret, required_when: always, phase: "1", description: "32 random bytes, base64 (SEC-1)." }
+  - { name: APG_SECRET_KEY_FILE, component: admin, type: path, phase: "1", description: "File holding APG_SECRET_KEY." }
+  - { name: APG_SECRET_KEY_PREVIOUS, component: admin, type: secret, phase: "1", description: "Previous key, accepted for decryption during rotation." }
+  - { name: APG_BOOTSTRAP_ADMIN_TOKEN, component: admin, type: secret, phase: "1", description: "First admin token. Generated and logged once when unset." }
+  - { name: APG_BOOTSTRAP_NODE_TOKEN, component: admin, type: secret, phase: "1", description: "First node token. Generated and logged once when unset." }
+  - { name: APG_MIGRATE_ON_BOOT, component: admin, type: boolean, default: true, phase: "1", description: "Run migrations at start." }
+  - { name: APG_ADMIN_JWT_JWKS_URL, component: admin, type: url, phase: "1", description: "Delegated JWT authentication (API-4)." }
+  - { name: APG_ADMIN_JWT_PUBLIC_KEY, component: admin, type: pem, phase: "1", description: "Alternative to APG_ADMIN_JWT_JWKS_URL." }
+  - { name: APG_ADMIN_JWT_ISSUER, component: admin, type: string, phase: "1", description: "Expected iss." }
+  - { name: APG_ADMIN_JWT_AUDIENCE, component: admin, type: string, phase: "1", description: "Expected aud." }
+  - { name: APG_ADMIN_JWT_WORKSPACE_CLAIM, component: admin, type: string, phase: "1", description: "Claim naming the workspace the caller is scoped to." }
+  - { name: APG_ADMIN_JWT_ROLE_CLAIM, component: admin, type: string, phase: "1", description: "Claim naming the role. Default role: editor." }
+  - { name: APG_OIDC_ISSUER, component: admin, type: url, phase: "4", description: "OpenID Connect login for the UI (API-5)." }
+  - { name: APG_OIDC_CLIENT_ID, component: admin, type: string, phase: "4", description: "OIDC client id." }
+  - { name: APG_OIDC_CLIENT_SECRET, component: admin, type: secret, phase: "4", description: "OIDC client secret." }
+  - { name: APG_OIDC_ROLE_CLAIM, component: admin, type: string, phase: "4", description: "Claim mapped to a role." }
+  - { name: APG_OIDC_ROLE_MAP, component: admin, type: json, phase: "4", description: "Claim value to { role, workspaces }." }
+  - { name: APG_DOMAIN_VERIFICATION, component: admin, type: enum, values: [none, dns_txt], default: none, phase: "1", description: "Whether a Domain must be proven before it becomes active." }
+  - { name: APG_CHANGELOG_RETENTION_HOURS, component: admin, type: integer, default: 168, phase: "1", description: "Age at which changelog rows are deleted (CFG-9)." }
+  - { name: APG_NODE_SLOT_TTL_HOURS, component: admin, type: integer, default: 24, phase: "1", description: "Silence after which a node's replication slot is dropped (CFG-15)." }
+  - { name: APG_USAGE_RAW_RETENTION_DAYS, component: admin, type: integer, default: 7, phase: "2f", description: "Retention of raw usage windows." }
+  - { name: APG_USAGE_HOURLY_RETENTION_DAYS, component: admin, type: integer, default: 400, phase: "2f", description: "Retention of hourly usage." }
+  - { name: APG_USAGE_WEBHOOK_URL, component: admin, type: url, phase: "2f", description: "Receives each closed hour's usage (USG-8)." }
+  - { name: APG_USAGE_WEBHOOK_SECRET, component: admin, type: secret, phase: "2f", description: "Signs usage webhook requests." }
+  - { name: APG_AUDIT_RETENTION_DAYS, component: admin, type: integer, default: 400, phase: "1", description: "Retention of the audit log." }
+  - { name: APG_EGRESS_ALLOW_CIDRS, component: admin, type: cidr-list, default: "", phase: "1", description: "Private ranges non-admin callers may point callout URLs at (SEC-4)." }
+  - { name: APG_BACKEND_ALLOW_CIDRS, component: admin, type: cidr-list, default: "", phase: "1", description: "Private ranges non-admin callers may point backends at (SEC-4)." }
+  - { name: APG_UI_ENABLED, component: admin, type: boolean, default: true, phase: "4", description: "Serve the admin console." }
+  - { name: APG_UI_BRAND_NAME, component: admin, type: string, default: valkv-apg, phase: "4", description: "Name shown in the console." }
+  - { name: APG_UI_LOGO_URL, component: admin, type: url, phase: "4", description: "Logo shown in the console." }
+  - { name: APG_UI_PRIMARY_COLOR, component: admin, type: string, phase: "4", description: "Accent colour of the console." }
+  - { name: APG_UI_EMBED_ORIGINS, component: admin, type: string-list, default: "", phase: "4", description: "Origins allowed to frame the console (UI-7)." }
+  - { name: APG_LOG_LEVEL, component: admin, type: enum, values: [trace, debug, info, warn, error], default: info, phase: "0", description: "Log level." }
+  - { name: APG_LOG_FORMAT, component: admin, type: enum, values: [json, text], default: json, phase: "0", description: "Log format." }
+
+  # ── CLI ───────────────────────────────────────────────────────────────────
+  - { name: APG_ADMIN_URL, component: cli, type: url, phase: "4", description: "Admin API base URL." }
+  - { name: APG_ADMIN_TOKEN, component: cli, type: secret, phase: "4", description: "Admin token." }
+  - { name: APG_CONTEXT, component: cli, type: string, phase: "4", description: "Named context from ~/.config/apg/config.yaml." }

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/wasm-module.json",
+  "title": "WasmModule",
+  "description": "A WebAssembly component referenced by wasm plugin instances (spec §4.7). Bytes are uploaded separately.",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$", "readOnly": true },
+    "size_bytes": { "type": "integer", "minimum": 1, "maximum": 10485760, "readOnly": true },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  }
+}
