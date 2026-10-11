@@ -61,6 +61,8 @@ jobs:
       - run: make up
       - run: make integ
       - run: make e2e-resilience
+      - name: Tenant isolation, egress guard, no secret in any log
+        run: make e2e-security
       - name: Version skew
         run: make e2e-skew
       - name: Smoke test

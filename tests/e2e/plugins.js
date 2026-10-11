@@ -176,6 +176,13 @@ function config({ keyAuthOn = true } = {}) {
       route("hook", [{ type: "http_callout", config: { url: `http://${HOST}:${HOOK_PORT}/hook`, phases: ["request", "response"], timeout_ms: 2000 } }]),
       route("mtls", [{ type: "mtls_auth", config: { ca_certificates: ["plug-ca"] } }]),
       route("cache", [{ type: "response_cache", config: { ttl_secs: 30 } }]),
+      // Keys with a default most configurations never change; each is set here to something else and shown to matter (TST-1).
+      route("keyqueryonly", [{ type: "key_auth", config: { in_header: false, in_query: true, key_names: ["apikey"] } }]),
+      route("jwtstrict", [{ type: "jwt_auth", config: jwt({ leeway_secs: 0 }) }]),
+      route("fwdtenant", [{ type: "forward_auth", config: { url: `http://${HOST}:${AUTH_PORT}/verify`, request_headers: ["Authorization", "X-Tenant"], cache_secs: 60, cache_key_headers: ["Authorization", "X-Tenant"] } }]),
+      route("fwdcached", [{ type: "forward_auth", config: { url: `http://${HOST}:${AUTH_PORT}/verify`, cache_secs: 60 } }]),
+      route("cachevary", [{ type: "response_cache", config: { ttl_secs: 30, vary_headers: ["Accept-Language"] } }]),
+      route("cacheauth", [{ type: "key_auth" }, { type: "response_cache", config: { ttl_secs: 30, cache_authenticated: true } }]),
       { name: "pl-split", hosts: ["split.plug.test"], split: [{ service: "pl-side-a", weight: 1 }, { service: "pl-side-b", weight: 1 }], split_key: "consumer", plugins: [{ type: "key_auth" }] },
     ],
     workspaces: [
@@ -547,6 +554,55 @@ step("response_cache: a stored response is served again; credentials and other q
     await until(async () => (await call("cache", { path })).headers["x-apg-cache"] === "MISS", { what: "the purge to reach the node" });
     assert.equal((await call("cache", { path })).headers["x-apg-cache"], "HIT", "and the route caches again afterwards");
   }
+});
+
+step("defaults that are rarely changed do change behaviour when they are (TST-1)", async () => {
+  // key_auth.in_header: with it off, a key in a header is not looked at.
+  assertRefused(await call("keyqueryonly", { headers: { apikey: KEYS.alice } }), 401, "UNAUTHENTICATED");
+  assert.equal((await call("keyqueryonly", { path: `/?apikey=${KEYS.alice}` })).status, 200);
+
+  // jwt_auth.leeway_secs: a token that expired five seconds ago passes the default tolerance of a minute, and not a tolerance of zero.
+  const justExpired = { headers: { authorization: `Bearer ${token({ sub: "alice-1", aud: "plug-api", exp: Math.floor(Date.now() / 1000) - 5 })}` } };
+  assert.equal((await call("jwt", justExpired)).status, 200);
+  assertRefused(await call("jwtstrict", justExpired), 401, "UNAUTHENTICATED");
+  assert.equal((await call("jwtstrict", { headers: { authorization: `Bearer ${token({ sub: "alice-1" })}` } })).status, 200);
+
+  // forward_auth.request_headers: only the listed headers reach the service.
+  const before = authCalls.length;
+  const ask = (name, tenant) => call(name, { headers: { authorization: "Bearer ok", cookie: "a=b", "x-tenant": tenant } });
+  const firstAsk = await ask("fwdtenant", "one");
+  assert.equal(firstAsk.status, 200, `fwdtenant: ${firstAsk.text}`);
+  assert.equal(authCalls.at(-1).headers["x-tenant"], "one");
+  assert.equal(authCalls.at(-1).headers.cookie, undefined, "Cookie is no longer in the list");
+  // forward_auth.cache_key_headers: an answer is reused only for the same values of these headers.
+  assert.equal((await ask("fwdtenant", "one")).status, 200);
+  assert.equal(authCalls.length, before + 1, "the same tenant and token: answered from the cache");
+  assert.equal((await ask("fwdtenant", "two")).status, 200);
+  assert.equal(authCalls.length, before + 2, "another tenant: the service is asked again");
+  // With the default key (Authorization alone) the tenant header makes no difference.
+  await ask("fwdcached", "one");
+  await ask("fwdcached", "two");
+  assert.equal(authCalls.length, before + 3);
+
+  // response_cache.vary_headers: each value of the header gets its own stored response.
+  const lang = (l) => call("cachevary", { path: `/vary-${RUN}`, headers: { "accept-language": l } });
+  assert.equal((await lang("en")).headers["x-apg-cache"], "MISS");
+  assert.equal((await lang("fr")).headers["x-apg-cache"], "MISS");
+  const again = await lang("fr");
+  assert.equal(again.headers["x-apg-cache"], "HIT");
+  assert.equal(again.json.headers["accept-language"], "fr");
+  // Without it (the route above), a different language is served the stored copy.
+  await call("cache", { path: `/novary-${RUN}`, headers: { "accept-language": "en" } });
+  assert.equal((await call("cache", { path: `/novary-${RUN}`, headers: { "accept-language": "fr" } })).headers["x-apg-cache"], "HIT");
+
+  // response_cache.cache_authenticated: authenticated callers are cached too, each consumer apart.
+  const mine = (key) => call("cacheauth", { path: `/mine-${RUN}`, headers: { "x-api-key": key } });
+  assert.equal((await mine(KEYS.alice)).headers["x-apg-cache"], "MISS");
+  assert.equal((await mine(KEYS.alice)).headers["x-apg-cache"], "HIT");
+  const bobs = await mine(KEYS.bob);
+  assert.equal(bobs.headers["x-apg-cache"], "MISS", "bob is not served alice's copy");
+  assert.equal(bobs.json.headers["x-apg-consumer-name"], "bob");
+
 });
 
 step("the kill switch stops a plugin type everywhere, and brings it back (PL-3)", async () => {

@@ -15,7 +15,7 @@ CLI_DOCKER   := cli/Dockerfile
 UI_DOCKER    := ui/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew smoke canary-rehearsal bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew e2e-security smoke canary-rehearsal bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -89,6 +89,10 @@ e2e-resilience:
 # Change events from a newer control plane must be stepped over, never fatal (spec PKG-2).
 e2e-skew:
 	sh tests/e2e/skew.sh
+
+# Tenant isolation and the egress guard, then a search of every container's logs for secrets (spec SEC-4, SEC-7, SEC-8).
+e2e-security:
+	sh tests/e2e/security.sh
 
 # One request through every class of plugin, and a change seen on every node (spec PKG-6).
 # Against the Compose stack here; against any deployment with tests/smoke.sh.

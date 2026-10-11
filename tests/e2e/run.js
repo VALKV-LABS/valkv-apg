@@ -27,6 +27,7 @@ const all = {
     ["tls", "./tls.js"],
     ["plugins", "./plugins.js"],
     ["usage", "./usage.js"],
+    ["security", "./security.js"],
   ],
 }[mode];
 
