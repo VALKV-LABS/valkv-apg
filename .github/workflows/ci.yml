@@ -29,6 +29,8 @@ jobs:
         run: make unit-admin
       - name: CLI type-check and unit tests
         run: make unit-cli
+      - name: Console type-check and component tests
+        run: make unit-ui
 
   e2e-file:
     name: end to end, standalone node

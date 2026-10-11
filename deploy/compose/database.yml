@@ -70,6 +70,20 @@ services:
       postgres:
         condition: service_healthy
 
+  # The console in a real browser, with an accessibility scan.
+  ui-e2e:
+    image: valkv-apg-ui-e2e:test
+    build:
+      context: ../../ui/e2e
+    profiles: ["test"]
+    environment:
+      BASE_URL: http://admin:9000
+      ADMIN_TOKEN: apg_at_dev-only-admin-token-do-not-use
+    ipc: host
+    depends_on:
+      admin:
+        condition: service_healthy
+
   # The CLI's integration tests: the built apgctl against this admin and node.
   cli-integ:
     image: valkv-apg-cli:test

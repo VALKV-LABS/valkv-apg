@@ -33,7 +33,9 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 | Usage metering by workspace, service, route and consumer, with hourly and daily rollups and a usage API | Working, tested end to end |
 | Observability: Prometheus metrics by route and service, JSON access log, trace-context propagation, a Grafana dashboard and alert rules | Working |
 | Packaging: images for amd64 and arm64, a Helm chart with a canary track, a systemd unit with zero-downtime binary upgrade, a Terraform reference for AWS, signed releases | Working; the chart and the Terraform reference are linted and validated, not applied by CI |
-| DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook, UI, CLI | Not built yet |
+| Configuration as files: `apgctl validate`, `diff`, `apply`, `sync`, `dump`; revisions, drift detection and rollback | Working, tested against a running control plane |
+| Admin console at `/ui/`: every resource, a route tester, usage, config review, audit log; light and dark themes; embeddable | Working, tested in a browser with an accessibility scan |
+| Single sign-on (OpenID Connect) for the console, DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook | Not built yet |
 
 ## Try it
 
@@ -84,6 +86,8 @@ Upgrade the control plane first, then the nodes. A node keeps serving from its c
 | `crates/apg-proxy` | The node (`valkv-apg` binary) |
 | `crates/apg-plugin-sdk` | Plugin phases and ordering |
 | `admin/` | Control plane (TypeScript): Admin API and the config API nodes poll |
+| `cli/` | `apgctl`, the command-line client ([README](cli/README.md)) |
+| `ui/` | The admin console (React), built into the admin image |
 | `schemas/` | JSON Schemas: the single source of truth for resources, `apg.yaml` and the change event |
 | `tests/` | Shared fixtures, end-to-end suites, benchmarks |
 | `deploy/` | Compose files, the Helm chart, the systemd unit, the Terraform reference, a Grafana dashboard and alert rules |
@@ -93,9 +97,9 @@ Upgrade the control plane first, then the nodes. A node keeps serving from its c
 Everything runs in Docker; you need Docker and `make`, nothing else.
 
 ```sh
-make unit             # Rust and TypeScript unit tests, shared fixtures
+make unit             # Rust, admin, CLI and console unit tests, shared fixtures
 make up               # control plane, Postgres, two nodes, sample upstream
-make integ            # admin integration tests, then end-to-end suites
+make integ            # admin, CLI and browser tests, then end-to-end suites
 make e2e MODE=file    # the routing and upstream suites against a standalone node
 make e2e-resilience   # control plane down, restart from cache, resync
 make e2e-upgrade      # a new binary takes over the listeners; no request fails

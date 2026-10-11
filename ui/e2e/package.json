@@ -1,0 +1,11 @@
+{
+  "name": "valkv-apg-ui-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser tests of the console against a running stack, with an accessibility scan (spec UI-3).",
+  "scripts": { "test": "playwright test" },
+  "devDependencies": {
+    "@axe-core/playwright": "4.10.1",
+    "@playwright/test": "1.49.1"
+  }
+}

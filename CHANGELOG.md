@@ -40,6 +40,21 @@ the project uses [Semantic Versioning](https://semver.org/).
   Terraform reference for AWS with a cost estimate; a release workflow that publishes
   signed images for amd64 and arm64 with a bill of materials, binary tarballs and the
   packaged chart.
+- Configuration as files: `/v1/config/validate`, `diff`, `apply`, `sync` and `dump`. A
+  document lands whole or not at all; resources it does not change are left untouched.
+  Each apply is a revision; a workspace changed some other way is reported as drifted;
+  a revision can be applied again (rollback). Secrets in stored revisions are encrypted.
+- `apgctl`: the command-line client, with offline validation against the same schemas,
+  a diff whose exit code tells CI whether anything would change, and named contexts.
+- The admin console at `/ui/`: overview, workspaces, domains and certificates, services,
+  routes with a route tester, plugins with schema-driven forms, consumers, usage with
+  CSV export, nodes, config review and revisions, audit log, settings and tokens. Light
+  and dark themes, usable from 360 px, keyboard operable, embeddable in another page.
+- Browser sessions for the console: `POST /v1/session` exchanges an admin token for an
+  HttpOnly cookie and a CSRF token.
+- Route tester: nodes answer `GET /debug/match` on the management listener with the
+  route a request would hit and why the others were not chosen; `GET /v1/debug/match`
+  and `apgctl route match` ask a node (`APG_DEBUG_NODE_URL`).
 - `valkv-apg --upgrade`: a new process takes over the listening sockets of a running
   standalone node, which then drains and exits. No request is dropped.
 - `schemas/unbuilt.yaml`: the keys no node enforces yet. The file loader and the admin

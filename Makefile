@@ -12,9 +12,10 @@ COMPOSE      := docker compose -f deploy/compose/database.yml -p valkv-apg
 NODE_DOCKER  := crates/apg-proxy/Dockerfile
 ADMIN_DOCKER := admin/Dockerfile
 CLI_DOCKER   := cli/Dockerfile
+UI_DOCKER    := ui/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin unit-cli integ e2e e2e-resilience e2e-upgrade bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade bench-propagation lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -39,7 +40,7 @@ logs:
 ps:
 	$(COMPOSE) ps
 
-unit: unit-rust unit-admin unit-cli
+unit: unit-rust unit-admin unit-cli unit-ui
 
 unit-rust:
 	docker build --progress=plain -f $(NODE_DOCKER) --target test-run -t valkv-apg:test-run .
@@ -48,17 +49,23 @@ unit-admin:
 	docker build -q -f $(ADMIN_DOCKER) --target test -t valkv-apg-admin:test .
 	docker run --rm valkv-apg-admin:test
 
+unit-ui:
+	docker build -q -f $(UI_DOCKER) --target test -t valkv-apg-ui:test .
+	docker run --rm valkv-apg-ui:test
+
 unit-cli:
 	docker build -q -f $(CLI_DOCKER) --target test -t valkv-apg-cli:test .
 	docker run --rm valkv-apg-cli:test
 
-# Admin integration tests against Postgres, the CLI against the running stack, then every end-to-end suite in
+# Admin integration tests against Postgres, the CLI and the console against the running stack, then every end-to-end suite in
 # api_poll mode against the running stack (spec §21).
 integ:
 	docker build -q -f $(ADMIN_DOCKER) --target test -t valkv-apg-admin:test .
 	$(COMPOSE) run --rm admin-integ
 	docker build -q -f $(CLI_DOCKER) --target test -t valkv-apg-cli:test .
 	$(COMPOSE) run --rm cli-integ
+	docker build -q -t valkv-apg-ui-e2e:test ui/e2e
+	$(COMPOSE) run --rm ui-e2e
 	$(COMPOSE) run --rm --use-aliases e2e
 
 STANDALONE := docker compose -f deploy/compose/standalone.yml -f deploy/compose/standalone.test.yml --profile test
