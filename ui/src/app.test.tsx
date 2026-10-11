@@ -331,3 +331,43 @@ describe("backend health", () => {
     expect(within(dialog).queryByText(/has no health check/)).not.toBeInTheDocument();
   });
 });
+
+describe("the fleet, and one node of it", () => {
+  const node = (id: string, over: object = {}) => ({ node_id: id, version: "0.1.0", source: "api_poll", applied_seq: 9, stale: false, region: null, live: true, lag: 0, started_at: "2026-01-01T00:00:00Z", last_seen: new Date().toISOString(), info: { counts: { routes: 2, services: 1, workspaces: 1 }, backends: [] }, ...over });
+  const seen = (state: string, extra: object = {}) => [{ service_id: "s1", workspace_id: "ws-default", name: "orders", healthy: state === "healthy" ? 1 : 0, unhealthy: state === "unhealthy" ? 1 : 0, unknown: 0, backends: [{ target: "10.0.0.1:8080", status: "active", state, in_rotation: state === "healthy", ...extra }] }];
+
+  it("sums the fleet up, and opens a node to show what that node holds and sees", async () => {
+    serve({ "GET /v1/nodes": { body: { last_seq: 12, data: [
+      node("n1", { info: { counts: { routes: 2, services: 1, workspaces: 1 }, backends: seen("healthy") } }),
+      node("n2", { lag: 3, applied_seq: 9, info: { counts: { routes: 2, services: 1, workspaces: 1 }, backends: seen("unhealthy", { reason: "connection refused" }) } }),
+      node("n3", { live: false }),
+    ] } } });
+    const user = userEvent.setup();
+    open("/nodes");
+    expect(await screen.findByText("n2")).toBeInTheDocument();
+    const stat = (label: string) => screen.getByText(label, { selector: ".stat-label" }).parentElement!;
+    expect(stat("Live")).toHaveTextContent("2");
+    expect(stat("Live")).toHaveTextContent("of 3 known");
+    expect(stat("Not reporting")).toHaveTextContent("1");
+    expect(stat("Behind")).toHaveTextContent("1");
+    expect(stat("With failing backends")).toHaveTextContent("1");
+    expect(stat("Serving stale config")).toHaveTextContent("None");
+    expect(within(screen.getByText("n2").closest("tr")!).getByText("1 failing")).toBeInTheDocument();
+    expect(within(screen.getByText("n1").closest("tr")!).getByText("none failing")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Details of node n2" }));
+    const dialog = await screen.findByRole("dialog", { name: "Node n2" });
+    expect(within(dialog).getByText("2 routes, 1 services, 1 workspaces")).toBeInTheDocument();
+    const row = within(dialog).getByText("10.0.0.1:8080").closest("tr")!;
+    expect(row).toHaveTextContent("default");
+    expect(row).toHaveTextContent("orders");
+    expect(row).toHaveTextContent("failing");
+    expect(row).toHaveTextContent("connection refused; not sending it traffic");
+  });
+
+  it("says so when every node is fine", async () => {
+    serve({ "GET /v1/nodes": { body: { last_seq: 9, data: [node("n1")] } } });
+    open("/nodes");
+    expect(await screen.findByText("All up to date and reaching every backend")).toBeInTheDocument();
+  });
+});

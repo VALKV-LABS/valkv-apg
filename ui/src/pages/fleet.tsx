@@ -1,7 +1,8 @@
 /** Fleet-wide pages, for a fleet admin only: workspaces, nodes, settings. */
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { Pencil, Plus, Search, Trash2 } from "lucide-react";
+import type React from "react";
 import { useState } from "react";
 import { type Json, api, formatTime, listAll, relativeTime } from "../api";
 import { ResourceEditor } from "../components/resource";
@@ -80,34 +81,128 @@ export function Workspaces() {
 
 // ── Nodes ────────────────────────────────────────────────────────────────────
 
-export function Nodes() {
-  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => api<{ data: Json[]; last_seq: number }>("GET", "/v1/nodes"), refetchInterval: 10_000 });
+/** Failing and unchecked backends as one node reports them, summed over its services. */
+function backendCounts(node: Json): { healthy: number; unhealthy: number; unknown: number } {
+  const services = (Array.isArray(node["info"]?.["backends"]) ? node["info"]["backends"] : []) as Json[];
+  const sum = (key: string) => services.reduce((n, s) => n + Number(s[key] ?? 0), 0);
+  return { healthy: sum("healthy"), unhealthy: sum("unhealthy"), unknown: sum("unknown") };
+}
+
+function NodeState({ node }: { node: Json }) {
+  if (!node["live"]) return <Tag tone="danger" dot>not reporting</Tag>;
+  if (node["stale"]) return <Tag tone="warn" dot>serving stale config</Tag>;
+  return <Tag tone="ok" dot>live</Tag>;
+}
+
+/** One node on its own: what it holds, and every backend as this node sees it. */
+function NodeDialog({ node, onClose }: { node: Json; onClose: () => void }) {
+  const { workspaces } = useSession();
+  const services = (Array.isArray(node["info"]?.["backends"]) ? node["info"]["backends"] : []) as Json[];
+  const counts = (node["info"]?.["counts"] ?? {}) as Json;
+  const rows = services.flatMap((s) => ((s["backends"] ?? []) as Json[]).map((b) => ({ service: s, backend: b })));
+  const order = (state: string) => (state === "unhealthy" ? 0 : state === "unknown" ? 1 : 2);
+  rows.sort((a, b) => order(a.backend["state"]) - order(b.backend["state"]));
+  const facts: Array<[string, React.ReactNode]> = [
+    ["State", <NodeState node={node} />],
+    ["Version", node["version"]],
+    ["Configuration from", node["source"]],
+    ["Applied change", node["applied_seq"]],
+    ["Behind by", node["lag"]],
+    ["Region", node["region"] ?? "none"],
+    ["Started", formatTime(node["started_at"])],
+    ["Last reported", relativeTime(node["last_seen"])],
+    ["Holds", `${counts["routes"] ?? 0} routes, ${counts["services"] ?? 0} services, ${counts["workspaces"] ?? 0} workspaces`],
+  ];
   return (
-    <div className="page stack">
-      <PageHead title="Nodes">The gateways that serve traffic. Each one reports here every few seconds.</PageHead>
-      <Card title="Nodes" subtitle={nodes.data ? `The newest change is number ${nodes.data.last_seq}` : undefined}>
-        {nodes.isLoading && <Loading />}
-        {nodes.error && <ErrorState error={nodes.error} retry={() => void nodes.refetch()} />}
-        {nodes.data && (nodes.data.data.length === 0 ? <Empty title="No node has reported yet">A node appears here a few seconds after it starts with this control plane's address and a node token.</Empty> : (
+    <Dialog title={`Node ${node["node_id"]}`} onClose={onClose} foot={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
+      <div className="form">
+        {!node["live"] && <div className="notice notice-danger">This node has not reported for more than 30 seconds. What follows is the last thing it said.</div>}
+        <div className="table-scroll"><table className="t">
+          <tbody>{facts.map(([label, value]) => <tr key={label}><th scope="row">{label}</th><td>{value}</td></tr>)}</tbody>
+        </table></div>
+        <h3 style={{ fontSize: 13, margin: 0 }}>Backends as this node sees them</h3>
+        {rows.length === 0 ? <Empty title="Nothing reported">{services.length === 0 ? "This node holds no services, or has not reported since it started." : "This node runs a version that reports counts only."}</Empty> : (
           <div className="table-scroll"><table className="t">
-            <thead><tr><th scope="col">Node</th><th scope="col">State</th><th scope="col">Version</th><th scope="col">Source</th><th scope="col">Applied</th><th scope="col">Behind by</th><th scope="col">Region</th><th scope="col">Last seen</th></tr></thead>
+            <thead><tr><th scope="col">Workspace</th><th scope="col">Service</th><th scope="col">Backend</th><th scope="col">State</th><th scope="col">Detail</th></tr></thead>
             <tbody>
-              {nodes.data.data.map((n) => (
-                <tr key={n["node_id"]}>
-                  <td className="mono">{n["node_id"]}</td>
-                  <td>{!n["live"] ? <Tag tone="danger" dot>not reporting</Tag> : n["stale"] ? <Tag tone="warn" dot>serving stale config</Tag> : <Tag tone="ok" dot>live</Tag>}</td>
-                  <td>{n["version"]}</td>
-                  <td>{n["source"]}</td>
-                  <td className="num">{n["applied_seq"]}</td>
-                  <td className="num">{n["lag"] === 0 ? <span className="dim">0</span> : <Tag tone="warn">{n["lag"]}</Tag>}</td>
-                  <td>{n["region"] ?? ""}</td>
-                  <td title={formatTime(n["last_seen"])}>{relativeTime(n["last_seen"])}</td>
+              {rows.map(({ service, backend }) => (
+                <tr key={`${service["service_id"]} ${backend["target"]}`}>
+                  <td>{workspaces.find((w) => w["id"] === service["workspace_id"])?.["name"] ?? <span className="dim">unknown</span>}</td>
+                  <td>{service["name"]}</td>
+                  <td className="mono">{backend["target"]}</td>
+                  <td>{backend["state"] === "healthy" ? <Tag tone="ok" dot>healthy</Tag> : backend["state"] === "unhealthy" ? <Tag tone="danger" dot>failing</Tag> : backend["state"] === "down" ? <Tag tone="warn" dot>marked down</Tag> : <Tag dot>not checked</Tag>}</td>
+                  <td>{backend["reason"] ?? ""}{backend["status"] === "active" && backend["in_rotation"] === false ? `${backend["reason"] ? "; " : ""}not sending it traffic` : ""}</td>
                 </tr>
               ))}
             </tbody>
           </table></div>
+        )}
+      </div>
+    </Dialog>
+  );
+}
+
+export function Nodes() {
+  const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => api<{ data: Json[]; last_seq: number }>("GET", "/v1/nodes"), refetchInterval: 10_000 });
+  const [open, setOpen] = useState<string | null>(null);
+  const all = nodes.data?.data ?? [];
+  const live = all.filter((n) => n["live"]);
+  const behind = live.filter((n) => Number(n["lag"]) > 0).length;
+  const stale = live.filter((n) => n["stale"]).length;
+  const withFailing = live.filter((n) => backendCounts(n).unhealthy > 0).length;
+  const silent = all.length - live.length;
+  // Looked up again on every refresh, so an open node keeps up with what it reports.
+  const inspected = open === null ? undefined : all.find((n) => n["node_id"] === open);
+  const stat = (label: string, value: number, note: string, bad = value > 0) => (
+    <div className="stat-card">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value">{nodes.data ? value : "…"}</div>
+      <div className="stat-delta">{nodes.data ? (bad ? note : "None") : ""}</div>
+    </div>
+  );
+  return (
+    <div className="page stack">
+      <PageHead title="Nodes">The gateways that serve traffic. Each one reports here every few seconds. Open a node to see it on its own.</PageHead>
+      <div className="stat-grid">
+        <div className="stat-card">
+          <div className="stat-label">Live</div>
+          <div className="stat-value">{nodes.data ? live.length : "…"}</div>
+          <div className="stat-delta">{nodes.data ? (behind + stale + withFailing + silent === 0 ? "All up to date and reaching every backend" : `of ${all.length} known`) : ""}</div>
+        </div>
+        {stat("Not reporting", silent, "Silent for more than 30 seconds")}
+        {stat("Behind", behind, "Have changes still to apply")}
+        {stat("Serving stale config", stale, "Cannot reach the control plane")}
+        {stat("With failing backends", withFailing, "Open a node to see which")}
+      </div>
+      <Card title="Nodes" subtitle={nodes.data ? `The newest change is number ${nodes.data.last_seq}` : undefined}>
+        {nodes.isLoading && <Loading />}
+        {nodes.error && <ErrorState error={nodes.error} retry={() => void nodes.refetch()} />}
+        {nodes.data && (all.length === 0 ? <Empty title="No node has reported yet">A node appears here a few seconds after it starts with this control plane's address and a node token.</Empty> : (
+          <div className="table-scroll"><table className="t">
+            <thead><tr><th scope="col">Node</th><th scope="col">State</th><th scope="col">Version</th><th scope="col">Source</th><th scope="col">Applied</th><th scope="col">Behind by</th><th scope="col">Backends</th><th scope="col">Region</th><th scope="col">Last seen</th><th scope="col"><span className="sr-only">Actions</span></th></tr></thead>
+            <tbody>
+              {all.map((n) => {
+                const b = backendCounts(n);
+                return (
+                  <tr key={n["node_id"]}>
+                    <td className="mono">{n["node_id"]}</td>
+                    <td><NodeState node={n} /></td>
+                    <td>{n["version"]}</td>
+                    <td>{n["source"]}</td>
+                    <td className="num">{n["applied_seq"]}</td>
+                    <td className="num">{n["lag"] === 0 ? <span className="dim">0</span> : <Tag tone="warn">{n["lag"]}</Tag>}</td>
+                    <td>{b.unhealthy > 0 ? <Tag tone="danger" dot>{b.unhealthy} failing</Tag> : b.healthy + b.unknown === 0 ? <span className="dim">none</span> : <Tag tone="ok" dot>none failing</Tag>}</td>
+                    <td>{n["region"] ?? ""}</td>
+                    <td title={formatTime(n["last_seen"])}>{relativeTime(n["last_seen"])}</td>
+                    <td className="actions"><button type="button" className="icon-btn" aria-label={`Details of node ${n["node_id"]}`} title="What this node holds and sees" onClick={() => setOpen(n["node_id"])}><Search size={14} aria-hidden="true" /></button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table></div>
         ))}
       </Card>
+      {inspected && <NodeDialog node={inspected} onClose={() => setOpen(null)} />}
     </div>
   );
 }

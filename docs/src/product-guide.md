@@ -73,7 +73,7 @@ consumers:
 
 **Nothing is accepted and then ignored.** An unknown key, a wrong type, or a setting this version does not act on is refused when you write it, with a pointer to the exact place. You never run with a setting that silently does nothing.
 
-More: [resources](concepts/resources.md), [the configuration file](reference/configuration-file.md).
+More: [resources](concepts/resources.md), [the configuration file](reference/configuration-file.md). Two complete files to copy from, a small one and one that uses every plugin, are in the repository's [`examples`](https://github.com/valkv-labs/valkv-apg/tree/main/examples) directory.
 
 ## Routing
 

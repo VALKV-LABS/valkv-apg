@@ -301,6 +301,8 @@ out.set("docs/src/reference/plugins/index.md", [
   const ADMIN_HELP = {
     apg_admin_requests_total: "Admin API requests, by method, route and status.", apg_changes_max_seq: "Number of the newest change.", apg_changes_rows: "Changes kept for nodes to read.",
     apg_nodes_live: "Nodes that reported in the last 30 seconds.", apg_nodes_max_lag: "How many changes the furthest-behind live node has yet to apply.",
+    apg_node_lag: "Per live node (label `node`): how many changes it has yet to apply.", apg_node_stale: "Per live node (label `node`): 1 while it cannot reach the control plane and serves what it has.",
+    apg_node_backends_unhealthy: "Per live node (label `node`): backends that node reports as failing.",
     apg_cert_leases_active: "Certificate issuances in progress.", apg_job_last_success_timestamp_seconds: "When each background job last succeeded.", apg_job_failures_total: "Failures of each background job.",
   };
   out.set("docs/src/reference/metrics.md", [

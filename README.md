@@ -78,6 +78,8 @@ the node keeps serving the previous one. Check a file without starting anything:
 docker run --rm -v "$PWD/deploy/compose/standalone:/cfg:ro" valkv-labs/valkv-apg:dev validate --config /cfg/apg.yaml
 ```
 
+Two complete configurations to copy from are in [`examples/`](examples/README.md): a small one, and one that uses every plugin.
+
 ## Deploy it
 
 | Where | How |

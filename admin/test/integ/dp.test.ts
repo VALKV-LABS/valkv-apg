@@ -208,6 +208,12 @@ describe("backend health", () => {
     expect([unseen.state, unseen.unknown, unseen.health_check, unseen.nodes_reporting]).toEqual(["unknown", 1, false, 0]);
     expect(all.data.find((s: any) => s.name === "health-svc").state).toBe("unhealthy");
 
+    // Per-node gauges on the admin, so a dashboard can single out a node.
+    const metrics = (await h.call("GET", "/metrics", { token: null })).text;
+    expect(metrics).toContain('apg_node_backends_unhealthy{node="h2"} 0');
+    expect(metrics).toMatch(/apg_node_lag\{node="h1"\} \d+/);
+    expect(metrics).toContain('apg_node_stale{node="h1"} 0');
+
     // A node that stopped reporting is not counted.
     await h.sql`UPDATE apg_nodes SET last_seen = now() - interval '5 minutes' WHERE node_id = 'h2'`;
     expect((await h.call("GET", "/v1/workspaces/default/services/health-svc/health")).json.state).toBe("healthy");

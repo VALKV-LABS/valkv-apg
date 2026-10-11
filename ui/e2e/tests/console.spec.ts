@@ -296,3 +296,14 @@ test("settings: a new token is shown once", async ({ page }) => {
   await expect(page.getByRole("cell", { name: "identity_headers", exact: true })).toBeVisible();
   await scan(page, "gateway settings");
 });
+
+test("nodes: the fleet is summed up, and a node opens to show what it holds and sees", async ({ page }) => {
+  await signIn(page);
+  await page.getByRole("navigation", { name: "Main" }).getByRole("link", { name: "Nodes", exact: true }).click();
+  await expect(page.locator(".stat-label", { hasText: "With failing backends" })).toBeVisible();
+  await page.getByRole("button", { name: "Details of node node-1" }).click();
+  const dialog = page.getByRole("dialog", { name: "Node node-1" });
+  await expect(dialog.getByText("Backends as this node sees them")).toBeVisible();
+  await expect(dialog.getByRole("row", { name: /Configuration from/ })).toContainText("api_poll");
+  await scan(page, "node details");
+});

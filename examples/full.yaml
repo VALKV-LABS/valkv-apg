@@ -1,0 +1,353 @@
+# A tour of everything: every plugin type, and the routing and upstream features
+# around them. It is a reference to copy from, not a configuration to run as it
+# is: the addresses and host names are placeholders.
+#
+#   valkv-apg validate --config examples/full.yaml
+#
+# It reads these from the environment (any value will do for `validate`):
+#   APG_SECRET_MOBILE_KEY  APG_SECRET_PARTNER_KEY  APG_SECRET_QA_PASSWORD  APG_SECRET_CALLOUT_SIGNING
+#
+# Every key and its default: docs/src/reference/configuration-file.md and
+# docs/src/reference/plugins/. Each plugin's page says when to use it.
+version: 1
+
+# ── Plugins for everything in the workspace ──────────────────────────────────
+# A plugin on a route or a service replaces the workspace's plugin of the same type.
+plugins:
+  # Compress responses for clients that accept it.
+  - type: compression
+    scope: workspace
+    config:
+      algorithms: [br, gzip]
+      min_bytes: 1024
+
+  # Security headers on every response; hide what the upstream runs on.
+  - type: response_transformer
+    scope: workspace
+    config:
+      headers:
+        set:
+          Strict-Transport-Security: "max-age=31536000"
+          X-Content-Type-Options: nosniff
+        remove: [Server, X-Powered-By]
+
+  # A ceiling for every route that does not set its own.
+  - type: rate_limit
+    scope: workspace
+    config:
+      per_second: 200
+      burst: 400
+      scope: ip
+
+  # Add fields to every access log line.
+  - type: access_log
+    scope: workspace
+    config:
+      sample_rate: 1.0
+      custom_fields:
+        tenant: "{{ workspace.slug }}"
+        caller: "{{ consumer.name | default(\"anonymous\") }}"
+
+# ── Certificate authorities ──────────────────────────────────────────────────
+ca_certificates:
+  # Used below to check client certificates.
+  - name: internal-ca
+    cert_file: /etc/apg/certs/internal-ca.crt
+
+# ── Upstreams ────────────────────────────────────────────────────────────────
+services:
+  # Weighted backends, an HTTP health check, the circuit breaker, timeouts and retries.
+  - name: orders
+    backends:
+      - target: "10.0.0.1:8080"
+        weight: 3
+      - target: "10.0.0.2:8080"
+        weight: 1
+      # Finishes what it has and gets nothing new.
+      - target: "10.0.0.3:8080"
+        status: draining
+    load_balancing:
+      strategy: round_robin
+    health_check:
+      active:
+        path: /healthz
+        interval_ms: 5000
+        timeout_ms: 2000
+        healthy_threshold: 2
+        unhealthy_threshold: 3
+      passive:
+        consecutive_failures: 3
+        open_ms: 30000
+        statuses: [502, 503, 504]
+    timeouts:
+      connect_ms: 2000
+      read_ms: 30000
+      write_ms: 30000
+    retries:
+      attempts: 2
+      "on": [connect_failure, timeout]
+
+  # The next version of orders, for the canary route below.
+  - name: orders-next
+    backends:
+      - target: "10.0.1.1:8080"
+    health_check:
+      active: { type: tcp }
+
+  # One caller always reaches the same backend.
+  - name: sessions
+    backends:
+      - target: "10.0.2.1:8080"
+      - target: "10.0.2.2:8080"
+    load_balancing:
+      strategy: hash
+      hash_key: "header:x-session-id"
+
+  # The idlest backend gets the next request.
+  - name: reports
+    backends:
+      - target: "10.0.3.1:8080"
+      - target: "10.0.3.2:8080"
+    load_balancing:
+      strategy: least_connections
+
+  # A gRPC upstream: HTTP/2 over TLS, verified, reached by name.
+  - name: ledger
+    scheme: https
+    http_version: "2"
+    backends:
+      - target: "ledger.internal.example.com:8443"
+    host_header: backend
+
+  - name: site
+    backends:
+      - target: "10.0.4.1:8080"
+
+# ── Routes ───────────────────────────────────────────────────────────────────
+routes:
+  # API key, then a per-caller limit, a daily quota and a body size limit.
+  - name: orders-api
+    service: orders
+    hosts: [api.example.com]
+    paths: [/orders]
+    methods: [GET, POST, PUT, DELETE]
+    timeout_ms: 20000
+    plugins:
+      - type: key_auth
+        config:
+          key_names: [x-api-key]
+          hide_credentials: true
+      - type: rate_limit
+        config:
+          per_second: 50
+          burst: 100
+          scope: consumer
+      - type: quota
+        config:
+          limit: 100000
+          window: day
+          scope: consumer
+      - type: request_size_limit
+        config:
+          max_bytes: 1048576
+      # Tell the upstream who is calling, and drop a header it must never see.
+      - type: request_transformer
+        config:
+          headers:
+            set:
+              X-Tenant: "{{ workspace.slug }}"
+              X-Caller: "{{ consumer.name }}"
+            remove: [X-Internal-Debug]
+
+  # A canary: 5 % of callers go to the new version, and each caller stays on one side.
+  # More specific than the route above (a header condition), so it wins when the header is there.
+  - name: orders-canary
+    hosts: [api.example.com]
+    paths: [/orders]
+    headers:
+      - { name: x-beta, type: present }
+    split_key: consumer
+    split:
+      - { service: orders, weight: 95 }
+      - { service: orders-next, weight: 5 }
+    plugins:
+      - type: key_auth
+
+  # Partners only: the caller must be in a group.
+  - name: partner-api
+    service: orders
+    hosts: [api.example.com]
+    paths: [/partner]
+    strip_path: true
+    plugins:
+      - type: key_auth
+      - type: acl
+        config:
+          allow: [partners]
+      - type: bandwidth_limit
+        config:
+          bytes_per_second: 5000000
+          burst_bytes: 50000000
+          scope: consumer
+
+  # Tokens from an identity provider, for a browser application on another origin.
+  - name: accounts-api
+    service: sessions
+    hosts: [api.example.com]
+    paths: [/accounts]
+    plugins:
+      - type: cors
+        config:
+          origins: ["https://app.example.com"]
+          credentials: true
+          expose_headers: [X-Total-Count]
+      - type: jwt_auth
+        config:
+          issuer: https://login.example.com/
+          jwks_url: https://login.example.com/.well-known/jwks.json
+          audiences: [accounts-api]
+          claims_to_headers:
+            sub: X-User-Id
+
+  # Service to service, with client certificates.
+  - name: ledger-api
+    service: ledger
+    hosts: [ledger.internal.example.com]
+    plugins:
+      - type: mtls_auth
+        config:
+          ca_certificates: [internal-ca]
+
+  # A password, from an office network only.
+  - name: reports
+    service: reports
+    hosts: [reports.example.com]
+    plugins:
+      - type: ip_restriction
+        config:
+          allow: ["203.0.113.0/24"]
+      - type: basic_auth
+        config:
+          realm: Reports
+
+  # Your own service decides who gets in.
+  - name: app
+    service: site
+    hosts: [app.example.com]
+    paths: [/app]
+    plugins:
+      - type: forward_auth
+        config:
+          url: https://auth.example.com/verify
+          response_headers: [X-User, X-Roles]
+
+  # Your own service decides what happens to each request.
+  - name: payments
+    service: orders
+    hosts: [api.example.com]
+    paths: [/payments]
+    plugins:
+      - type: key_auth
+      - type: http_callout
+        config:
+          url: https://rules.example.com/check
+          phases: [request]
+          timeout_ms: 300
+          secret: { $env: APG_SECRET_CALLOUT_SIGNING }
+
+  # Cached for a minute, per language.
+  - name: catalogue
+    service: site
+    hosts: [www.example.com]
+    paths: [/catalogue]
+    plugins:
+      - type: response_cache
+        config:
+          ttl_secs: 60
+          vary_headers: [Accept-Language]
+
+  # Answered by the gateway: a maintenance page.
+  - name: checkout-maintenance
+    service: site
+    hosts: [www.example.com]
+    paths: [/checkout]
+    plugins:
+      - type: static_response
+        config:
+          status: 503
+          content_type: text/html
+          headers:
+            Retry-After: "600"
+          body: "<h1>Back soon</h1><p>Reference {{ request.id }}</p>"
+
+  # An old host name moved for good.
+  - name: old-host
+    service: site
+    hosts: [old.example.com]
+    plugins:
+      - type: redirect
+        config:
+          status: 301
+          scheme: https
+          host: www.example.com
+
+  # Not worth a log line.
+  - name: site-health
+    service: site
+    hosts: [www.example.com]
+    paths:
+      - { type: exact, value: /healthz }
+    plugins:
+      - type: access_log
+        config:
+          enabled: false
+
+  # Everything else on the site.
+  - name: site
+    service: site
+    hosts: [www.example.com]
+    paths: [/]
+
+  # An old path kept working: /old-items/7 reaches the upstream as /items/7.
+  - name: legacy-items
+    service: site
+    hosts: [www.example.com]
+    paths: [/old-items]
+    rewrite:
+      prefix: /items
+
+  # A path by regular expression, for one method only.
+  - name: invoice-pdf
+    service: reports
+    hosts: [www.example.com]
+    methods: [GET]
+    paths:
+      - { type: regex, value: "/invoices/[0-9]+\\.pdf" }
+
+# ── Callers ──────────────────────────────────────────────────────────────────
+consumers:
+  - name: mobile-app
+    credentials:
+      - name: main
+        type: key
+        key: { $env: APG_SECRET_MOBILE_KEY }
+
+  - name: acme
+    groups: [partners]
+    credentials:
+      - name: key
+        type: key
+        key: { $env: APG_SECRET_PARTNER_KEY }
+
+  - name: qa-team
+    credentials:
+      - name: login
+        type: basic
+        username: qa
+        password: { $env: APG_SECRET_QA_PASSWORD }
+
+  - name: billing-service
+    credentials:
+      - name: cert
+        type: mtls
+        identity: billing.internal.example.com

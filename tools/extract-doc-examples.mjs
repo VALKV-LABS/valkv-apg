@@ -48,5 +48,10 @@ for (const file of files) {
     count++;
   }
 }
+// The files under examples/ are whole configurations already.
+for (const name of readdirSync(join(root, "examples")).filter((f) => f.endsWith(".yaml"))) {
+  writeFileSync(join(out, `examples__${name}`), readFileSync(join(root, "examples", name), "utf8"));
+  count++;
+}
 console.log(`${count} examples extracted from ${files.length} files, ${skipped} marked no-validate`);
 if (count === 0) process.exit(1);

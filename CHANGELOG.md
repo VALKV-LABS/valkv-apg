@@ -12,6 +12,10 @@ the project uses [Semantic Versioning](https://semver.org/).
   and `.../services/{name}/health` on the Admin API, per backend and per node;
   `apgctl health`; a backend-health card on the console's overview and a per-backend
   view on the Services page.
+- `examples/simple.yaml` and `examples/full.yaml` (every plugin type), checked by
+  `make docs-check`.
+- The console's Nodes page sums up the fleet and opens any node to show what that node
+  holds and how it sees each backend. Per-node gauges on the admin's `/metrics`.
 - A product guide and an architecture and components page in the documentation.
 - Repository foundation: cargo workspace, admin service skeleton, JSON Schemas for
   every resource, `apg.yaml` and the changelog event (contract version 2), shared

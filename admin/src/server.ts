@@ -148,6 +148,16 @@ export function buildServer(config: Pick<Config, "logLevel"> & Partial<Pick<Conf
         lines.push("# TYPE apg_nodes_live gauge", `apg_nodes_live ${m!.live}`);
         lines.push("# TYPE apg_nodes_max_lag gauge", `apg_nodes_max_lag ${m!.min_applied === null ? 0 : Math.max(0, last - m!.min_applied)}`);
         lines.push("# TYPE apg_cert_leases_active gauge", `apg_cert_leases_active ${m!.leases}`);
+        // One series per live node, so a dashboard can show the fleet and single out one node.
+        // A node that stops reporting drops out here and out of apg_nodes_live.
+        const nodes = await sql<Array<{ node_id: string; applied_seq: number; stale: boolean; unhealthy: number }>>`
+          SELECT node_id, applied_seq, stale,
+                 (SELECT coalesce(sum((b->>'unhealthy')::int), 0)::int FROM jsonb_array_elements(CASE WHEN jsonb_typeof(info->'backends') = 'array' THEN info->'backends' ELSE '[]'::jsonb END) b) AS unhealthy
+          FROM apg_nodes WHERE last_seen > now() - interval '30 seconds' ORDER BY node_id LIMIT 1000`;
+        const label = (id: string) => `{node="${id.replace(/[\\"\n]/g, "_")}"}`;
+        lines.push("# TYPE apg_node_lag gauge", ...nodes.map((n) => `apg_node_lag${label(n.node_id)} ${Math.max(0, last - Number(n.applied_seq))}`));
+        lines.push("# TYPE apg_node_stale gauge", ...nodes.map((n) => `apg_node_stale${label(n.node_id)} ${n.stale ? 1 : 0}`));
+        lines.push("# TYPE apg_node_backends_unhealthy gauge", ...nodes.map((n) => `apg_node_backends_unhealthy${label(n.node_id)} ${n.unhealthy}`));
       } catch {
         // metrics must never fail the scrape; the request counters above still go out
       }

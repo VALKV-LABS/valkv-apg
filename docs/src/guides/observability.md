@@ -60,7 +60,11 @@ The gateway also continues a W3C trace (`traceparent`) or starts one, and logs t
 apgctl nodes
 ```
 
-or the console's **Nodes** page: version, applied sequence, how far behind, whether it is serving stale configuration, when it last reported. On a node:
+or the console's **Nodes** page. Its top row sums the fleet up: how many nodes are live, not reporting, behind, serving stale configuration, or reporting a failing backend. Each row is one node: version, applied sequence, how far behind, failing backends, when it last reported. Open a node to see it on its own: what it holds, and every backend as that node sees it, which is where to look when one node misbehaves and the others do not.
+
+**Metrics per node.** Each node serves its own `/metrics`, so in Prometheus every gateway series already carries the node it came from in the `instance` label your scrape configuration gives it; sum over it for the fleet, filter on it for one node. The control plane adds three gauges with a `node` label for every live node, which need no scraping of the nodes at all: `apg_node_lag`, `apg_node_stale` and `apg_node_backends_unhealthy`, next to the fleet-wide `apg_nodes_live` and `apg_nodes_max_lag`.
+
+On a node:
 
 ```sh
 curl http://localhost:9100/readyz     # ready, stale, applied_seq

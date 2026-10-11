@@ -54,5 +54,8 @@ The number of `route` and `service` label values is capped (`APG_METRICS_MAX_SER
 | `apg_nodes_live` | gauge | Nodes that reported in the last 30 seconds. |
 | `apg_nodes_max_lag` | gauge | How many changes the furthest-behind live node has yet to apply. |
 | `apg_cert_leases_active` | gauge | Certificate issuances in progress. |
+| `apg_node_lag` | gauge | Per live node (label `node`): how many changes it has yet to apply. |
+| `apg_node_stale` | gauge | Per live node (label `node`): 1 while it cannot reach the control plane and serves what it has. |
+| `apg_node_backends_unhealthy` | gauge | Per live node (label `node`): backends that node reports as failing. |
 | `apg_job_last_success_timestamp_seconds` | gauge | When each background job last succeeded. |
 | `apg_job_failures_total` | counter | Failures of each background job. |
