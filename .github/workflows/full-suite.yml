@@ -1,17 +1,16 @@
-name: nightly
+name: full suite
 
-# The slower checks that do not run on every pull request: every end-to-end
+# Started by hand only (Actions, "full suite", "Run workflow"); nothing here
+# runs on a schedule. The slower checks that do not run on every pull request: every end-to-end
 # suite in both configuration modes, outages and recovery, version skew, the
 # security suite, the canary rehearsal, the smoke test, and how long a
 # configuration change takes to reach a node.
 
 on:
-  schedule:
-    - cron: "17 2 * * *"
   workflow_dispatch:
 
 concurrency:
-  group: nightly
+  group: full-suite
   cancel-in-progress: true
 
 jobs:
