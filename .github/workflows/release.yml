@@ -60,6 +60,10 @@ jobs:
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
+        env:
+          # The build record the action would attach to the run is not an
+          # archive the publish job can unpack, and nothing here reads it.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -110,8 +114,16 @@ jobs:
     needs: [build]
     steps:
       - uses: actions/checkout@v4
+      # By name: the run may hold other artifacts, and one this job cannot
+      # unpack fails the whole download.
       - uses: actions/download-artifact@v4
         with:
+          pattern: digest-*
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          pattern: tarball-*
           path: artifacts
       - uses: docker/setup-buildx-action@v3
       - uses: sigstore/cosign-installer@v3
