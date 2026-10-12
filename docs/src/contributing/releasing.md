@@ -23,7 +23,7 @@ The workflow needs two repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_T
 
 ## Steps
 
-1. **Check `main` is green**, including the nightly run.
+1. **Check `main` is green**, then start the "full suite" workflow by hand from the Actions tab and wait for it to pass. It holds the slower suites and never runs on its own.
 2. **Update versions** in `Cargo.toml` (workspace), `admin/package.json`, `cli/package.json`, `ui/package.json`, the `VERSION` constants in `admin/src/index.ts` and `cli/src/run.ts`, and `deploy/helm/valkv-apg/Chart.yaml` (`version` and `appVersion`).
 3. **Update `CHANGELOG.md`:** rename "Unreleased" to the version and date, and start a new "Unreleased". Mark anything that needs action when upgrading.
 4. **Regenerate** what embeds the version: `make unit-admin` (it tells you if `admin/openapi.json` is stale) and `make docs`.

@@ -1,6 +1,7 @@
 name: release
 
-# Every merge to main publishes both images as `edge`, signed.
+# Every merge to main publishes both images as `edge`, signed. The same can be
+# started by hand for main (Actions, "release", "Run workflow").
 #
 # Pushing a tag vX.Y.Z publishes:
 #   - valkvlabs/valkv-apg and valkvlabs/valkv-apg-admin for amd64 and arm64,
@@ -15,6 +16,7 @@ on:
   push:
     branches: [main]
     tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -29,6 +31,8 @@ jobs:
   # emulation takes hours.
   build:
     name: build ${{ matrix.component }} ${{ matrix.arch }}
+    # Started by hand it publishes `edge`, so only from main or from a version tag.
+    if: github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -56,6 +60,10 @@ jobs:
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
+        env:
+          # The build record the action would attach to the run is not an
+          # archive the publish job can unpack, and nothing here reads it.
+          DOCKER_BUILD_RECORD_UPLOAD: "false"
         with:
           context: .
           file: ${{ matrix.dockerfile }}
@@ -106,8 +114,16 @@ jobs:
     needs: [build]
     steps:
       - uses: actions/checkout@v4
+      # By name: the run may hold other artifacts, and one this job cannot
+      # unpack fails the whole download.
       - uses: actions/download-artifact@v4
         with:
+          pattern: digest-*
+          path: artifacts
+      - uses: actions/download-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          pattern: tarball-*
           path: artifacts
       - uses: docker/setup-buildx-action@v3
       - uses: sigstore/cosign-installer@v3
