@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/static_response.json",
+  "title": "static_response",
+  "description": "Answers without an upstream: maintenance pages and mocks (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "type": "integer", "minimum": 200, "maximum": 599, "default": 200 },
+    "content_type": { "type": "string", "minLength": 1, "maxLength": 256, "default": "application/json" },
+    "headers": { "type": "object", "maxProperties": 32, "default": {}, "propertyNames": { "pattern": "^[A-Za-z0-9_-]{1,64}$" }, "additionalProperties": { "type": "string", "maxLength": 1024 } },
+    "body": { "description": "A template (spec §9.5).", "type": "string", "maxLength": 262144 }
+  }
+}

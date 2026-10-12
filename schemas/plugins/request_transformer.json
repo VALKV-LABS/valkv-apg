@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/request_transformer.json",
+  "title": "request_transformer",
+  "description": "Changes headers, query parameters and JSON body fields of the forwarded request. Operations run in the order rename, remove, set, add. Values are templates (spec §9.4, §9.5).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "headers": { "$ref": "#/$defs/ops" },
+    "query": { "$ref": "#/$defs/ops" },
+    "body": { "$ref": "#/$defs/bodyOps" },
+    "max_body_bytes": { "description": "A larger body passes through unchanged.", "type": "integer", "minimum": 0, "maximum": 16777216, "default": 1048576 }
+  },
+  "$defs": {
+    "fieldName": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,128}$" },
+    "templated": { "type": "object", "maxProperties": 64, "propertyNames": { "$ref": "#/$defs/fieldName" }, "additionalProperties": { "type": "string", "maxLength": 4096 } },
+    "ops": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "set": { "description": "Replace the value, or create it.", "$ref": "#/$defs/templated" },
+        "add": { "description": "Add another value, keeping what is there.", "$ref": "#/$defs/templated" },
+        "remove": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/fieldName" } },
+        "rename": { "type": "object", "maxProperties": 64, "propertyNames": { "$ref": "#/$defs/fieldName" }, "additionalProperties": { "$ref": "#/$defs/fieldName" } }
+      }
+    },
+    "pointer": { "description": "A JSON Pointer (RFC 6901).", "type": "string", "pattern": "^(/[^/]*)*$", "maxLength": 512 },
+    "bodyOps": {
+      "description": "Applies to JSON bodies only.",
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "set": { "description": "JSON Pointer to the value to put there. A string value is a template.", "type": "object", "maxProperties": 64, "propertyNames": { "$ref": "#/$defs/pointer" } },
+        "remove": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/pointer" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,118 @@
+# Each case is a document that must be rejected, with the JSON pointer at which
+# a fault must be reported. Run by the TypeScript loader now and the Rust
+# loader from build phase 2a (spec DEC-5).
+- name: missing version
+  pointer: /
+  doc:
+    services: []
+- name: unknown top-level key
+  pointer: /
+  doc:
+    version: 1
+    servces: []
+- name: route with both service and split
+  pointer: /routes/0
+  doc:
+    version: 1
+    routes:
+      - name: r
+        service: a
+        split: [{ service: a, weight: 1 }, { service: b, weight: 1 }]
+- name: route with neither service nor split
+  pointer: /routes/0
+  doc:
+    version: 1
+    routes:
+      - name: r
+- name: unknown route key is rejected, not ignored
+  pointer: /routes/0
+  doc:
+    version: 1
+    routes:
+      - name: r
+        service: a
+        strip_prefix: true
+- name: service with no backends
+  pointer: /services/0/backends
+  doc:
+    version: 1
+    services:
+      - name: s
+        backends: []
+- name: unknown load-balancing strategy
+  pointer: /services/0/load_balancing/strategy
+  doc:
+    version: 1
+    services:
+      - name: s
+        backends: [{ target: "a:1" }]
+        load_balancing: { strategy: least_conn }
+- name: backend target without a port
+  pointer: /services/0/backends/0/target
+  doc:
+    version: 1
+    services:
+      - name: s
+        backends: [{ target: "http://a" }]
+- name: upper-case resource name
+  pointer: /services/0/name
+  doc:
+    version: 1
+    services:
+      - name: Orders
+        backends: [{ target: "a:1" }]
+- name: unknown plugin type
+  pointer: /routes/0/plugins/0/type
+  doc:
+    version: 1
+    routes:
+      - name: r
+        service: a
+        plugins: [{ type: jwt }]
+- name: route-scoped plugin without scope_ref
+  pointer: /plugins/0
+  doc:
+    version: 1
+    plugins:
+      - type: cors
+        scope: route
+- name: wildcard domain with an http01 challenge
+  pointer: /domains/0
+  doc:
+    version: 1
+    domains:
+      - hostname: "*.example.com"
+        tls: { mode: acme, challenge: http01 }
+- name: manual TLS without a certificate
+  pointer: /domains/0/tls
+  doc:
+    version: 1
+    domains:
+      - hostname: a.example.com
+        tls: { mode: manual }
+- name: header predicate without a value
+  pointer: /routes/0/headers/0
+  doc:
+    version: 1
+    routes:
+      - name: r
+        service: a
+        headers: [{ name: x-a }]
+- name: bare-string secret env name outside the allowed prefix
+  pointer: /consumers/0/credentials/0
+  doc:
+    version: 1
+    consumers:
+      - name: c
+        credentials:
+          - type: key
+            key: { $env: HOME }
+- name: basic credential without a username
+  pointer: /consumers/0/credentials/0
+  doc:
+    version: 1
+    consumers:
+      - name: c
+        credentials:
+          - type: basic
+            password: { $env: APG_SECRET_P }

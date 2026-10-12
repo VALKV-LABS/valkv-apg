@@ -1,0 +1,8 @@
+version: 1
+services:
+  - name: echo
+    backends:
+      - target: "echo:8080"
+routes:
+  - name: everything
+    service: echo

@@ -1,0 +1,44 @@
+# The throughput benchmark (spec NFR-1, NFR-2): one standalone node built for
+# release, a fast upstream, and a load generator, on one Docker network.
+# Run it with tests/bench/throughput.sh.
+
+name: valkv-apg-bench
+
+services:
+  upstream:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+
+  node:
+    image: valkv-labs/valkv-apg:bench
+    build:
+      context: ../..
+      dockerfile: crates/apg-proxy/Dockerfile
+      target: runtime
+      args:
+        CARGO_PROFILE: release
+    environment:
+      APG_CONFIG_FILE: /etc/apg/apg.yaml
+      APG_HTTP_MODE: proxy
+      APG_NODE_ID: bench
+      APG_LOG_LEVEL: warn
+      APG_SECRET_BENCH_KEY: bench-key-0123456789abcdef0123456789
+    volumes:
+      - ./apg.yaml:/etc/apg/apg.yaml:ro
+    ulimits:
+      nofile: 65536
+    depends_on:
+      - upstream
+
+  load:
+    image: valkv-apg-bench-wrk
+    build:
+      context: .
+      dockerfile: Dockerfile.wrk
+    profiles: ["load"]
+    ulimits:
+      nofile: 65536
+    depends_on:
+      node:
+        condition: service_healthy

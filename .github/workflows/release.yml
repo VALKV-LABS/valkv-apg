@@ -1,0 +1,181 @@
+name: release
+
+# Every merge to main publishes both images as `edge`, signed.
+#
+# Pushing a tag vX.Y.Z publishes:
+#   - valkv-labs/valkv-apg and valkv-labs/valkv-apg-admin for amd64 and arm64,
+#     each with a bill of materials and build provenance, signed with cosign
+#   - a tarball per platform holding the node binary and its systemd unit
+#   - the Helm chart, as a packaged archive
+#   - a GitHub release carrying all of the above and their checksums
+#
+# Repository secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: write
+  id-token: write # keyless signing
+
+env:
+  NODE_IMAGE: valkv-labs/valkv-apg
+  ADMIN_IMAGE: valkv-labs/valkv-apg-admin
+
+jobs:
+  # Each platform builds on its own hardware: compiling the node under
+  # emulation takes hours.
+  build:
+    name: build ${{ matrix.component }} ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [node, admin]
+        arch: [amd64, arm64]
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - component: node
+            image: valkv-labs/valkv-apg
+            dockerfile: crates/apg-proxy/Dockerfile
+          - component: admin
+            image: valkv-labs/valkv-apg-admin
+            dockerfile: admin/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          target: runtime
+          platforms: linux/${{ matrix.arch }}
+          provenance: mode=max
+          sbom: true
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('edge-{0}', github.sha) }}
+            org.opencontainers.image.licenses=Apache-2.0
+          outputs: type=image,name=${{ matrix.image }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ matrix.component }}-${{ matrix.arch }},mode=max
+      - name: Record the digest
+        run: |
+          mkdir -p digests
+          echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.component }}-${{ matrix.arch }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.component }}-${{ matrix.arch }}
+          path: digests/*
+          retention-days: 1
+
+      # The node also ships as a plain binary for hosts without containers.
+      - name: Package the binary
+        if: matrix.component == 'node' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          dir="valkv-apg-${version}-linux-${{ matrix.arch }}"
+          mkdir -p "$dir"
+          id=$(docker create "${{ matrix.image }}@${{ steps.build.outputs.digest }}")
+          docker cp "$id:/usr/local/bin/valkv-apg" "$dir/valkv-apg"
+          docker rm "$id" > /dev/null
+          cp deploy/systemd/valkv-apg.service deploy/systemd/valkv-apg.env LICENSE NOTICE README.md "$dir/"
+          tar -czf "$dir.tar.gz" "$dir"
+      - uses: actions/upload-artifact@v4
+        if: matrix.component == 'node' && startsWith(github.ref, 'refs/tags/')
+        with:
+          name: tarball-${{ matrix.arch }}
+          path: valkv-apg-*.tar.gz
+          retention-days: 1
+
+  publish:
+    name: publish
+    runs-on: ubuntu-24.04
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: docker/setup-buildx-action@v3
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Join the platforms under one tag, and sign
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            version="${GITHUB_REF_NAME#v}"
+            # A pre-release (1.2.0-rc.1) never moves `latest` or the minor tag.
+            case "$version" in
+              *-*) tags="$version" ;;
+              *)   tags="$version ${version%.*} latest" ;;
+            esac
+          else
+            version=edge
+            tags=edge
+          fi
+          publish() {
+            component=$1; image=$2
+            sources=""
+            for arch in amd64 arm64; do
+              sources="$sources $image@$(cat "artifacts/digest-$component-$arch/$component-$arch")"
+            done
+            args=""
+            for tag in $tags; do args="$args -t $image:$tag"; done
+            # shellcheck disable=SC2086
+            docker buildx imagetools create $args $sources
+            digest=$(docker buildx imagetools inspect "$image:$version" --format '{{json .Manifest.Digest}}' | tr -d '"')
+            cosign sign --yes "$image@$digest"
+            echo "$image:$version@$digest" >> images.txt
+          }
+          publish node "$NODE_IMAGE"
+          publish admin "$ADMIN_IMAGE"
+
+      - name: Package the Helm chart
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          docker run --rm -v "$PWD:/work" -w /work alpine/helm:3.16.2 \
+            package deploy/helm/valkv-apg --version "$version" --app-version "$version" --destination /work/release
+
+      - name: Checksums and signatures
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          mkdir -p release
+          mv artifacts/tarball-*/*.tar.gz release/
+          mv images.txt release/
+          cd release
+          sha256sum *.tar.gz *.tgz > SHA256SUMS
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+
+      - name: Release notes from the changelog
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="$version" '
+            /^## / { on = (index($0, "[" v "]") > 0) ; next }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+
+      - uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          body_path: notes.md
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: release/*

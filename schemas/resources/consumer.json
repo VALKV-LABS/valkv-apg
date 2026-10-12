@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/consumer.json",
+  "title": "Consumer",
+  "description": "An identified caller of an API (spec §10).",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "custom_id": { "description": "External identity, for example a JWT sub. Unique per workspace.", "type": "string", "minLength": 1, "maxLength": 256 },
+    "groups": { "type": "array", "uniqueItems": true, "maxItems": 64, "items": { "$ref": "../common.json#/$defs/name" } },
+    "credentials": { "description": "Declarative config only.", "type": "array", "items": { "$ref": "credential.json" } },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  }
+}

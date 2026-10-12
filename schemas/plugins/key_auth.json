@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/key_auth.json",
+  "title": "key_auth",
+  "description": "Authenticates a consumer by an API key (spec §9.4, §10).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "key_names": { "description": "Header and query parameter names the key may arrive in.", "type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "default": ["x-api-key"],
+                   "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" } },
+    "in_header": { "type": "boolean", "default": true },
+    "in_query": { "type": "boolean", "default": false },
+    "hide_credentials": { "description": "Remove the key before the request is forwarded.", "type": "boolean", "default": true },
+    "anonymous": { "description": "A consumer name to run as when no key is presented.", "$ref": "../common.json#/$defs/name" }
+  }
+}

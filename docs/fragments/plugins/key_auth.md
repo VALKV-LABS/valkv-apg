@@ -1,0 +1,60 @@
+## When to use it
+
+For callers that are programs: each one gets a key, sends it with every request, and the gateway tells your upstream who it is. Keys are stored only as hashes, so a key cannot be read back; issue a new one instead.
+
+## Examples
+
+Protect a route, and give one application a key:
+
+```yaml
+version: 1
+services:
+  - name: orders
+    backends:
+      - target: "10.0.0.1:8080"
+routes:
+  - name: orders-api
+    service: orders
+    paths: [/orders]
+    plugins:
+      - type: key_auth
+consumers:
+  - name: mobile-app
+    credentials:
+      - name: main
+        type: key
+        key: { $env: APG_SECRET_MOBILE_KEY }
+```
+
+Take the key from a query parameter instead of a header, and let callers without a key through as a named guest (so a later plugin can limit them harder):
+
+```yaml
+version: 1
+services:
+  - name: maps
+    backends:
+      - target: "10.0.0.2:8080"
+routes:
+  - name: tiles
+    service: maps
+    paths: [/tiles]
+    plugins:
+      - type: key_auth
+        config:
+          in_header: false
+          in_query: true
+          key_names: [api_key]
+          anonymous: guest
+consumers:
+  - name: guest
+```
+
+## What clients and upstreams see
+
+- No key, or one that is not valid: `401 UNAUTHENTICATED`.
+- A valid key: the request goes on with `X-Apg-Consumer-Id` and `X-Apg-Consumer-Name` added for the upstream. The key itself is removed from what is forwarded unless `hide_credentials` is `false`.
+- A client cannot set the `X-Apg-Consumer-*` headers itself: the gateway overwrites them.
+
+## Goes well with
+
+`acl` to allow only some groups of consumers; `rate_limit` and `quota` with `scope: consumer` for a limit per key holder. With `anonymous` on two authentication plugins of one route, a caller may present either credential.

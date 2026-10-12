@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/ip_restriction.json",
+  "title": "ip_restriction",
+  "description": "Allows or denies requests by client address. deny wins (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "allow": { "description": "CIDR blocks or addresses. When not empty, anything outside is denied.", "type": "array", "uniqueItems": true, "maxItems": 1024, "default": [], "items": { "$ref": "#/$defs/cidr" } },
+    "deny": { "type": "array", "uniqueItems": true, "maxItems": 1024, "default": [], "items": { "$ref": "#/$defs/cidr" } }
+  },
+  "$defs": {
+    "cidr": { "type": "string", "pattern": "^([0-9]{1,3}(\\.[0-9]{1,3}){3}(/([0-9]|[12][0-9]|3[0-2]))?|[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*(/([0-9]|[1-9][0-9]|1[01][0-9]|12[0-8]))?)$" }
+  }
+}

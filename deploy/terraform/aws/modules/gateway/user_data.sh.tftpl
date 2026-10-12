@@ -1,0 +1,53 @@
+#!/bin/bash
+# Boots one valkv-apg instance: reads the gateway's secret, then runs the
+# ${role} container. Rendered by Terraform.
+set -euo pipefail
+
+dnf install -y docker jq
+systemctl enable --now docker
+
+secret=$(aws secretsmanager get-secret-value --region "${region}" --secret-id "${secret_arn}" --query SecretString --output text)
+get() { echo "$secret" | jq -r ".$1"; }
+
+token=$(curl -sS -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 60")
+instance_id=$(curl -sS -H "X-aws-ec2-metadata-token: $token" http://169.254.169.254/latest/meta-data/instance-id)
+
+# Secrets go to a file only root can read, never onto a command line.
+install -d -m 0700 /etc/valkv-apg
+umask 077
+%{ if role == "admin" ~}
+cat > /etc/valkv-apg/env <<EOF
+APG_DATABASE_URL=$(get database_url)
+APG_SECRET_KEY=$(get secret_key)
+APG_BOOTSTRAP_ADMIN_TOKEN=$(get admin_token)
+APG_BOOTSTRAP_NODE_TOKEN=$(get node_token)
+APG_ADMIN_LISTEN=0.0.0.0:9000
+EOF
+docker run -d --name valkv-apg-admin --restart always \
+  --env-file /etc/valkv-apg/env -p 9000:9000 \
+  --log-driver awslogs --log-opt awslogs-region="${region}" --log-opt awslogs-group="${log_group}" --log-opt awslogs-stream="admin/$instance_id" \
+  "${image}"
+%{ else ~}
+# The node's cache: safe to lose, kept on the instance.
+install -d -m 0750 -o 10001 -g 10001 /data/valkv-apg
+cat > /etc/valkv-apg/env <<EOF
+APG_CONFIG_SOURCE=api_poll
+APG_CONFIG_URL=${admin_url}/dp
+APG_NODE_ID=$instance_id
+APG_NODE_TOKEN=$(get node_token)
+APG_SECRET_KEY=$(get secret_key)
+APG_REGION=${region}
+APG_LISTEN_MGMT=0.0.0.0:9100
+%{ if acme_email != "" ~}
+APG_ACME_EMAIL=${acme_email}
+%{ endif ~}
+%{ for name, value in extra_env ~}
+${name}=${value}
+%{ endfor ~}
+EOF
+docker run -d --name valkv-apg --restart always \
+  --env-file /etc/valkv-apg/env -p 8443:8443 -p 8080:8080 -p 9100:9100 \
+  -v /data/valkv-apg:/var/lib/apg --ulimit nofile=1048576:1048576 \
+  --log-driver awslogs --log-opt awslogs-region="${region}" --log-opt awslogs-group="${log_group}" --log-opt awslogs-stream="node/$instance_id" \
+  "${image}"
+%{ endif ~}

@@ -1,0 +1,15 @@
+[book]
+title = "valkv-apg"
+description = "An open-source API gateway for multi-tenant platforms"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/VALKV-LABS/valkv-apg"
+edit-url-template = "https://github.com/VALKV-LABS/valkv-apg/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"

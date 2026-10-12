@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/flag.json",
+  "title": "Flag",
+  "description": "A global runtime switch (spec §4.8). An unknown flag reads as enabled.",
+  "type": "object",
+  "required": ["name", "enabled"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^(usage_metering|active_health_checks|circuit_breaker|access_log|plugin_(ip_restriction|cors|request_size_limit|mtls_auth|jwt_auth|key_auth|basic_auth|forward_auth|acl|rate_limit|quota|bandwidth_limit|http_callout|wasm|redirect|static_response|request_transformer|response_cache|response_transformer|compression|access_log))$"
+    },
+    "enabled": { "type": "boolean" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  }
+}

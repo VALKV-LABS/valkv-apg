@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/acl.json",
+  "title": "acl",
+  "description": "Allows or denies authenticated consumers by group. deny wins (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "allow": { "description": "When not empty, only consumers in one of these groups pass.", "type": "array", "uniqueItems": true, "maxItems": 256, "default": [], "items": { "$ref": "../common.json#/$defs/name" } },
+    "deny": { "type": "array", "uniqueItems": true, "maxItems": 256, "default": [], "items": { "$ref": "../common.json#/$defs/name" } }
+  }
+}

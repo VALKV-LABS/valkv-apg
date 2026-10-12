@@ -1,0 +1,11 @@
+apiVersion: v2
+name: valkv-apg
+description: An API gateway. Nodes that route traffic, and the control plane that configures them.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/valkv-labs/valkv-apg
+sources:
+  - https://github.com/valkv-labs/valkv-apg
+keywords: [api-gateway, ingress, proxy]
+license: Apache-2.0

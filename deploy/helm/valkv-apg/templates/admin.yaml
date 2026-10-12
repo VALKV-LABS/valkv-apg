@@ -1,0 +1,107 @@
+{{- $tag := default .Chart.AppVersion .Values.image.admin.tag -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apg.fullname" . }}-admin
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  replicas: {{ .Values.admin.replicas }}
+  selector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: admin
+  template:
+    metadata:
+      labels:
+        {{- include "apg.selector" . | nindent 8 }}
+        app.kubernetes.io/component: admin
+      {{- with .Values.admin.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "apg.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: admin
+          image: "{{ .Values.image.admin.repository }}:{{ $tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: [ALL] }
+          env:
+            - name: APG_DATABASE_URL
+              valueFrom: { secretKeyRef: { name: {{ include "apg.secretName" . }}, key: database-url } }
+            - name: APG_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ include "apg.secretName" . }}, key: secret-key } }
+            - name: APG_BOOTSTRAP_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ include "apg.secretName" . }}, key: admin-token } }
+            - name: APG_BOOTSTRAP_NODE_TOKEN
+              valueFrom: { secretKeyRef: { name: {{ include "apg.secretName" . }}, key: node-token } }
+            - name: APG_ADMIN_LISTEN
+              value: "0.0.0.0:9000"
+            {{- range $name, $value := .Values.admin.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            - { name: http, containerPort: 9000 }
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.admin.resources | nindent 12 }}
+      {{- with .Values.admin.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.admin.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.admin.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "apg.fullname" . }}-admin
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+spec:
+  type: {{ .Values.admin.service.type }}
+  selector:
+    {{- include "apg.selector" . | nindent 4 }}
+    app.kubernetes.io/component: admin
+  ports:
+    - { name: http, port: {{ .Values.admin.service.port }}, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "apg.fullname" . }}-admin
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: admin

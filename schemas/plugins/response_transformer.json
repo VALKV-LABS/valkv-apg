@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/response_transformer.json",
+  "title": "response_transformer",
+  "description": "Changes headers and JSON body fields of the upstream's response. Operations run in the order rename, remove, set, add. Values are templates (spec §9.4, §9.5).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "headers": { "$ref": "request_transformer.json#/$defs/ops" },
+    "body": { "$ref": "request_transformer.json#/$defs/bodyOps" },
+    "max_body_bytes": { "description": "A larger body passes through unchanged.", "type": "integer", "minimum": 0, "maximum": 16777216, "default": 1048576 }
+  }
+}

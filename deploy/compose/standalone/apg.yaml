@@ -1,0 +1,13 @@
+# A complete gateway in one file: no database, no control plane.
+# Start it with:  docker compose -f deploy/compose/standalone.yml up
+version: 1
+
+services:
+  - name: echo
+    backends:
+      - target: "echo:8080"
+
+routes:
+  - name: everything
+    service: echo
+    paths: [/]

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/mtls_auth.json",
+  "title": "mtls_auth",
+  "description": "Authenticates a consumer by client certificate. Revocation is not checked (spec §9.4).",
+  "type": "object",
+  "required": ["ca_certificates"],
+  "additionalProperties": false,
+  "properties": {
+    "ca_certificates": { "description": "CA certificates a client's chain must lead to, by name or id.", "type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": { "$ref": "../common.json#/$defs/ref" } },
+    "consumer_by": { "description": "Which value of the certificate is matched against mtls credentials. fingerprint is the SHA-256 of the certificate, lower-case hex.", "enum": ["san_dns", "san_uri", "subject_cn", "fingerprint"], "default": "san_dns" },
+    "skip_consumer_lookup": { "description": "Accept any certificate from a trusted CA without naming a consumer.", "type": "boolean", "default": false },
+    "anonymous": { "description": "A consumer name to run as when no certificate is presented.", "$ref": "../common.json#/$defs/name" }
+  }
+}

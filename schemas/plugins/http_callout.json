@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/http_callout.json",
+  "title": "http_callout",
+  "description": "Custom logic in any language: the node describes the request to a service (callout-request.json) and acts on its answer (callout-response.json) (spec §9.4).",
+  "type": "object",
+  "required": ["url"],
+  "additionalProperties": false,
+  "properties": {
+    "url": { "type": "string", "pattern": "^https?://", "maxLength": 2048 },
+    "phases": { "type": "array", "minItems": 1, "uniqueItems": true, "default": ["request"], "items": { "enum": ["request", "response"] } },
+    "timeout_ms": { "type": "integer", "minimum": 10, "maximum": 60000, "default": 500 },
+    "fail_open": { "description": "When the service cannot be asked: true carries on as if it had said continue, false answers 500.", "type": "boolean", "default": false },
+    "include_headers": { "description": "Headers shown to the service. Empty means all except Authorization and Cookie.", "type": "array", "maxItems": 64, "uniqueItems": true, "default": [],
+                         "items": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" } },
+    "include_body_bytes": { "description": "How much of the request body to show the service.", "type": "integer", "minimum": 0, "maximum": 1048576, "default": 0 },
+    "secret": { "description": "Signs each call: X-Apg-Signature: t=<unix>,v1=<hmac-sha256 of \"<t>.<body>\">.", "x-apg-secret": true, "$ref": "../common.json#/$defs/secretValue" }
+  }
+}

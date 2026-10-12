@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members  = ["crates/apg-core", "crates/apg-plugin-sdk", "crates/apg-proxy"]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2024"
+license      = "Apache-2.0"
+repository   = "https://github.com/valkv-labs/valkv-apg"
+rust-version = "1.92"
+
+[workspace.dependencies]
+apg-core       = { path = "crates/apg-core" }
+apg-plugin-sdk = { path = "crates/apg-plugin-sdk" }
+
+anyhow     = "1"
+thiserror  = "2"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono     = { version = "0.4", features = ["serde"] }
+bytes      = "1"
+sha2       = "0.10"
+hex        = "0.4"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1

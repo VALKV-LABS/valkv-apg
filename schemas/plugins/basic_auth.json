@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/basic_auth.json",
+  "title": "basic_auth",
+  "description": "Authenticates a consumer by user name and password (spec §9.4, §10).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "realm": { "type": "string", "pattern": "^[A-Za-z0-9 _.-]{1,128}$", "default": "api" },
+    "hide_credentials": { "description": "Remove the Authorization header before the request is forwarded.", "type": "boolean", "default": true },
+    "anonymous": { "description": "A consumer name to run as when no credentials are presented.", "$ref": "../common.json#/$defs/name" }
+  }
+}

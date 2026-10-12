@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/rate_limit.json",
+  "title": "rate_limit",
+  "description": "Token-bucket request rate limit (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "per_second": { "description": "Sustained rate. Fractions are allowed: 0.5 is 30 per minute.", "type": "number", "exclusiveMinimum": 0, "default": 100 },
+    "burst": { "description": "Bucket size.", "type": "number", "minimum": 1, "default": 200 },
+    "scope": { "$ref": "../common.json#/$defs/limitScope", "default": "workspace" },
+    "store": { "enum": ["local", "redis"], "default": "local" },
+    "fail_open": { "description": "On a Redis error, fall back to the local bucket.", "type": "boolean", "default": true },
+    "response_headers": { "type": "boolean", "default": true }
+  }
+}

@@ -1,0 +1,119 @@
+{{- $tag := default .Chart.AppVersion .Values.image.node.tag -}}
+apiVersion: apps/v1
+kind: {{ .Values.node.kind }}
+metadata:
+  name: {{ include "apg.fullname" . }}-node
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+spec:
+  {{- if and (eq .Values.node.kind "Deployment") (not .Values.node.autoscaling.enabled) }}
+  replicas: {{ .Values.node.replicas }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: node
+      apg/track: stable
+  {{- if eq .Values.node.kind "Deployment" }}
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 25% }
+  {{- end }}
+  template:
+    {{- include "apg.nodePod" (dict "root" . "track" "stable" "tag" $tag) | nindent 4 }}
+---
+{{- if .Values.canary.enabled }}
+# The canary track: the same pods on another image tag, behind the same
+# Service. Promote by setting image.node.tag to the canary's and disabling this.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apg.fullname" . }}-node-canary
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+spec:
+  replicas: {{ .Values.canary.replicas }}
+  selector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: node
+      apg/track: canary
+  template:
+    {{- include "apg.nodePod" (dict "root" . "track" "canary" "tag" (required "canary.image.tag is required when canary.enabled is true" .Values.canary.image.tag)) | nindent 4 }}
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "apg.fullname" . }}-node
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node
+  {{- with .Values.node.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.node.service.type }}
+  {{- if ne .Values.node.service.type "ClusterIP" }}
+  externalTrafficPolicy: {{ .Values.node.service.externalTrafficPolicy }}
+  {{- end }}
+  # Both tracks: the selector leaves the track label out on purpose.
+  selector:
+    {{- include "apg.selector" . | nindent 4 }}
+    app.kubernetes.io/component: node
+  ports:
+    - { name: https, port: {{ .Values.node.service.httpsPort }}, targetPort: https }
+    - { name: http, port: {{ .Values.node.service.httpPort }}, targetPort: http }
+---
+# The management port, for probes and scrapers inside the cluster only. It is
+# never on the public Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "apg.fullname" . }}-node-mgmt
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+    app.kubernetes.io/component: node-mgmt
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "apg.selector" . | nindent 4 }}
+    app.kubernetes.io/component: node
+  ports:
+    - { name: mgmt, port: 9100, targetPort: mgmt }
+{{- if and .Values.node.autoscaling.enabled (eq .Values.node.kind "Deployment") }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "apg.fullname" . }}-node
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: {{ include "apg.fullname" . }}-node }
+  minReplicas: {{ .Values.node.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.node.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: {{ .Values.node.autoscaling.targetCPUUtilizationPercentage }} }
+{{- end }}
+{{- if .Values.node.podDisruptionBudget.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "apg.fullname" . }}-node
+  labels:
+    {{- include "apg.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: {{ .Values.node.podDisruptionBudget.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "apg.selector" . | nindent 6 }}
+      app.kubernetes.io/component: node
+{{- end }}

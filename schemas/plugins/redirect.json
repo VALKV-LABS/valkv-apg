@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/redirect.json",
+  "title": "redirect",
+  "description": "Answers with a redirect. Parts left out are taken from the request (spec §9.4).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "status": { "enum": [301, 302, 307, 308], "default": 308 },
+    "scheme": { "enum": ["http", "https"] },
+    "host": { "$ref": "../common.json#/$defs/hostname" },
+    "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+    "path": { "description": "A template (spec §9.5).", "type": "string", "minLength": 1, "maxLength": 2048 },
+    "preserve_query": { "type": "boolean", "default": true }
+  }
+}

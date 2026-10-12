@@ -1,0 +1,60 @@
+## When to use it
+
+When the decision belongs to a service you already run: a session store, a permissions service. The gateway asks it for every request and acts on the answer. Any 2xx lets the request through; anything else is returned to the client as it is.
+
+## Examples
+
+Ask an authentication service, and pass the user it names on to the upstream:
+
+```yaml
+version: 1
+services:
+  - name: app
+    backends:
+      - target: "10.0.0.11:8080"
+routes:
+  - name: app
+    service: app
+    paths: [/app]
+    plugins:
+      - type: forward_auth
+        config:
+          url: https://auth.example.com/verify
+          response_headers: [X-User, X-Roles]
+```
+
+Remember an allowing answer for a minute, per session cookie and tenant, and let requests through if the service is down:
+
+```yaml
+version: 1
+services:
+  - name: docs
+    backends:
+      - target: "10.0.0.12:8080"
+routes:
+  - name: docs
+    service: docs
+    paths: [/docs]
+    plugins:
+      - type: forward_auth
+        config:
+          url: https://auth.example.com/verify
+          request_headers: [Cookie, X-Tenant]
+          cache_secs: 60
+          cache_key_headers: [Cookie, X-Tenant]
+          timeout_ms: 500
+          fail_open: true
+```
+
+## What the service is sent
+
+A request with the listed `request_headers` of the original, plus `X-Forwarded-Method`, `X-Forwarded-Host`, `X-Forwarded-Uri` and `X-Forwarded-For`. The body is not sent.
+
+## What clients see
+
+- The service's own status, headers and body when it refuses.
+- `503 AUTH_UNAVAILABLE` when it cannot be reached or does not answer within `timeout_ms`, unless `fail_open` is true.
+
+## Goes well with
+
+`cache_secs` when the service is slower than your traffic allows. Only allowing answers are remembered; choose `cache_key_headers` so that two callers who must be told apart never share an entry.

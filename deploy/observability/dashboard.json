@@ -1,0 +1,104 @@
+{
+  "title": "valkv-apg nodes",
+  "uid": "valkv-apg-nodes",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      { "name": "datasource", "type": "datasource", "query": "prometheus" },
+      { "name": "instance", "type": "query", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "query": "label_values(apg_build_info, instance)", "includeAll": true, "multi": true, "refresh": 2 },
+      { "name": "route", "type": "query", "datasource": { "type": "prometheus", "uid": "${datasource}" }, "query": "label_values(apg_requests_total, route)", "includeAll": true, "multi": true, "refresh": 2 }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1, "type": "timeseries", "title": "Requests per second, by status class", "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [{ "expr": "sum by (status_class) (rate(apg_requests_total{instance=~\"$instance\", route=~\"$route\"}[1m]))", "legendFormat": "{{status_class}}" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Share of requests ending in 5xx", "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 } },
+      "targets": [{ "expr": "sum(rate(apg_requests_total{instance=~\"$instance\", route=~\"$route\", status_class=\"5xx\"}[5m])) / clamp_min(sum(rate(apg_requests_total{instance=~\"$instance\", route=~\"$route\"}[5m])), 1)", "legendFormat": "5xx ratio" }]
+    },
+    {
+      "id": 3, "type": "timeseries", "title": "Request duration (median, p95, p99)", "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le) (rate(apg_request_duration_seconds_bucket{instance=~\"$instance\", route=~\"$route\"}[5m])))", "legendFormat": "median" },
+        { "expr": "histogram_quantile(0.95, sum by (le) (rate(apg_request_duration_seconds_bucket{instance=~\"$instance\", route=~\"$route\"}[5m])))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, sum by (le) (rate(apg_request_duration_seconds_bucket{instance=~\"$instance\", route=~\"$route\"}[5m])))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Time spent in the upstream (p95), by service", "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum by (le, service) (rate(apg_upstream_duration_seconds_bucket{instance=~\"$instance\"}[5m])))", "legendFormat": "{{service}}" }]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Busiest routes (requests per second)", "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [{ "expr": "topk(10, sum by (route) (rate(apg_requests_total{instance=~\"$instance\"}[5m])))", "legendFormat": "{{route}}" }]
+    },
+    {
+      "id": 6, "type": "timeseries", "title": "Responses the gateway produced itself, by error code", "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [{ "expr": "sum by (code) (rate(apg_gateway_errors_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{code}}" }]
+    },
+    {
+      "id": 7, "type": "stat", "title": "Nodes without configuration", "gridPos": { "x": 0, "y": 24, "w": 6, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } },
+      "targets": [{ "expr": "count(apg_config_converged == 0) or vector(0)" }]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Seconds since each node heard from its config source", "gridPos": { "x": 6, "y": 24, "w": 9, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "s" } },
+      "targets": [{ "expr": "apg_config_source_age_seconds{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Configuration position applied, by node", "gridPos": { "x": 15, "y": 24, "w": 9, "h": 5 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "apg_config_applied_seq{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
+    },
+    {
+      "id": 10, "type": "table", "title": "Backends failing their health check or with an open circuit", "gridPos": { "x": 0, "y": 29, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        { "expr": "apg_backend_healthy{instance=~\"$instance\"} == 0", "format": "table", "instant": true },
+        { "expr": "apg_backend_circuit_open{instance=~\"$instance\"} == 1", "format": "table", "instant": true }
+      ]
+    },
+    {
+      "id": 11, "type": "timeseries", "title": "Certificates expiring soon", "gridPos": { "x": 12, "y": 29, "w": 6, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "max by (within) (apg_certs_expiring{instance=~\"$instance\"})", "legendFormat": "within {{within}}" }]
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Usage windows waiting to be delivered", "gridPos": { "x": 18, "y": 29, "w": 6, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [{ "expr": "apg_usage_windows_pending{instance=~\"$instance\"}", "legendFormat": "{{instance}}" }]
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Requests refused by a limit, by type", "gridPos": { "x": 0, "y": 36, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [{ "expr": "sum by (type) (rate(apg_limited_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{type}}" }]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "Response cache results", "gridPos": { "x": 12, "y": 36, "w": 12, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "targets": [{ "expr": "sum by (result) (rate(apg_cache_requests_total{instance=~\"$instance\"}[5m]))", "legendFormat": "{{result}}" }]
+    }
+  ]
+}

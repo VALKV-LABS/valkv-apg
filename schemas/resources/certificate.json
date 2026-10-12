@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/certificate.json",
+  "title": "Certificate",
+  "description": "A TLS certificate and its private key (spec §4.4). The key is write-only.",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "cert_pem": { "description": "Leaf certificate followed by its chain.", "type": "string", "maxLength": 65536 },
+    "key_pem": { "description": "Write-only. Stored encrypted. Never returned.", "type": "string", "writeOnly": true },
+    "cert_file": { "description": "File mode only: path the node reads the certificate from.", "type": "string" },
+    "key_file": { "description": "File mode only: path the node reads the key from.", "type": "string" },
+    "hosts": { "type": "array", "items": { "type": "string" }, "readOnly": true },
+    "not_before": { "$ref": "../common.json#/$defs/timestamp", "readOnly": true },
+    "not_after": { "$ref": "../common.json#/$defs/timestamp", "readOnly": true },
+    "issuer": { "type": "string", "readOnly": true },
+    "fingerprint_sha256": { "type": "string", "readOnly": true },
+    "source": { "enum": ["acme", "manual"], "readOnly": true },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  },
+  "oneOf": [
+    { "description": "key_pem may be omitted only when updating a certificate whose cert_pem is unchanged.", "required": ["cert_pem"] },
+    { "required": ["cert_file", "key_file"] }
+  ]
+}

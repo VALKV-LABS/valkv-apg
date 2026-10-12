@@ -1,0 +1,80 @@
+# Prometheus alert rules for valkv-apg (spec §12.5).
+#
+# Load with `rule_files:` in prometheus.yml. Thresholds are starting points;
+# the ones that matter most are the first two, because a node that cannot
+# reach its configuration keeps serving and so gives no other sign.
+groups:
+  - name: valkv-apg-node
+    rules:
+      - alert: ApgConfigSourceStale
+        expr: apg_config_source_age_seconds > 300
+        for: 1m
+        labels: { severity: warning }
+        annotations:
+          summary: "Node {{ $labels.instance }} has not heard from its config source for 5 minutes"
+          description: "The node keeps serving its last configuration. Changes do not reach it. Check the control plane and the network between them."
+
+      - alert: ApgNodeNeverConverged
+        expr: apg_config_converged == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "Node {{ $labels.instance }} has no configuration"
+          description: "The node started and has never applied a complete configuration, so it is not ready and serves nothing."
+
+      - alert: ApgChangelogApplyErrors
+        expr: increase(apg_changelog_errors_total[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Node {{ $labels.instance }} skipped configuration changes ({{ $labels.kind }})"
+          description: "A change could not be used and was skipped. The node's configuration may differ from the control plane's."
+
+      - alert: ApgHighErrorRatio
+        expr: |
+          sum by (instance) (rate(apg_requests_total{status_class="5xx"}[5m]))
+            / clamp_min(sum by (instance) (rate(apg_requests_total[5m])), 1) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "More than 5% of requests through {{ $labels.instance }} end in 5xx"
+
+      - alert: ApgCertificateExpiring
+        expr: apg_certs_expiring{within="14d"} > 0
+        for: 1h
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $value }} certificate(s) served by {{ $labels.instance }} expire within 14 days"
+          description: "ACME certificates renew 30 days ahead, so this means renewal is failing or the certificate was uploaded by hand."
+
+      - alert: ApgAcmeFailures
+        expr: increase(apg_acme_failures_total[1h]) > 3
+        labels: { severity: warning }
+        annotations:
+          summary: "Certificate requests from {{ $labels.instance }} keep failing at step {{ $labels.reason }}"
+
+      - alert: ApgUsageWindowsDropped
+        expr: increase(apg_usage_windows_dropped_total[1h]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "Node {{ $labels.instance }} gave up on usage it could not deliver for a day"
+          description: "Usage for those windows is lost. Check why the control plane does not accept usage reports."
+
+      - alert: ApgUsageNotDelivered
+        expr: apg_usage_windows_pending > 30
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: "Node {{ $labels.instance }} is holding {{ $value }} undelivered usage windows"
+
+      - alert: ApgBackendUnhealthy
+        expr: apg_backend_healthy == 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "Backend {{ $labels.backend }} of service {{ $labels.service }} fails its health check"
+
+      - alert: ApgAccessLogDropping
+        expr: increase(apg_access_log_dropped_total[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: "Node {{ $labels.instance }} is dropping access log lines: the sink cannot keep up"

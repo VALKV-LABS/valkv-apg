@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/resources/route.json",
+  "title": "Route",
+  "description": "Match predicates that send a request to a service (spec §4.6, §6.3).",
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": false,
+  "properties": {
+    "id": { "$ref": "../common.json#/$defs/id" },
+    "workspace_id": { "type": "string" },
+    "name": { "$ref": "../common.json#/$defs/name" },
+    "service": { "$ref": "../common.json#/$defs/ref" },
+    "split": {
+      "type": "array", "minItems": 2, "maxItems": 16,
+      "items": {
+        "type": "object", "required": ["service", "weight"], "additionalProperties": false,
+        "properties": {
+          "service": { "$ref": "../common.json#/$defs/ref" },
+          "weight": { "type": "integer", "minimum": 0, "maximum": 1000 }
+        }
+      }
+    },
+    "split_key": { "$ref": "../common.json#/$defs/keySelector" },
+    "hosts": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "../common.json#/$defs/hostname" } },
+    "paths": {
+      "type": "array", "maxItems": 64,
+      "items": {
+        "oneOf": [
+          { "description": "Shorthand for a prefix match.", "type": "string", "pattern": "^/" },
+          { "type": "object", "required": ["type", "value"], "additionalProperties": false,
+            "properties": { "type": { "enum": ["prefix", "exact", "regex"] }, "value": { "type": "string", "minLength": 1, "maxLength": 1024 } } }
+        ]
+      }
+    },
+    "methods": { "type": "array", "uniqueItems": true, "items": { "$ref": "../common.json#/$defs/httpMethod" } },
+    "headers": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/predicate" } },
+    "query": { "type": "array", "maxItems": 64, "items": { "$ref": "#/$defs/predicate" } },
+    "priority": { "type": "integer", "minimum": -1000000, "maximum": 1000000, "default": 0 },
+    "strip_path": { "type": "boolean", "default": false },
+    "rewrite": {
+      "oneOf": [
+        { "type": "object", "required": ["path"], "additionalProperties": false, "properties": { "path": { "type": "string", "pattern": "^/" } } },
+        { "type": "object", "required": ["prefix"], "additionalProperties": false, "properties": { "prefix": { "type": "string", "pattern": "^/" } } },
+        { "type": "object", "required": ["regex", "replacement"], "additionalProperties": false,
+          "properties": { "regex": { "type": "string", "minLength": 1 }, "replacement": { "type": "string" } } }
+      ]
+    },
+    "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+    "idle_timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 86400000, "default": 300000 },
+    "error_responses": { "$ref": "../common.json#/$defs/errorResponses" },
+    "enabled": { "type": "boolean", "default": true },
+    "cache_epoch": { "type": "integer", "minimum": 0, "readOnly": true },
+    "plugins": { "description": "Declarative config only: plugin instances attached to this route.", "type": "array", "items": { "$ref": "plugin.json#/$defs/nested" } },
+    "labels": { "$ref": "../common.json#/$defs/labels" },
+    "metadata": { "$ref": "../common.json#/$defs/metadata" },
+    "revision": { "$ref": "../common.json#/$defs/revision" },
+    "created_at": { "$ref": "../common.json#/$defs/timestamp" },
+    "updated_at": { "$ref": "../common.json#/$defs/timestamp" }
+  },
+  "oneOf": [
+    { "required": ["service"], "not": { "required": ["split"] } },
+    { "required": ["split"], "not": { "required": ["service"] } }
+  ],
+  "$defs": {
+    "predicate": {
+      "type": "object", "required": ["name"], "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "type": { "enum": ["exact", "regex", "present"], "default": "exact" },
+        "value": { "type": "string", "maxLength": 1024 }
+      },
+      "if": { "properties": { "type": { "const": "present" } }, "required": ["type"] },
+      "then": { "not": { "required": ["value"] } },
+      "else": { "required": ["value"] }
+    }
+  }
+}

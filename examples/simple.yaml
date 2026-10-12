@@ -1,0 +1,41 @@
+# The smallest useful gateway: one upstream, one route, an API key and a rate limit.
+#
+#   export APG_SECRET_MOBILE_KEY=choose-a-long-random-key
+#   valkv-apg validate --config examples/simple.yaml
+#   APG_CONFIG_FILE=examples/simple.yaml APG_HTTP_MODE=proxy valkv-apg
+#   curl -H "X-Api-Key: $APG_SECRET_MOBILE_KEY" http://localhost:8080/orders
+#
+# The same file works with a control plane: apgctl apply -f examples/simple.yaml
+version: 1
+
+services:
+  - name: orders
+    backends:
+      # host:port as the gateway reaches it. Two backends are balanced round robin.
+      - target: "10.0.0.1:8080"
+      - target: "10.0.0.2:8080"
+    # Every gateway checks each backend, so a dead one is skipped before a request finds out.
+    health_check:
+      active: { type: tcp }
+
+routes:
+  - name: orders-api
+    service: orders
+    paths: [/orders]
+    plugins:
+      # Callers must present a key ...
+      - type: key_auth
+      # ... and each caller gets 50 requests a second, with bursts of 100.
+      - type: rate_limit
+        config:
+          per_second: 50
+          burst: 100
+          scope: consumer
+
+consumers:
+  - name: mobile-app
+    credentials:
+      - name: main
+        type: key
+        # Read from the gateway's environment, so the key is not in this file.
+        key: { $env: APG_SECRET_MOBILE_KEY }

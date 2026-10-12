@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/apg-config.json",
+  "title": "apg.yaml",
+  "description": "Declarative configuration (spec §14.1). Loaded by the node in file mode and by apgctl in database mode.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": { "const": 1 },
+    "workspace": { "description": "The workspace this document targets. Default: default.", "type": "string", "default": "default" },
+    "settings": { "$ref": "resources/settings.json" },
+    "flags": { "type": "object", "additionalProperties": { "type": "boolean" } },
+    "domains": { "type": "array", "items": { "$ref": "resources/domain.json" } },
+    "certificates": { "type": "array", "items": { "$ref": "resources/certificate.json" } },
+    "ca_certificates": { "type": "array", "items": { "$ref": "resources/ca-certificate.json" } },
+    "services": { "type": "array", "items": { "$ref": "resources/service.json" } },
+    "routes": { "type": "array", "items": { "$ref": "resources/route.json" } },
+    "consumers": { "type": "array", "items": { "$ref": "resources/consumer.json" } },
+    "plugins": { "description": "Instances at global or workspace scope, or pointing at a service or route by name.", "type": "array", "items": { "$ref": "resources/plugin.json" } },
+    "workspaces": {
+      "description": "Several workspaces in one document. File mode, or an admin caller (DEC-4).",
+      "type": "array",
+      "items": {
+        "type": "object", "required": ["name"], "additionalProperties": false,
+        "properties": {
+          "name": { "$ref": "common.json#/$defs/name" },
+          "id": { "$ref": "common.json#/$defs/id" },
+          "slug": { "type": "string" },
+          "status": { "enum": ["active", "suspended"] },
+          "limits": { "type": "object" },
+          "labels": { "$ref": "common.json#/$defs/labels" },
+          "metadata": { "$ref": "common.json#/$defs/metadata" },
+          "domains": { "type": "array", "items": { "$ref": "resources/domain.json" } },
+          "certificates": { "type": "array", "items": { "$ref": "resources/certificate.json" } },
+          "ca_certificates": { "type": "array", "items": { "$ref": "resources/ca-certificate.json" } },
+          "services": { "type": "array", "items": { "$ref": "resources/service.json" } },
+          "routes": { "type": "array", "items": { "$ref": "resources/route.json" } },
+          "consumers": { "type": "array", "items": { "$ref": "resources/consumer.json" } },
+          "plugins": { "type": "array", "items": { "$ref": "resources/plugin.json" } }
+        }
+      }
+    }
+  }
+}

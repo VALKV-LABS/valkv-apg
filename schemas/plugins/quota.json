@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/quota.json",
+  "title": "quota",
+  "description": "A request allowance per calendar hour, day or month, UTC (spec §9.4). Counted per node.",
+  "type": "object",
+  "required": ["limit"],
+  "additionalProperties": false,
+  "properties": {
+    "limit": { "description": "Requests allowed per window.", "type": "integer", "minimum": 1, "maximum": 1000000000000 },
+    "window": { "enum": ["hour", "day", "month"], "default": "hour" },
+    "scope": { "$ref": "../common.json#/$defs/limitScope", "default": "workspace" },
+    "store": { "enum": ["local", "redis"], "default": "local" },
+    "fail_open": { "description": "On a store error, let the request through.", "type": "boolean", "default": true }
+  }
+}

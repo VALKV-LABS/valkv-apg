@@ -1,0 +1,70 @@
+[package]
+name         = "apg-proxy"
+description  = "The valkv-apg node: listeners, routing, plugins, TLS and metering."
+version.workspace      = true
+edition.workspace      = true
+license.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+
+[lib]
+name = "apg_proxy"
+path = "src/lib.rs"
+
+[[bin]]
+name = "valkv-apg"
+path = "src/main.rs"
+
+[dependencies]
+apg-core.workspace       = true
+apg-plugin-sdk.workspace = true
+
+# Async
+tokio       = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Proxy engine
+pingora-core  = { version = "0.9", features = ["openssl"] }
+pingora-proxy = { version = "0.9", features = ["openssl"] }
+pingora-http  = "0.9"
+
+# Management listener
+hyper           = { version = "1", features = ["server", "http1"] }
+hyper-util      = { version = "0.1", features = ["tokio"] }
+http-body-util  = "0.1"
+
+# Client for the config API (api_poll source)
+reqwest = { version = "0.12", features = ["json", "native-tls"] }
+
+# Local config cache
+fjall = "2"
+
+# TLS: fallback certificate and reading names out of configured certificates
+rcgen       = "0.13"
+
+# Secrets, ACME signing and certificate requests. The same OpenSSL the proxy engine links.
+openssl = "0.10"
+argon2  = "0.5"
+base64  = "0.22"
+x509-parser = "0.16"
+
+http  = "1"
+uuid  = { version = "1", features = ["v7"] }
+arc-swap = "1"
+
+serde.workspace      = true
+serde_json.workspace = true
+bytes.workspace      = true
+
+dashmap     = "6"
+parking_lot = "0.12"
+
+anyhow.workspace    = true
+thiserror.workspace = true
+
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
+prometheus         = { version = "0.13", features = ["process"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/changelog-event.json",
+  "title": "Changelog event (contract version 2)",
+  "description": "The `data` column of one apg_changes row, and one line of a snapshot (spec §5.1). Nodes skip events they cannot decode (CFG-5), so new kinds and new fields inside `data` are backward compatible.",
+  "type": "object",
+  "required": ["v", "kind", "op", "id"],
+  "properties": {
+    "v": { "const": 2 },
+    "kind": {
+      "enum": ["workspace", "domain", "certificate", "ca_certificate", "service", "route", "plugin", "consumer",
+               "credential", "wasm_module", "flag", "setting", "acme_challenge"]
+    },
+    "op": { "enum": ["upsert", "delete"] },
+    "id": { "description": "Resource id. For flag and setting, the name. For acme_challenge, the token.", "type": "string", "minLength": 1 },
+    "workspace_id": { "type": "string" },
+    "revision": { "type": "integer", "minimum": 1 },
+    "data": { "type": "object" }
+  },
+  "allOf": [
+    { "if": { "properties": { "op": { "const": "upsert" } } }, "then": { "required": ["data", "revision"] } },
+    { "if": { "properties": { "op": { "const": "delete" } } }, "then": { "not": { "required": ["data"] } } },
+    { "if": { "properties": { "kind": { "enum": ["domain", "certificate", "ca_certificate", "service", "route", "plugin", "consumer", "credential", "wasm_module"] } } },
+      "then": { "required": ["workspace_id"] } },
+    { "if": { "properties": { "kind": { "const": "certificate" }, "op": { "const": "upsert" } } },
+      "then": { "properties": { "data": {
+        "required": ["cert_pem", "key_ciphertext"],
+        "not": { "anyOf": [{ "required": ["key_pem"] }, { "required": ["key"] }] } } } } },
+    { "if": { "properties": { "kind": { "const": "credential" }, "op": { "const": "upsert" } } },
+      "then": { "properties": { "data": {
+        "required": ["type", "consumer_id"],
+        "not": { "anyOf": [{ "required": ["key"] }, { "required": ["password"] }] } } } } },
+    { "if": { "properties": { "kind": { "const": "acme_challenge" }, "op": { "const": "upsert" } } },
+      "then": { "properties": { "data": { "required": ["token", "key_authorization", "expires_at"] } } } },
+    { "if": { "properties": { "kind": { "const": "flag" }, "op": { "const": "upsert" } } },
+      "then": { "properties": { "data": { "required": ["enabled"] } } } },
+    { "if": { "properties": { "kind": { "const": "setting" }, "op": { "const": "upsert" } } },
+      "then": { "properties": { "data": { "required": ["value"] } } } },
+    { "if": { "properties": { "kind": { "const": "wasm_module" }, "op": { "const": "upsert" } } },
+      "then": { "properties": { "data": { "required": ["sha256", "size_bytes"] } } } }
+  ]
+}
