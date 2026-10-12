@@ -55,7 +55,7 @@ Only if people other than you can write configuration.
 - [ ] Images are pulled by digest, or by an exact version tag, and their signature is checked:
 
   ```sh
-  cosign verify valkv-labs/valkv-apg:0.1.0 \
+  cosign verify valkvlabs/valkv-apg:0.1.0 \
     --certificate-identity-regexp 'https://github.com/VALKV-LABS/valkv-apg/' \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```

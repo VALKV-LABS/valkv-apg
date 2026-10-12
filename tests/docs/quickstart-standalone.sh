@@ -2,10 +2,10 @@
 # Runs the steps of docs/src/getting-started/standalone.md and of the key and
 # rate-limit page that follows it, so that the quickstart cannot rot (spec DOC-3).
 #
-#   APG_IMAGE=valkv-labs/valkv-apg:dev sh tests/docs/quickstart-standalone.sh
+#   APG_IMAGE=valkvlabs/valkv-apg:dev sh tests/docs/quickstart-standalone.sh
 set -eu
 
-image=${APG_IMAGE:-valkv-labs/valkv-apg:dev}
+image=${APG_IMAGE:-valkvlabs/valkv-apg:dev}
 net=apg-quickstart-$$
 work=$(mktemp -d)
 # mktemp makes the directory private to this user; the gateway in the

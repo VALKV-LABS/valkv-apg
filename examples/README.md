@@ -16,7 +16,7 @@ export APG_SECRET_MOBILE_KEY=choose-a-long-random-key
 docker run --rm -p 8080:8080 -p 8443:8443 \
   -v "$PWD/examples/simple.yaml:/etc/apg/apg.yaml:ro" \
   -e APG_HTTP_MODE=proxy -e APG_SECRET_MOBILE_KEY \
-  valkv-labs/valkv-apg
+  valkvlabs/valkv-apg
 ```
 
 With a control plane, the same file is applied through `apgctl`:
@@ -29,7 +29,7 @@ apgctl apply -f examples/simple.yaml
 To check a file without running anything:
 
 ```sh
-docker run --rm -v "$PWD/examples:/examples:ro" valkv-labs/valkv-apg validate --config /examples/simple.yaml
+docker run --rm -v "$PWD/examples:/examples:ro" valkvlabs/valkv-apg validate --config /examples/simple.yaml
 ```
 
 ## What to change

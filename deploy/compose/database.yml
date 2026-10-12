@@ -22,7 +22,7 @@ services:
       retries: 30
 
   admin:
-    image: valkv-labs/valkv-apg-admin:dev
+    image: valkvlabs/valkv-apg-admin:dev
     build:
       context: ../..
       dockerfile: admin/Dockerfile
@@ -104,7 +104,7 @@ services:
 
   # A node that polls the admin's config API. It holds no database connection.
   node:
-    image: valkv-labs/valkv-apg:dev
+    image: valkvlabs/valkv-apg:dev
     build:
       context: ../..
       dockerfile: crates/apg-proxy/Dockerfile
@@ -153,7 +153,7 @@ services:
   # A second node: default HTTP behaviour (redirect to HTTPS), a health path on
   # the traffic port, and the container network trusted as a proxy tier.
   node-redirect:
-    image: valkv-labs/valkv-apg:dev
+    image: valkvlabs/valkv-apg:dev
     environment:
       <<: *node-env
       APG_NODE_ID: node-redirect

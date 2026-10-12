@@ -18,12 +18,12 @@ variable "private_subnet_ids" {
 }
 
 variable "node_image" {
-  description = "Node image with its tag, for example valkv-labs/valkv-apg:0.1.0."
+  description = "Node image with its tag, for example valkvlabs/valkv-apg:0.1.0."
   type        = string
 }
 
 variable "admin_image" {
-  description = "Admin image with its tag, for example valkv-labs/valkv-apg-admin:0.1.0."
+  description = "Admin image with its tag, for example valkvlabs/valkv-apg-admin:0.1.0."
   type        = string
 }
 

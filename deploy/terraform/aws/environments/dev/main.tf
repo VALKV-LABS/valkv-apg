@@ -47,8 +47,8 @@ module "gateway" {
   vpc_id             = var.vpc_id
   public_subnet_ids  = var.public_subnet_ids
   private_subnet_ids = var.private_subnet_ids
-  node_image         = "valkv-labs/valkv-apg:${var.version_tag}"
-  admin_image        = "valkv-labs/valkv-apg-admin:${var.version_tag}"
+  node_image         = "valkvlabs/valkv-apg:${var.version_tag}"
+  admin_image        = "valkvlabs/valkv-apg-admin:${var.version_tag}"
 
   # Small and cheap; none of this is for production.
   node_instance_type     = "t4g.small"
