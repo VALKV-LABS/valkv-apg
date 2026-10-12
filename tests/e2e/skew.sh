@@ -9,7 +9,8 @@
 # Needs the Compose stack (`make up`).
 set -eu
 
-COMPOSE="docker compose -f deploy/compose/database.yml -p valkv-apg"
+# Another stack can be named with APG_COMPOSE (make prepush does).
+COMPOSE=${APG_COMPOSE:-"docker compose -f deploy/compose/database.yml -p valkv-apg"}
 TOKEN=apg_at_dev-only-admin-token-do-not-use
 SERVICE_ID=0193f2a0-5555-7000-8000-000000000001
 

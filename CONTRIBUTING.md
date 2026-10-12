@@ -13,6 +13,20 @@ make up && make integ && make down
 make e2e MODE=file
 ```
 
+Or all of what CI runs on a pull request, in one command:
+
+```sh
+make prepush   # about 20 minutes; starts its own containers and leaves a `make up` stack alone
+```
+
+To have that run before every `git push` from your clone, so that a push which would fail in CI fails on your machine first:
+
+```sh
+make hooks     # once per clone
+```
+
+`APG_SKIP_PREPUSH=1 git push` skips it for one push, for a change that touches no code.
+
 ## Rules that reviewers enforce
 
 1. **Schemas first.** A new field or resource starts in `schemas/`, with a fixture in `tests/fixtures/`. The Rust and the TypeScript side both validate against the same files.

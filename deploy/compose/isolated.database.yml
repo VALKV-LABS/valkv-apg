@@ -1,0 +1,10 @@
+# Used with database.yml by `make prepush`: the same stack with nothing
+# published on the host, under its own project name, so the tests can run
+# beside a development stack without touching its ports or its data.
+services:
+  admin:
+    ports: !reset []
+  echo:
+    ports: !reset []
+  node:
+    ports: !reset []

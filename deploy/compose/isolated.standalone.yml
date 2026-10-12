@@ -1,0 +1,7 @@
+# Used with standalone.yml by `make prepush`: nothing published on the host,
+# so the standalone suites can run beside a development stack.
+services:
+  echo:
+    ports: !reset []
+  node:
+    ports: !reset []

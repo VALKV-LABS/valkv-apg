@@ -10,7 +10,8 @@
 # `node` is the stable track and `node-redirect` the canary. Needs `make up`.
 set -eu
 
-COMPOSE="docker compose -f deploy/compose/database.yml -p valkv-apg"
+# Another stack can be named with APG_COMPOSE (make prepush does).
+COMPOSE=${APG_COMPOSE:-"docker compose -f deploy/compose/database.yml -p valkv-apg"}
 export MSYS_NO_PATHCONV=1
 
 $COMPOSE run --rm -w /repo/tests/canary e2e node rehearse.mjs

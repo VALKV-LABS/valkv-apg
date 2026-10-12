@@ -37,11 +37,18 @@ const host = (name) => `${name}.smoke.test`;
 // ── Plumbing ─────────────────────────────────────────────────────────────────
 
 async function admin(method, path, body) {
-  const res = await fetch(`${ADMIN}${path}`, {
+  const call = () => fetch(`${ADMIN}${path}`, {
     method,
     headers: { authorization: `Bearer ${TOKEN}`, ...(body !== undefined ? { "content-type": "application/json" } : {}) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+  let res = await call();
+  // The Admin API limits each caller's rate; wait and ask again, as it says to.
+  for (let tries = 0; res.status === 429 && tries < 30; tries++) {
+    await res.arrayBuffer();
+    await new Promise((r) => setTimeout(r, 250));
+    res = await call();
+  }
   const text = await res.text();
   let json;
   try { json = text ? JSON.parse(text) : undefined; } catch { json = undefined; }

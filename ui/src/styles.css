@@ -1,7 +1,7 @@
 /*
- * The console shares its design with the valkv customer portal: the same
- * tokens, shell (sidebar, top bar, content), cards, tables, buttons and tags,
- * so the two read as one product when the console is embedded (spec UI-6a).
+ * The console's design: tokens, shell (sidebar, top bar, content), cards,
+ * tables, buttons and tags, made to sit inside another product's pages when
+ * the console is embedded (spec UI-6a).
  * Dark is the base; [data-theme="light"] overrides the tokens.
  */
 

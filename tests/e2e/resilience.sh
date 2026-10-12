@@ -7,7 +7,8 @@
 # this script applies first.
 set -eu
 
-C="docker compose -f deploy/compose/database.yml -p valkv-apg"
+# Another stack can be named with APG_COMPOSE (make prepush does).
+C=${APG_COMPOSE:-"docker compose -f deploy/compose/database.yml -p valkv-apg"}
 suite() { # name, extra env...
   name="$1"; shift
   $C run --rm -e SUITE="$name" "$@" e2e

@@ -4,6 +4,8 @@
 #   make unit    Rust and TypeScript unit tests plus the shared fixtures (no services)
 #   make integ   integration and end-to-end tests against the running stack
 #   make down    stop the stack and remove containers, networks and volumes
+#   make prepush everything CI runs on a pull request, on its own containers
+#   make hooks   run `make prepush` before every git push from this clone
 
 SHELL := /bin/sh
 export DOCKER_BUILDKIT := 1
@@ -15,7 +17,29 @@ CLI_DOCKER   := cli/Dockerfile
 UI_DOCKER    := ui/Dockerfile
 MODE         ?= api_poll
 
-.PHONY: up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew e2e-security smoke canary-rehearsal docs docs-check docs-quickstart check-keys bench-propagation bench-scale bench-throughput lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+.PHONY: prepush hooks up down unit unit-rust unit-admin unit-cli unit-ui integ e2e e2e-resilience e2e-upgrade e2e-skew e2e-security smoke canary-rehearsal docs docs-check docs-quickstart check-keys bench-propagation bench-scale bench-throughput lint lint-rust lint-helm lint-terraform lint-debrand build logs ps help
+
+# What CI runs on a pull request (.github/workflows/ci.yml), in the same order
+# of cost: cheap checks first. The stacks it starts publish nothing on the host
+# and have their own project names, so a development stack started with
+# `make up` keeps running, with its data, while this runs.
+PREPUSH_DB   := docker compose -f deploy/compose/database.yml -f deploy/compose/isolated.database.yml -p apg-prepush
+PREPUSH_FILE := docker compose -f deploy/compose/standalone.yml -f deploy/compose/standalone.test.yml -f deploy/compose/isolated.standalone.yml -p apg-prepush-file --profile test
+
+prepush:
+	$(MAKE) lint-debrand lint-rust lint-helm lint-terraform
+	$(MAKE) unit check-keys
+	$(MAKE) build
+	$(MAKE) docs-check docs-quickstart e2e-upgrade
+	$(MAKE) e2e MODE=file STANDALONE='$(PREPUSH_FILE)'
+	$(PREPUSH_DB) up -d --wait
+	$(MAKE) integ e2e-resilience e2e-security e2e-skew smoke canary-rehearsal COMPOSE='$(PREPUSH_DB)'; status=$$?; $(PREPUSH_DB) down -v --remove-orphans; exit $$status
+	@echo "prepush ok: everything CI runs on a pull request passed here"
+
+# Once per clone. Git does not take hooks from a repository unless told to.
+hooks:
+	git config core.hooksPath .githooks
+	@echo "git push from this clone now runs 'make prepush' first. Skip once with APG_SKIP_PREPUSH=1."
 
 help:
 	@grep -E '^#   make' Makefile | sed 's/^#   //'
@@ -84,15 +108,15 @@ endif
 # Stops and starts containers to prove serving does not depend on the control
 # plane, and that a node resyncs when it must. Needs `make up` first.
 e2e-resilience:
-	sh tests/e2e/resilience.sh
+	APG_COMPOSE='$(COMPOSE)' sh tests/e2e/resilience.sh
 
 # Change events from a newer control plane must be stepped over, never fatal (spec PKG-2).
 e2e-skew:
-	sh tests/e2e/skew.sh
+	APG_COMPOSE='$(COMPOSE)' sh tests/e2e/skew.sh
 
 # Tenant isolation and the egress guard, then a search of every container's logs for secrets (spec SEC-4, SEC-7, SEC-8).
 e2e-security:
-	sh tests/e2e/security.sh
+	APG_COMPOSE='$(COMPOSE)' sh tests/e2e/security.sh
 
 # One request through every class of plugin, and a change seen on every node (spec PKG-6).
 # Against the Compose stack here; against any deployment with tests/smoke.sh.
@@ -101,7 +125,7 @@ smoke:
 
 # A canary stage that is promoted, one with injected errors that is rolled back, and the rollback itself.
 canary-rehearsal:
-	sh tests/canary/rehearse.sh
+	APG_COMPOSE='$(COMPOSE)' sh tests/canary/rehearse.sh
 
 # A new process takes over a running node's listeners; no request may fail
 # (spec PKG-7). Runs inside the node image, so it needs `make build` first.
