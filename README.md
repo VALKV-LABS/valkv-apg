@@ -39,14 +39,14 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 | Consumers and credentials (API keys, passwords, client certificates), stored and distributed as hashes | Working |
 | TLS with configured certificates, HTTP/2, HTTP to HTTPS redirect | Working |
 | Upstreams: weighted round robin, random, least connections and consistent hashing; active health checks and a circuit breaker; timeouts, route deadlines and retries; upstream TLS with private CAs; HTTP/2 upstreams; sticky traffic splits | Working, tested end to end |
-| Certificates from an ACME authority (HTTP-01, and DNS-01 through a webhook), issued by one node and served by all; renewal; private keys encrypted at rest and in transit between control plane and nodes | Working, tested end to end against a test authority |
+| Certificates from an ACME authority (HTTP-01, and DNS-01 through Cloudflare or a webhook), issued by one node and served by all; renewal; private keys encrypted at rest and in transit between control plane and nodes | Working, tested end to end against a test authority |
 | Usage metering by workspace, service, route and consumer, with hourly and daily rollups and a usage API | Working, tested end to end |
 | Observability: Prometheus metrics by route and service, JSON access log, trace-context propagation, a Grafana dashboard and alert rules | Working |
 | Packaging: images for amd64 and arm64, a Helm chart with a canary track, a systemd unit with zero-downtime binary upgrade, a Terraform reference for AWS, signed releases | Working; the chart and the Terraform reference are linted and validated, not applied by CI |
 | Configuration as files: `apgctl validate`, `diff`, `apply`, `sync`, `dump`; revisions, drift detection and rollback | Working, tested against a running control plane |
 | Admin console at `/ui/`: every resource, a route tester, usage, config review, audit log; light and dark themes; embeddable | Working, tested in a browser with an accessibility scan |
 | Single sign-on for the console with OpenID Connect (authorisation code with PKCE), roles and workspaces from a group claim | Working, tested against a stand-in identity provider |
-| DNS-01 through Cloudflare or Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook | Not built yet |
+| DNS-01 through Route 53 directly, WebAssembly plugins, a shared (Redis) store for limits, exporting trace spans, a usage webhook | Not built yet |
 
 ## Try it
 

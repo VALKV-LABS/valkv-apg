@@ -38,7 +38,16 @@ domains:
     tls: { mode: acme, challenge: dns01 }
 ```
 
-The gateway does not talk to DNS providers itself. It calls a small service of yours that does:
+The gateway has to put a TXT record in your DNS. If the zone is at Cloudflare it does that itself, with an API token allowed to edit DNS in the zone:
+
+```sh
+APG_ACME_DNS_PROVIDER=cloudflare
+APG_CLOUDFLARE_API_TOKEN=<token with Zone: DNS: Edit on the zone>
+```
+
+It finds the zone from the name, adds the record beside any that are there, and removes its own afterwards.
+
+For any other DNS host it calls a small service of yours that makes the change:
 
 ```sh
 APG_ACME_DNS_PROVIDER=webhook

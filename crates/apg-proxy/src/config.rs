@@ -16,7 +16,7 @@ pub const READ_VARIABLES: &[&str] = &[
     "APG_POLL_INTERVAL_MS", "APG_POLL_LIMIT", "APG_POLL_WAIT_MS", "APG_CONFIG_CLIENT_CERT", "APG_CONFIG_CLIENT_KEY",
     "APG_CONFIG_CLIENT_CA", "APG_DNS_REFRESH_SECS", "APG_BACKEND_ALLOW_CIDRS",
     "APG_SECRET_KEY", "APG_SECRET_KEY_FILE", "APG_SECRET_KEY_PREVIOUS", "APG_TLS_MIN_VERSION", "APG_ACME_EMAIL",
-    "APG_ACME_DIRECTORY_URL", "APG_ACME_DNS_PROVIDER", "APG_ACME_DNS_WEBHOOK_URL", "APG_ACME_DNS_WEBHOOK_SECRET",
+    "APG_ACME_DIRECTORY_URL", "APG_ACME_DNS_PROVIDER", "APG_CLOUDFLARE_API_TOKEN", "APG_ACME_DNS_WEBHOOK_URL", "APG_ACME_DNS_WEBHOOK_SECRET",
     "APG_ACME_DNS_PROPAGATION_SECS", "APG_ACME_INSECURE_DIRECTORY", "APG_TEMPLATE_ENV_ALLOW", "APG_CACHE_MEMORY_BYTES",
     "APG_USAGE_FLUSH_INTERVAL_SECS", "APG_USAGE_BY_CONSUMER", "APG_USAGE_SINK", "APG_METRICS_MAX_SERIES", "APG_METRICS_WORKSPACE_LABEL",
     "APG_LOG_REDACT_QUERY", "APG_OTLP_ENDPOINT", "APG_TRACE_SAMPLE_RATIO",
@@ -237,7 +237,8 @@ impl Config {
         if insecure_directory && !allow_test {
             anyhow::bail!("APG_ACME_INSECURE_DIRECTORY is a test mode; it needs APG_ALLOW_TEST_MODES=true");
         }
-        let dns_webhook = match get(env, "APG_ACME_DNS_PROVIDER") {
+        let propagation = std::time::Duration::from_secs(number("APG_ACME_DNS_PROPAGATION_SECS", 30, 0, 600)?);
+        let dns = match get(env, "APG_ACME_DNS_PROVIDER") {
             None => None,
             Some(provider) => match one_of("APG_ACME_DNS_PROVIDER", &provider, &["webhook", "cloudflare", "route53"])? {
                 "webhook" => {
@@ -245,17 +246,17 @@ impl Config {
                     if !(url.starts_with("https://") || url.starts_with("http://")) {
                         anyhow::bail!("APG_ACME_DNS_WEBHOOK_URL must start with http:// or https://; got '{url}'");
                     }
-                    Some(crate::acme::DnsWebhook {
-                        url,
-                        secret: get(env, "APG_ACME_DNS_WEBHOOK_SECRET"),
-                        propagation: std::time::Duration::from_secs(number("APG_ACME_DNS_PROPAGATION_SECS", 30, 0, 600)?),
-                    })
+                    Some(crate::acme::DnsProvider::Webhook(crate::acme::DnsWebhook { url, secret: get(env, "APG_ACME_DNS_WEBHOOK_SECRET"), propagation }))
+                }
+                "cloudflare" => {
+                    let token = get(env, "APG_CLOUDFLARE_API_TOKEN").ok_or_else(|| anyhow::anyhow!("APG_CLOUDFLARE_API_TOKEN is required when APG_ACME_DNS_PROVIDER=cloudflare"))?;
+                    Some(crate::acme::DnsProvider::Cloudflare(crate::acme::Cloudflare { token, api: crate::acme::CLOUDFLARE_API.to_string(), propagation }))
                 }
                 // Refused rather than accepted and ignored: a wildcard certificate that never arrives is hard to trace back to this line.
-                other => anyhow::bail!("APG_ACME_DNS_PROVIDER={other} is not available in this build yet; use 'webhook'"),
+                other => anyhow::bail!("APG_ACME_DNS_PROVIDER={other} is not available in this build yet; use 'cloudflare' or 'webhook'"),
             },
         };
-        let acme = crate::acme::Settings { email: get(env, "APG_ACME_EMAIL"), directory_url, insecure_directory, dns_webhook };
+        let acme = crate::acme::Settings { email: get(env, "APG_ACME_EMAIL"), directory_url, insecure_directory, dns };
 
         let usage_file = match get(env, "APG_USAGE_SINK").as_deref() {
             None | Some("none") => None,
@@ -415,7 +416,7 @@ mod tests {
     fn secrets_tls_version_and_acme_settings() {
         const KEY: &str = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=";
         let c = load(&[]).unwrap();
-        assert!(c.secrets.is_none() && !c.tls13_only && c.acme.email.is_none() && c.acme.dns_webhook.is_none());
+        assert!(c.secrets.is_none() && !c.tls13_only && c.acme.email.is_none() && c.acme.dns.is_none());
         assert_eq!(c.acme.directory_url, crate::acme::LETS_ENCRYPT);
 
         let c = load(&[("APG_SECRET_KEY", KEY), ("APG_TLS_MIN_VERSION", "1.3"), ("APG_ACME_EMAIL", "ops@example.com")]).unwrap();
@@ -429,11 +430,16 @@ mod tests {
         assert!(err(&[("APG_TLS_MIN_VERSION", "1.1")]).contains("APG_TLS_MIN_VERSION"));
         assert!(err(&[("APG_ACME_DIRECTORY_URL", "acme.example")]).contains("APG_ACME_DIRECTORY_URL"));
 
-        let hook = load(&[("APG_ACME_DNS_PROVIDER", "webhook"), ("APG_ACME_DNS_WEBHOOK_URL", "https://dns.example/hook"), ("APG_ACME_DNS_WEBHOOK_SECRET", "s")]).unwrap().acme.dns_webhook.unwrap();
+        let hook = load(&[("APG_ACME_DNS_PROVIDER", "webhook"), ("APG_ACME_DNS_WEBHOOK_URL", "https://dns.example/hook"), ("APG_ACME_DNS_WEBHOOK_SECRET", "s")]).unwrap().acme.dns.unwrap();
+        let crate::acme::DnsProvider::Webhook(hook) = hook else { panic!("a webhook was configured") };
         assert_eq!((hook.url.as_str(), hook.secret.as_deref(), hook.propagation.as_secs()), ("https://dns.example/hook", Some("s"), 30));
         assert!(err(&[("APG_ACME_DNS_PROVIDER", "webhook")]).contains("APG_ACME_DNS_WEBHOOK_URL is required"));
-        // Providers that are documented but not built refuse to start, they are not silently ignored.
-        assert!(err(&[("APG_ACME_DNS_PROVIDER", "cloudflare")]).contains("not available in this build"));
+        let cloudflare = load(&[("APG_ACME_DNS_PROVIDER", "cloudflare"), ("APG_CLOUDFLARE_API_TOKEN", "t"), ("APG_ACME_DNS_PROPAGATION_SECS", "5")]).unwrap().acme.dns.unwrap();
+        let crate::acme::DnsProvider::Cloudflare(cloudflare) = cloudflare else { panic!("cloudflare was configured") };
+        assert_eq!((cloudflare.token.as_str(), cloudflare.api.as_str(), cloudflare.propagation.as_secs()), ("t", "https://api.cloudflare.com/client/v4", 5));
+        assert!(err(&[("APG_ACME_DNS_PROVIDER", "cloudflare")]).contains("APG_CLOUDFLARE_API_TOKEN is required"));
+        // A provider that is documented but not built refuses to start; it is not silently ignored.
+        assert!(err(&[("APG_ACME_DNS_PROVIDER", "route53")]).contains("not available in this build"));
         assert!(err(&[("APG_ACME_DNS_PROVIDER", "bind")]).contains("must be one of"));
 
         assert!(err(&[("APG_ACME_INSECURE_DIRECTORY", "true")]).contains("APG_ALLOW_TEST_MODES"));

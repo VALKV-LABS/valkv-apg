@@ -16,6 +16,9 @@ the project uses [Semantic Versioning](https://semver.org/).
   it nothing yet.
 
 ### Added
+- DNS challenges through Cloudflare, built in: `APG_ACME_DNS_PROVIDER=cloudflare` with
+  `APG_CLOUDFLARE_API_TOKEN`. Wildcard certificates no longer need a webhook service when
+  the zone is at Cloudflare.
 - Backend health with reasons. A node reports each backend as healthy, failing (with why:
   connection refused, the host name does not resolve, a timeout, a bad status) or not
   checked. `GET /upstreams` on a node's management port; `GET /v1/workspaces/{ws}/health`

@@ -38,7 +38,7 @@ variables:
   - { name: APG_ACME_EMAIL, component: node, type: string, required_when: "any Domain uses tls.mode acme", phase: "0", description: "ACME account contact." }
   - { name: APG_ACME_DIRECTORY_URL, component: node, type: url, default: "Let's Encrypt production", phase: "2d", description: "ACME directory." }
   - { name: APG_ACME_DNS_PROVIDER, component: node, type: enum, values: [cloudflare, route53, webhook], phase: "2d", description: "Provider for dns01 challenges." }
-  - { name: APG_CLOUDFLARE_API_TOKEN, component: node, type: secret, phase: "0", description: "Token for the cloudflare DNS provider." }
+  - { name: APG_CLOUDFLARE_API_TOKEN, component: node, type: secret, phase: "2d", description: "API token for the cloudflare DNS provider. It needs permission to edit DNS in the zone." }
   - { name: APG_ACME_DNS_WEBHOOK_URL, component: node, type: url, phase: "2d", description: "Endpoint for the webhook DNS provider." }
   - { name: APG_ACME_DNS_WEBHOOK_SECRET, component: node, type: secret, phase: "2d", description: "Signs webhook DNS provider requests." }
   - { name: APG_ACME_DNS_PROPAGATION_SECS, component: node, type: integer, default: 30, phase: "2d", description: "Wait between publishing a DNS challenge record and asking the authority to check it, 0 to 600." }
