@@ -26,7 +26,7 @@ services:
 
   # The control plane: Admin API, the console at /ui/, and the config API the gateway polls.
   admin:
-    image: ${APG_ADMIN_IMAGE:-valkv-labs/valkv-apg-admin:latest}
+    image: ${APG_ADMIN_IMAGE:-valkvlabs/valkv-apg-admin:latest}
     restart: unless-stopped
     environment:
       APG_DATABASE_URL: postgres://apg:${APG_DB_PASSWORD}@postgres:5432/apg
@@ -44,7 +44,7 @@ services:
   # The gateway. HTTP is served as is (no redirect to HTTPS) so the trial works
   # by IP address, before any domain or certificate exists.
   gateway:
-    image: ${APG_NODE_IMAGE:-valkv-labs/valkv-apg:latest}
+    image: ${APG_NODE_IMAGE:-valkvlabs/valkv-apg:latest}
     restart: unless-stopped
     environment:
       APG_CONFIG_SOURCE: api_poll

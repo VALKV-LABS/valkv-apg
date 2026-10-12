@@ -3,8 +3,8 @@
 [![ci](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/ci.yml/badge.svg)](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/ci.yml)
 [![release](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/release.yml/badge.svg)](https://github.com/VALKV-LABS/valkv-apg/actions/workflows/release.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Docker: gateway](https://img.shields.io/docker/v/valkv-labs/valkv-apg?label=valkv-apg&sort=semver)](https://hub.docker.com/r/valkv-labs/valkv-apg)
-[![Docker: control plane](https://img.shields.io/docker/v/valkv-labs/valkv-apg-admin?label=valkv-apg-admin&sort=semver)](https://hub.docker.com/r/valkv-labs/valkv-apg-admin)
+[![Docker: gateway](https://img.shields.io/docker/v/valkvlabs/valkv-apg?label=valkv-apg&sort=semver)](https://hub.docker.com/r/valkvlabs/valkv-apg)
+[![Docker: control plane](https://img.shields.io/docker/v/valkvlabs/valkv-apg-admin?label=valkv-apg-admin&sort=semver)](https://hub.docker.com/r/valkvlabs/valkv-apg-admin)
 
 Open-source API gateway for multi-tenant platforms. Runs from a single YAML
 file or a Postgres-backed control plane, with per-tenant routing, limits, usage
@@ -75,7 +75,7 @@ Edit the file and the node reloads it. An invalid file is rejected whole and
 the node keeps serving the previous one. Check a file without starting anything:
 
 ```sh
-docker run --rm -v "$PWD/deploy/compose/standalone:/cfg:ro" valkv-labs/valkv-apg:dev validate --config /cfg/apg.yaml
+docker run --rm -v "$PWD/deploy/compose/standalone:/cfg:ro" valkvlabs/valkv-apg:dev validate --config /cfg/apg.yaml
 ```
 
 Two complete configurations to copy from are in [`examples/`](examples/README.md): a small one, and one that uses every plugin.
@@ -98,8 +98,8 @@ Two images are published for `linux/amd64` and `linux/arm64`:
 
 | Image | What it is | When you need it |
 |---|---|---|
-| `valkv-labs/valkv-apg` | The gateway (the node) | Always. On its own it is a complete gateway driven by one YAML file |
-| `valkv-labs/valkv-apg-admin` | The control plane: Admin API, the console at `/ui/`, and the configuration API nodes poll | When configuration lives in Postgres and is managed through the API, the console or `apgctl` |
+| `valkvlabs/valkv-apg` | The gateway (the node) | Always. On its own it is a complete gateway driven by one YAML file |
+| `valkvlabs/valkv-apg-admin` | The control plane: Admin API, the console at `/ui/`, and the configuration API nodes poll | When configuration lives in Postgres and is managed through the API, the console or `apgctl` |
 
 They are kept apart on purpose: nodes are many, face the internet and hold no database connection; the control plane is small, private and holds the secrets. A tagged release publishes both, signed, with a bill of materials; each merge to `main` publishes both as `edge`.
 

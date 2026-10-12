@@ -48,7 +48,7 @@ Point a DNS record at the instance's address, then in the console add the host n
 | `APG_TRIAL_NAME` | `valkv-apg-trial` | Name of the instance |
 | `AWS_REGION` | the CLI's default | Region |
 | `APG_TRIAL_BUNDLE` | `small_3_0` | Instance size |
-| `APG_VERSION` | `latest` | Image tag of `valkv-labs/valkv-apg` and `valkv-labs/valkv-apg-admin` |
+| `APG_VERSION` | `latest` | Image tag of `valkvlabs/valkv-apg` and `valkvlabs/valkv-apg-admin` |
 | `APG_ADMIN_CIDR` | this machine's address | Who may reach the console and the Admin API |
 | `SKIP_SMOKE` | unset | Set to `1` to skip the smoke test |
 

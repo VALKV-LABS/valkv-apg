@@ -6,11 +6,11 @@
 
 image:
   node:
-    repository: valkv-labs/valkv-apg
+    repository: valkvlabs/valkv-apg
     # Defaults to the chart's appVersion.
     tag: ""
   admin:
-    repository: valkv-labs/valkv-apg-admin
+    repository: valkvlabs/valkv-apg-admin
     tag: ""
   pullPolicy: IfNotPresent
 imagePullSecrets: []

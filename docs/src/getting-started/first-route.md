@@ -46,7 +46,7 @@ docker run -d --name apg --network apg-try -p 8080:8080 \
   -v "$PWD/apg.yaml:/etc/apg/apg.yaml:ro" \
   -e APG_HTTP_MODE=proxy \
   -e APG_SECRET_MOBILE_KEY=a-long-random-key-0123456789 \
-  valkv-labs/valkv-apg:latest
+  valkvlabs/valkv-apg:latest
 ```
 
 ## With a control plane

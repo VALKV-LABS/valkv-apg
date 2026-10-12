@@ -26,7 +26,7 @@ docker run -d --name echo --network apg-try -e HTTP_PORT=8080 mendhak/http-https
 docker run -d --name apg --network apg-try -p 8080:8080 -p 8443:8443 \
   -v "$PWD/apg.yaml:/etc/apg/apg.yaml:ro" \
   -e APG_HTTP_MODE=proxy \
-  valkv-labs/valkv-apg:latest
+  valkvlabs/valkv-apg:latest
 ```
 
 `APG_HTTP_MODE=proxy` makes the HTTP port serve requests. Without it, HTTP only redirects to HTTPS.
@@ -68,7 +68,7 @@ If you save a file with a mistake in it, the gateway keeps serving the last good
 ## 5. Check a file before using it
 
 ```sh
-docker run --rm -v "$PWD/apg.yaml:/apg.yaml:ro" valkv-labs/valkv-apg:latest validate --config /apg.yaml
+docker run --rm -v "$PWD/apg.yaml:/apg.yaml:ro" valkvlabs/valkv-apg:latest validate --config /apg.yaml
 ```
 
 This runs every check the gateway runs at load and prints each fault with its place in the file. Use it in CI.

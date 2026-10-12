@@ -4,8 +4,8 @@ Four ways to run valkv-apg, from a single machine to a fleet. All of them use th
 
 | Image | What it is |
 |---|---|
-| `valkv-labs/valkv-apg` | The gateway (node). On its own it is a complete gateway driven by one file |
-| `valkv-labs/valkv-apg-admin` | The control plane: Admin API, console, and the feed nodes read |
+| `valkvlabs/valkv-apg` | The gateway (node). On its own it is a complete gateway driven by one file |
+| `valkvlabs/valkv-apg-admin` | The control plane: Admin API, console, and the feed nodes read |
 
 Both are published for `linux/amd64` and `linux/arm64`, signed, with a bill of materials.
 

@@ -3,7 +3,7 @@ name: release
 # Every merge to main publishes both images as `edge`, signed.
 #
 # Pushing a tag vX.Y.Z publishes:
-#   - valkv-labs/valkv-apg and valkv-labs/valkv-apg-admin for amd64 and arm64,
+#   - valkvlabs/valkv-apg and valkvlabs/valkv-apg-admin for amd64 and arm64,
 #     each with a bill of materials and build provenance, signed with cosign
 #   - a tarball per platform holding the node binary and its systemd unit
 #   - the Helm chart, as a packaged archive
@@ -21,8 +21,8 @@ permissions:
   id-token: write # keyless signing
 
 env:
-  NODE_IMAGE: valkv-labs/valkv-apg
-  ADMIN_IMAGE: valkv-labs/valkv-apg-admin
+  NODE_IMAGE: valkvlabs/valkv-apg
+  ADMIN_IMAGE: valkvlabs/valkv-apg-admin
 
 jobs:
   # Each platform builds on its own hardware: compiling the node under
@@ -41,10 +41,10 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
           - component: node
-            image: valkv-labs/valkv-apg
+            image: valkvlabs/valkv-apg
             dockerfile: crates/apg-proxy/Dockerfile
           - component: admin
-            image: valkv-labs/valkv-apg-admin
+            image: valkvlabs/valkv-apg-admin
             dockerfile: admin/Dockerfile
     steps:
       - uses: actions/checkout@v4

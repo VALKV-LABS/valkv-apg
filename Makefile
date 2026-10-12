@@ -47,8 +47,8 @@ help:
 # The dev stack uses a quick unoptimised node build. Release images are built
 # with CARGO_PROFILE=release (the Dockerfile's default) by the release workflow.
 build:
-	docker build -f $(NODE_DOCKER)  --target runtime --build-arg CARGO_PROFILE=dev -t valkv-labs/valkv-apg:dev .
-	docker build -f $(ADMIN_DOCKER) --target runtime -t valkv-labs/valkv-apg-admin:dev .
+	docker build -f $(NODE_DOCKER)  --target runtime --build-arg CARGO_PROFILE=dev -t valkvlabs/valkv-apg:dev .
+	docker build -f $(ADMIN_DOCKER) --target runtime -t valkvlabs/valkv-apg-admin:dev .
 	docker build -q -t valkv-apg-pebble:dev deploy/compose/pebble
 
 up: build
@@ -130,7 +130,7 @@ canary-rehearsal:
 # A new process takes over a running node's listeners; no request may fail
 # (spec PKG-7). Runs inside the node image, so it needs `make build` first.
 e2e-upgrade:
-	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/tests/e2e/upgrade.sh:/upgrade.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /upgrade.sh
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/tests/e2e/upgrade.sh:/upgrade.sh:ro" --entrypoint sh valkvlabs/valkv-apg:dev /upgrade.sh
 
 # One snapshot of 100,000 routes, 20,000 workspaces, 100,000 domains and 200,000 consumers:
 # build time, match time, memory (spec NFR-4). Optimised build of the core crate only.
@@ -176,7 +176,7 @@ docs:
 # or when a page is missing from the table of contents. Needs `make build` for the node image.
 docs-check:
 	MSYS_NO_PATHCONV=1 $(TOOLS) sh -c "node tools/gen-docs.mjs --check && node tools/check-doc-links.mjs && rm -rf .doc-examples && node tools/extract-doc-examples.mjs .doc-examples"
-	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/.doc-examples:/examples:ro" -v "$(CURDIR)/tools/check-doc-examples.sh:/check.sh:ro" --entrypoint sh valkv-labs/valkv-apg:dev /check.sh
+	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/.doc-examples:/examples:ro" -v "$(CURDIR)/tools/check-doc-examples.sh:/check.sh:ro" --entrypoint sh valkvlabs/valkv-apg:dev /check.sh
 	MSYS_NO_PATHCONV=1 docker run --rm -v "$(CURDIR)/docs:/book" -w /book peaceiris/mdbook:v0.4.40 build -d /tmp/book
 
 # The quickstart of the documentation, executed step by step against the node image.

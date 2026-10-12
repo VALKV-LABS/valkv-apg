@@ -17,7 +17,7 @@ services:
     command: ["sh", "-c", "cp /src/apg.yaml /etc/apg/apg.yaml && chmod -R a+rwX /etc/apg"]
 
   node:
-    image: valkv-labs/valkv-apg:dev
+    image: valkvlabs/valkv-apg:dev
     build:
       context: ../..
       dockerfile: crates/apg-proxy/Dockerfile
@@ -65,7 +65,7 @@ services:
   # Same image, default HTTP behaviour (redirect to HTTPS), with a health path
   # on the traffic port and a trusted proxy range.
   node-redirect:
-    image: valkv-labs/valkv-apg:dev
+    image: valkvlabs/valkv-apg:dev
     profiles: ["test"]
     environment:
       APG_CONFIG_FILE: /etc/apg/apg.yaml

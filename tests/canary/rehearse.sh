@@ -20,7 +20,7 @@ echo
 echo "rolling the canary back (docs/runbooks/rollout.md, Compose)"
 # The previous image is the one the stable track runs.
 previous=$($COMPOSE images node --format json | sed -n 's/.*"Repository":"\([^"]*\)".*"Tag":"\([^"]*\)".*/\1:\2/p' | head -1)
-echo "previous image: ${previous:-valkv-labs/valkv-apg:dev}"
+echo "previous image: ${previous:-valkvlabs/valkv-apg:dev}"
 
 applied_before=$($COMPOSE exec -T node curl -fsS http://127.0.0.1:9100/status | sed 's/.*"applied_seq":\([0-9]*\).*/\1/')
 start=$(date +%s)

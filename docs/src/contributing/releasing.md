@@ -11,7 +11,7 @@ Within a major version, a node and a control plane one minor release apart, in e
 Pushing a tag `vX.Y.Z` runs `.github/workflows/release.yml`, which:
 
 1. builds both images for `linux/amd64` and `linux/arm64`, each on its own hardware, with a bill of materials and build provenance;
-2. publishes them as `valkv-labs/valkv-apg` and `valkv-labs/valkv-apg-admin` under `X.Y.Z`, `X.Y` and `latest`, and signs them with cosign (keyless);
+2. publishes them as `valkvlabs/valkv-apg` and `valkvlabs/valkv-apg-admin` under `X.Y.Z`, `X.Y` and `latest`, and signs them with cosign (keyless);
 3. packages the node binary with its systemd unit as a tarball per platform, and the Helm chart;
 4. writes checksums, signs them, and creates the GitHub release with the changelog section for that version as its notes.
 
@@ -37,7 +37,7 @@ The workflow needs two repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_T
 6. **Verify** the result:
 
    ```sh
-   cosign verify valkv-labs/valkv-apg:0.2.0 \
+   cosign verify valkvlabs/valkv-apg:0.2.0 \
      --certificate-identity-regexp 'https://github.com/VALKV-LABS/valkv-apg/' \
      --certificate-oidc-issuer https://token.actions.githubusercontent.com
    ```

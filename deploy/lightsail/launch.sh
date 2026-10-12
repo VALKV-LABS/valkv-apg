@@ -75,8 +75,8 @@ export DEBIAN_FRONTEND=noninteractive
 curl -fsSL https://get.docker.com | sh
 mkdir -p /opt/valkv-apg && cd /opt/valkv-apg
 cat > .env <<'ENV'
-APG_ADMIN_IMAGE=valkv-labs/valkv-apg-admin:$version
-APG_NODE_IMAGE=valkv-labs/valkv-apg:$version
+APG_ADMIN_IMAGE=valkvlabs/valkv-apg-admin:$version
+APG_NODE_IMAGE=valkvlabs/valkv-apg:$version
 APG_ADMIN_TOKEN=$admin_token
 DEMO_KEY=$demo_key
 ENV
