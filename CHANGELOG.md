@@ -5,6 +5,10 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-13
+
+The first release.
+
 ### Fixed
 - Writing a resource or a flag with what it already holds is no longer a change: the
   revision stays, nodes are sent nothing, and the audit log gets no entry. A caller can
