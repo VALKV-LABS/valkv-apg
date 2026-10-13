@@ -124,7 +124,7 @@ More: [resources](concepts/resources.md), [the configuration file](reference/con
 The gateway picks a certificate by the host name in the TLS handshake. Certificates come from three places:
 
 - **You supply them**, in the file or through the API. The private key is never returned by any API.
-- **An ACME authority** such as Let's Encrypt issues them. Declare a domain, and the gateway obtains its certificate and renews it 30 days before it expires, with the old one serving until the new one is installed. Challenges are answered over HTTP, or through DNS by calling a webhook you provide, which is what wildcard names need.
+- **An ACME authority** such as Let's Encrypt issues them. Declare a domain, and the gateway obtains its certificate and renews it 30 days before it expires, with the old one serving until the new one is installed. Challenges are answered over HTTP, or through DNS, which is what wildcard names need: directly for zones at Cloudflare, and by calling a webhook you provide for any other DNS host.
 - **A fallback**, yours or one the gateway generates, for names it has no certificate for.
 
 In a fleet one gateway does the issuing and every gateway serves the result. The others can answer the authority's challenge too, so issuance works behind a load balancer.
@@ -263,7 +263,7 @@ By design:
 
 Not built yet, and refused with a clear message if configured:
 
-- obtaining certificates through a DNS provider's own API (the DNS webhook works with any provider);
+- DNS challenges through Route 53's own API (Cloudflare is built in, and the DNS webhook works with any provider);
 - WebAssembly plugins;
 - limits shared between gateways through a common store;
 - exporting trace spans;

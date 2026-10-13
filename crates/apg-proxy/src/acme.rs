@@ -420,6 +420,103 @@ impl DnsWebhook {
     }
 }
 
+// ── DNS-01 through Cloudflare (spec TLS-5) ───────────────────────────────────
+
+/// Publishes challenge records in a Cloudflare zone, with an API token that
+/// may edit DNS in it.
+#[derive(Debug, Clone)]
+pub struct Cloudflare {
+    pub token: String,
+    /// The API's address. Only tests point it anywhere else.
+    pub api: String,
+    pub propagation: Duration,
+}
+
+pub const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
+
+impl Cloudflare {
+    async fn request(&self, http: &reqwest::Client, method: reqwest::Method, path: &str, body: Option<Value>) -> anyhow::Result<Value> {
+        let mut request = http.request(method, format!("{}{path}", self.api)).bearer_auth(&self.token).timeout(Duration::from_secs(30));
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let res = request.send().await.map_err(|e| anyhow::anyhow!("Cloudflare could not be reached: {e}"))?;
+        let status = res.status();
+        let answer: Value = res.json().await.map_err(|_| anyhow::anyhow!("Cloudflare answered {status} with something that is not JSON"))?;
+        if answer["success"] != true {
+            // Its own words, which name the missing permission or the bad token.
+            let errors: Vec<String> = answer["errors"].as_array().into_iter().flatten().map(|e| format!("{} ({})", e["message"].as_str().unwrap_or("error"), e["code"])).collect();
+            anyhow::bail!("Cloudflare refused the request ({status}): {}", if errors.is_empty() { "no reason given".to_string() } else { errors.join("; ") });
+        }
+        Ok(answer["result"].clone())
+    }
+
+    /// The id of the zone `fqdn` lives in: the longest suffix of the name the token can see.
+    async fn zone(&self, http: &reqwest::Client, fqdn: &str) -> anyhow::Result<String> {
+        let labels: Vec<&str> = fqdn.trim_end_matches('.').split('.').collect();
+        for start in 0..labels.len().saturating_sub(1) {
+            let candidate = labels[start..].join(".");
+            let found = self.request(http, reqwest::Method::GET, &format!("/zones?name={candidate}"), None).await?;
+            if let Some(id) = found.get(0).and_then(|z| z["id"].as_str()) {
+                return Ok(id.to_string());
+            }
+        }
+        anyhow::bail!("no Cloudflare zone this token can see holds '{fqdn}'")
+    }
+
+    async fn call(&self, http: &reqwest::Client, action: &str, fqdn: &str, value: &str) -> anyhow::Result<()> {
+        let zone = self.zone(http, fqdn).await?;
+        // A TXT record's content is a quoted string.
+        let content = format!("\"{value}\"");
+        let existing = self.request(http, reqwest::Method::GET, &format!("/zones/{zone}/dns_records?type=TXT&name={fqdn}"), None).await?;
+        let mine: Vec<&str> = existing
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|r| r["content"].as_str().is_some_and(|c| c == content || c == value))
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        match action {
+            // A wildcard and its base name are validated under one record name
+            // with two values, so a record is added beside any other, never replaced.
+            "present" if mine.is_empty() => {
+                self.request(http, reqwest::Method::POST, &format!("/zones/{zone}/dns_records"), Some(json!({ "type": "TXT", "name": fqdn, "content": content, "ttl": 60 }))).await?;
+            }
+            "present" => {}
+            _ => {
+                for id in mine {
+                    self.request(http, reqwest::Method::DELETE, &format!("/zones/{zone}/dns_records/{id}"), None).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// How challenge records get into DNS.
+#[derive(Debug, Clone)]
+pub enum DnsProvider {
+    Webhook(DnsWebhook),
+    Cloudflare(Cloudflare),
+}
+
+impl DnsProvider {
+    /// Publishes (`present`) or removes (`cleanup`) the record `fqdn` with `value`.
+    async fn call(&self, http: &reqwest::Client, action: &str, fqdn: &str, value: &str) -> anyhow::Result<()> {
+        match self {
+            Self::Webhook(hook) => hook.call(http, action, fqdn, value).await,
+            Self::Cloudflare(cloudflare) => cloudflare.call(http, action, fqdn, value).await,
+        }
+    }
+
+    fn propagation(&self) -> Duration {
+        match self {
+            Self::Webhook(hook) => hook.propagation,
+            Self::Cloudflare(cloudflare) => cloudflare.propagation,
+        }
+    }
+}
+
 // ── Coordination with the fleet (spec §8.4) ──────────────────────────────────
 
 /// The control plane's certificate endpoints, as this node calls them.
@@ -512,9 +609,9 @@ impl Solver for ManagerSolver<'_> {
         let m = self.manager;
         match (challenge, &m.coordination) {
             (Challenge::Dns { fqdn, value }, _) => {
-                let hook = m.settings.dns_webhook.as_ref().ok_or_else(|| anyhow::anyhow!("no DNS provider is configured"))?;
-                hook.call(&m.http, "present", fqdn, value).await?;
-                tokio::time::sleep(hook.propagation).await;
+                let dns = m.settings.dns.as_ref().ok_or_else(|| anyhow::anyhow!("no DNS provider is configured"))?;
+                dns.call(&m.http, "present", fqdn, value).await?;
+                tokio::time::sleep(dns.propagation()).await;
                 Ok(())
             }
             (Challenge::Http { token, key_authorization }, Coordination::Local { .. }) => {
@@ -547,8 +644,8 @@ impl Solver for ManagerSolver<'_> {
         let m = self.manager;
         match (challenge, &m.coordination) {
             (Challenge::Dns { fqdn, value }, _) => {
-                if let Some(hook) = &m.settings.dns_webhook
-                    && let Err(e) = hook.call(&m.http, "cleanup", fqdn, value).await
+                if let Some(dns) = &m.settings.dns
+                    && let Err(e) = dns.call(&m.http, "cleanup", fqdn, value).await
                 {
                     tracing::warn!(%fqdn, error = %e, "the challenge record was not removed");
                 }
@@ -582,14 +679,15 @@ pub struct Settings {
     pub directory_url: String,
     /// Test mode: do not verify the directory's TLS certificate.
     pub insecure_directory: bool,
-    pub dns_webhook: Option<DnsWebhook>,
+    /// How DNS challenge records are published; without one, names that need a DNS challenge get no certificate.
+    pub dns: Option<DnsProvider>,
 }
 
 pub const LETS_ENCRYPT: &str = "https://acme-v02.api.letsencrypt.org/directory";
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { email: None, directory_url: LETS_ENCRYPT.to_string(), insecure_directory: false, dns_webhook: None }
+        Self { email: None, directory_url: LETS_ENCRYPT.to_string(), insecure_directory: false, dns: None }
     }
 }
 
@@ -718,7 +816,7 @@ impl Manager {
     /// is doing it.
     async fn obtain(&self, host: &AcmeHost) -> Result<bool, Failure> {
         let email = self.settings.email.clone().unwrap_or_default();
-        if host.dns01 && self.settings.dns_webhook.is_none() {
+        if host.dns01 && self.settings.dns.is_none() {
             return Err(Failure { reason: "config", error: anyhow::anyhow!("the name needs a DNS challenge and no DNS provider is configured (APG_ACME_DNS_PROVIDER)") });
         }
         let solver = ManagerSolver { manager: self };
@@ -920,6 +1018,91 @@ mod tests {
         assert_eq!(expected.len(), 64);
         // RFC 4231 test case 2.
         assert_eq!(hmac_hex("Jefe", b"what do ya want for nothing?").unwrap(), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
+    }
+
+    /// A stand-in for Cloudflare's API: answers each request from `answer` and records it.
+    async fn fake_cloudflare(answer: fn(&str) -> String) -> (String, Arc<parking_lot::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let mut buf = vec![0u8; 8192];
+                let mut request = Vec::new();
+                loop {
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    request.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&request).into_owned();
+                    let Some((head, body)) = text.split_once("\r\n\r\n") else { continue };
+                    let length: usize = head.lines().find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap_or(0))).unwrap_or(0);
+                    if body.len() < length && n > 0 {
+                        continue;
+                    }
+                    let line = format!("{} {}", head.lines().next().unwrap_or("").trim_end_matches(" HTTP/1.1"), body);
+                    assert!(head.to_ascii_lowercase().contains("authorization: bearer cf-token"), "{head}");
+                    let reply = answer(&line);
+                    log.lock().push(line);
+                    let _ = socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{reply}", reply.len()).as_bytes()).await;
+                    break;
+                }
+            }
+        });
+        (format!("http://{addr}"), seen)
+    }
+
+    // spec TLS-5
+    #[tokio::test]
+    async fn cloudflare_finds_the_zone_adds_the_record_beside_others_and_removes_only_its_own() {
+        let (api, seen) = fake_cloudflare(|line| {
+            if line.starts_with("GET /zones?name=_acme-challenge.shop.example.com") || line.starts_with("GET /zones?name=shop.example.com") {
+                json!({ "success": true, "result": [] }).to_string()
+            } else if line.starts_with("GET /zones?name=example.com") {
+                json!({ "success": true, "result": [{ "id": "zone1" }] }).to_string()
+            } else if line.starts_with("GET /zones/zone1/dns_records") {
+                // Someone else's record under the same name, and this node's from an earlier order.
+                json!({ "success": true, "result": [{ "id": "other", "content": "\"another-value\"" }, { "id": "mine", "content": "\"old-value\"" }] }).to_string()
+            } else {
+                json!({ "success": true, "result": {} }).to_string()
+            }
+        })
+        .await;
+        let provider = DnsProvider::Cloudflare(Cloudflare { token: "cf-token".into(), api, propagation: Duration::ZERO });
+        let http = reqwest::Client::new();
+        let name = "_acme-challenge.shop.example.com";
+
+        provider.call(&http, "present", name, "new-value").await.unwrap();
+        let calls = std::mem::take(&mut *seen.lock());
+        assert_eq!(calls.iter().filter(|c| c.starts_with("GET /zones?name=")).count(), 3, "the zone is found by walking up the name: {calls:?}");
+        let created = calls.iter().find(|c| c.starts_with("POST /zones/zone1/dns_records")).expect("a record is created");
+        let body: Value = serde_json::from_str(created.split_once(' ').unwrap().1.split_once(' ').unwrap().1).unwrap();
+        assert_eq!(body, json!({ "type": "TXT", "name": name, "content": "\"new-value\"", "ttl": 60 }));
+        assert!(!calls.iter().any(|c| c.starts_with("DELETE")), "presenting never removes a record");
+
+        // Already there (a retry): nothing is created twice.
+        provider.call(&http, "present", name, "old-value").await.unwrap();
+        assert!(!std::mem::take(&mut *seen.lock()).iter().any(|c| c.starts_with("POST")));
+
+        // Cleaning up removes this value's record and leaves the other alone.
+        provider.call(&http, "cleanup", name, "old-value").await.unwrap();
+        let calls = std::mem::take(&mut *seen.lock());
+        let deleted: Vec<&String> = calls.iter().filter(|c| c.starts_with("DELETE")).collect();
+        assert_eq!(deleted.len(), 1);
+        assert!(deleted[0].starts_with("DELETE /zones/zone1/dns_records/mine"), "{deleted:?}");
+    }
+
+    #[tokio::test]
+    async fn cloudflare_failures_say_what_cloudflare_said() {
+        let (api, _) = fake_cloudflare(|_| json!({ "success": false, "errors": [{ "code": 10000, "message": "Authentication error" }], "result": null }).to_string()).await;
+        let provider = DnsProvider::Cloudflare(Cloudflare { token: "cf-token".into(), api, propagation: Duration::ZERO });
+        let err = provider.call(&reqwest::Client::new(), "present", "_acme-challenge.example.com", "v").await.unwrap_err().to_string();
+        assert!(err.contains("Authentication error (10000)"), "{err}");
+
+        let (api, _) = fake_cloudflare(|_| json!({ "success": true, "result": [] }).to_string()).await;
+        let provider = DnsProvider::Cloudflare(Cloudflare { token: "cf-token".into(), api, propagation: Duration::ZERO });
+        let err = provider.call(&reqwest::Client::new(), "present", "_acme-challenge.example.com", "v").await.unwrap_err().to_string();
+        assert!(err.contains("no Cloudflare zone"), "{err}");
     }
 
     #[test]

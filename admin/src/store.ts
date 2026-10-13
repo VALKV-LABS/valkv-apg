@@ -7,6 +7,7 @@
  */
 
 import type { BlockList } from "node:net";
+import { isDeepStrictEqual } from "node:util";
 import { type Actor, isAdmin, requireAdmin, requireRead, requireWrite } from "./auth.js";
 import { SecretBox, uuidv7 } from "./crypto.js";
 import type { Db, Sql, Tx } from "./db.js";
@@ -68,6 +69,12 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ENVELOPE = ["id", "workspace_id", "revision", "created_at", "updated_at"];
 
 /** True when the string is shaped like a UUID. */
+/** Whether two versions of a resource, as nodes would receive them, differ only in when and how often they were written. */
+function sameResource(before: Json, after: Json): boolean {
+  const core = ({ revision: _r, updated_at: _u, ...rest }: Json) => rest;
+  return isDeepStrictEqual(core(before), core(after));
+}
+
 export function isUuid(value: string): boolean {
   return UUID.test(value);
 }
@@ -338,6 +345,17 @@ export class Store {
       }
       if (prepared.after) await prepared.after(row);
 
+      // Writing what is already there changes nothing: no new revision, nothing
+      // sent to nodes, nothing in the audit log. A caller that replays its whole
+      // configuration to be sure (PUT is an upsert) must not make every node
+      // rebuild its tables each time it does.
+      if (existing && !prepared.reveal && sameResource(def.toEvent(existing), def.toEvent(row))) {
+        row = (await tx<Row[]>`
+          UPDATE ${tx(def.table)} SET revision = ${existing["revision"]}, updated_at = ${existing["updated_at"]}
+          WHERE id = ${id} RETURNING *`)[0]!;
+        return def.toApi(row);
+      }
+
       await this.emit(tx, { kind: def.kind, op: "upsert", id, workspace_id: ws["id"], revision: row["revision"], data: def.toEvent(row) });
       const api = def.toApi(row);
       await this.audit(tx, ctx, {
@@ -409,7 +427,9 @@ export class Store {
     requireAdmin(ctx.actor);
     const body = this.validated("resources/flag.json", { name, enabled: input?.["enabled"] });
     return this.transact(opts, async (tx) => {
-      const [before] = await tx<Row[]>`SELECT name, enabled, revision FROM apg_flags WHERE name = ${name} FOR UPDATE`;
+      const [before] = await tx<Row[]>`SELECT name, enabled, revision, updated_at FROM apg_flags WHERE name = ${name} FOR UPDATE`;
+      // Setting a flag to what it already is changes nothing and tells nodes nothing.
+      if (before && before["enabled"] === body["enabled"]) return before;
       const [row] = await tx<Row[]>`
         INSERT INTO apg_flags (name, enabled) VALUES (${name}, ${body["enabled"]})
         ON CONFLICT (name) DO UPDATE SET enabled = EXCLUDED.enabled, revision = apg_flags.revision + 1, updated_at = now()

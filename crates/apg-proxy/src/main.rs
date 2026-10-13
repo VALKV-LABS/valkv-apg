@@ -185,6 +185,7 @@ fn run(upgrade: bool) -> anyhow::Result<()> {
             rt.block_on(async move {
                 // Backend name resolution and active health checks.
                 tokio::spawn(gateway.upstreams.clone().run());
+                tokio::spawn(gateway.clone().report_status());
                 tokio::spawn(certificates.run());
                 tokio::spawn(apg_proxy::usage::run(usage, gateway.clone(), usage_sink));
                 {

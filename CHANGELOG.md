@@ -6,6 +6,9 @@ the project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Writing a resource or a flag with what it already holds is no longer a change: the
+  revision stays, nodes are sent nothing, and the audit log gets no entry. A caller can
+  replay its whole configuration without making every node rebuild its tables.
 - A backend name with an address the node cannot reach (an IPv6 address where there is no
   IPv6 route, for instance) no longer fails a share of requests with `502`. An address a
   connection could not be made to is passed over while the name has another, for 30
@@ -16,6 +19,11 @@ the project uses [Semantic Versioning](https://semver.org/).
   it nothing yet.
 
 ### Added
+- The node logs its state once a minute (`node status`, with `state` `ok`, `stale` or
+  `unconverged`), so alarms can be raised from logs where metrics are not scraped.
+- DNS challenges through Cloudflare, built in: `APG_ACME_DNS_PROVIDER=cloudflare` with
+  `APG_CLOUDFLARE_API_TOKEN`. Wildcard certificates no longer need a webhook service when
+  the zone is at Cloudflare.
 - Backend health with reasons. A node reports each backend as healthy, failing (with why:
   connection refused, the host name does not resolve, a timeout, a bad status) or not
   checked. `GET /upstreams` on a node's management port; `GET /v1/workspaces/{ws}/health`

@@ -64,6 +64,8 @@ or the console's **Nodes** page. Its top row sums the fleet up: how many nodes a
 
 **Metrics per node.** Each node serves its own `/metrics`, so in Prometheus every gateway series already carries the node it came from in the `instance` label your scrape configuration gives it; sum over it for the fleet, filter on it for one node. The control plane adds three gauges with a `node` label for every live node, which need no scraping of the nodes at all: `apg_node_lag`, `apg_node_stale` and `apg_node_backends_unhealthy`, next to the fleet-wide `apg_nodes_live` and `apg_nodes_max_lag`.
 
+**From logs.** Once a minute a node logs a line with the message `node status` and a `state`: `ok`, `stale` (it cannot reach the control plane and serves what it has) or `unconverged` (it has never held a complete configuration and is not ready). Where metrics are not scraped, alarm on those two states, and on no such line arriving at all.
+
 On a node:
 
 ```sh

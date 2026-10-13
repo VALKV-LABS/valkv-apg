@@ -552,6 +552,32 @@ describe("plugins", () => {
 });
 
 describe("flags, settings, idempotency, audit", () => {
+  it("writing what is already there is not a change: no revision, no event for nodes, no audit entry", async () => {
+    const body = { backends: [{ target: "10.0.9.1:80", weight: 2 }], timeouts: { read_ms: 9000 }, labels: { team: "a" } };
+    const first = (await h.call("PUT", `${D}/services/replayed`, { body })).json;
+    await h.call("PUT", `${D}/routes/replayed`, { body: { service: "replayed", paths: ["/replayed"] } });
+    await h.call("PUT", `${D}/plugins/replayed-limit`, { body: { type: "rate_limit", scope: "route", scope_ref: "replayed", config: { per_second: 5, burst: 5 } } });
+    await h.call("PUT", "/v1/flags/access_log", { body: { enabled: true } });
+    const seq = await h.lastSeq();
+    const audits = async () => (await h.sql`SELECT count(*)::int AS n FROM apg_audit_log`)[0]!["n"];
+    const audited = await audits();
+
+    // The same four writes again, as a caller replaying its configuration would send them.
+    const again = await h.call("PUT", `${D}/services/replayed`, { body });
+    expect([again.status, again.json.revision, again.json.updated_at]).toEqual([200, first.revision, first.updated_at]);
+    expect((await h.call("PUT", `${D}/routes/replayed`, { body: { service: "replayed", paths: ["/replayed"] } })).status).toBe(200);
+    expect((await h.call("PUT", `${D}/plugins/replayed-limit`, { body: { type: "rate_limit", scope: "route", scope_ref: "replayed", config: { per_second: 5, burst: 5 } } })).status).toBe(200);
+    expect((await h.call("PUT", "/v1/flags/access_log", { body: { enabled: true } })).status).toBe(200);
+    expect(await h.lastSeq()).toBe(seq);
+    expect(await audits()).toBe(audited);
+
+    // A real difference is still a change.
+    const changed = (await h.call("PUT", `${D}/services/replayed`, { body: { ...body, timeouts: { read_ms: 9001 } } })).json;
+    expect(changed.revision).toBe(first.revision + 1);
+    expect(await h.lastSeq()).toBe(seq + 1);
+    await h.call("DELETE", `${D}/services/replayed?cascade=true`);
+  });
+
   it("a flag change reaches nodes; an unknown flag or setting is rejected", async () => {
     const before = await h.lastSeq();
     expect((await h.call("PUT", "/v1/flags/usage_metering", { body: { enabled: false } })).json).toMatchObject({ enabled: false, revision: 1 });

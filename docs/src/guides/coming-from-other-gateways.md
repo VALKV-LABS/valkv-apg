@@ -67,7 +67,7 @@ Grouped by how much it is likely to matter to an enterprise evaluation.
 | Plugins loaded into the gateway (WebAssembly, Lua, or similar) | `http_callout` to your own service |
 | Request and response body rewriting beyond JSON fields; validation against an OpenAPI or JSON Schema | A callout, or your service |
 | Shipping access logs to an HTTP endpoint, Kafka or a log service directly | Write to standard output or a file and use your log agent |
-| DNS-01 with a DNS provider's API built in | The DNS webhook, a few lines of your own |
+| DNS-01 with a DNS provider's API built in | Cloudflare is built in; for any other, the DNS webhook, a few lines of your own |
 | A Kubernetes Ingress or Gateway API controller | Deploy with the Helm chart and manage routes through the API or `apgctl` |
 | Service discovery (Consul, Kubernetes endpoints, DNS SRV) | Backends by DNS name, re-resolved in the background |
 | Pushing usage to a webhook | Pull from the usage API |

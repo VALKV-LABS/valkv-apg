@@ -37,6 +37,7 @@ Each process is configured by its environment, read once at start. A variable th
 | `APG_ACME_EMAIL` | string | required when any Domain uses tls.mode acme | ACME account contact. |
 | `APG_ACME_DIRECTORY_URL` | url | `Let's Encrypt production` | ACME directory. |
 | `APG_ACME_DNS_PROVIDER` | `cloudflare`, `route53`, `webhook` |  | Provider for dns01 challenges. |
+| `APG_CLOUDFLARE_API_TOKEN` | secret |  | API token for the cloudflare DNS provider. It needs permission to edit DNS in the zone. |
 | `APG_ACME_DNS_WEBHOOK_URL` | url |  | Endpoint for the webhook DNS provider. |
 | `APG_ACME_DNS_WEBHOOK_SECRET` | secret |  | Signs webhook DNS provider requests. |
 | `APG_ACME_DNS_PROPAGATION_SECS` | integer | `30` | Wait between publishing a DNS challenge record and asking the authority to check it, 0 to 600. |
