@@ -166,7 +166,11 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         run: |
           version="${GITHUB_REF_NAME#v}"
-          docker run --rm -v "$PWD:/work" -w /work alpine/helm:3.16.2 \
+          # The directory is made here, by this job's user, and helm runs as that
+          # user too. Left to the container, both would belong to root, and the
+          # next step could not put the tarballs beside the chart.
+          mkdir -p release
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/work" -w /work alpine/helm:3.16.2 \
             package deploy/helm/valkv-apg --version "$version" --app-version "$version" --destination /work/release
 
       - name: Checksums and signatures
