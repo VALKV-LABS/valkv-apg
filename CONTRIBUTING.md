@@ -38,6 +38,14 @@ make hooks     # once per clone
 
 Comments in the code cite requirement ids such as `CFG-9` or `PL-1`. They refer to the maintainers' requirements document; the comment beside each one says what the rule is.
 
+## The changelog
+
+A pull request that changes what a user can see adds a line under "Unreleased" in `CHANGELOG.md`, written for someone deciding whether to upgrade: what changed for them, with the exact name of any setting, endpoint or command. Those lines become the release notes word for word. [Writing release notes](docs/src/contributing/releasing.md#writing-release-notes) has the rules and an example.
+
+## Releasing
+
+A release is made by pushing a tag `vX.Y.Z`; the steps, and the things that look like releasing and are not, are in [Releasing](docs/src/contributing/releasing.md).
+
 ## Commit and pull request style
 
 Small, focused pull requests. Say what changed and why.
