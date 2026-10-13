@@ -159,6 +159,31 @@ impl Gateway {
         }
     }
 
+    /// The node's state in one word: `unconverged` while it has never held a
+    /// complete configuration, `stale` while its source is silent, else `ok`.
+    pub fn state(&self) -> &'static str {
+        let r = self.health.readiness();
+        if !r.ready {
+            "unconverged"
+        } else if r.stale {
+            "stale"
+        } else {
+            "ok"
+        }
+    }
+
+    /// Logs the node's state once a minute, for deployments that raise their
+    /// alarms from logs: a line that says `stale` or `unconverged` can be
+    /// counted, and so can the absence of any line.
+    pub async fn report_status(self: Arc<Self>) {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            tick.tick().await;
+            let r = self.health.readiness();
+            tracing::info!(state = self.state(), source = self.source, applied_seq = self.applied_seq(), source_age_seconds = r.source_age_seconds, node_id = %self.node_id, "node status");
+        }
+    }
+
     /// The document `/status` returns: the node's own view of itself (spec OBS-5).
     pub fn status(&self) -> serde_json::Value {
         let snap = self.snapshot();
@@ -200,6 +225,19 @@ mod tests {
         assert!(r.ready, "and the node is still ready: it serves what it has");
         h.mark_alive();
         assert!(!SourceHealth::new(30).readiness().stale);
+    }
+
+    #[test]
+    fn the_state_in_one_word() {
+        let g = Gateway::new("n1".into(), "api_poll", 0);
+        assert_eq!(g.state(), "unconverged");
+        g.health.mark_converged();
+        g.health.mark_alive();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert_eq!(g.state(), "stale", "silent past the threshold, and still serving");
+        let fresh = Gateway::new("n2".into(), "api_poll", 30);
+        fresh.health.mark_converged();
+        assert_eq!(fresh.state(), "ok");
     }
 
     #[test]

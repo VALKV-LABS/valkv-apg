@@ -16,6 +16,8 @@ the project uses [Semantic Versioning](https://semver.org/).
   it nothing yet.
 
 ### Added
+- The node logs its state once a minute (`node status`, with `state` `ok`, `stale` or
+  `unconverged`), so alarms can be raised from logs where metrics are not scraped.
 - DNS challenges through Cloudflare, built in: `APG_ACME_DNS_PROVIDER=cloudflare` with
   `APG_CLOUDFLARE_API_TOKEN`. Wildcard certificates no longer need a webhook service when
   the zone is at Cloudflare.
