@@ -6,6 +6,9 @@ the project uses [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Fixed
+- Writing a resource or a flag with what it already holds is no longer a change: the
+  revision stays, nodes are sent nothing, and the audit log gets no entry. A caller can
+  replay its whole configuration without making every node rebuild its tables.
 - A backend name with an address the node cannot reach (an IPv6 address where there is no
   IPv6 route, for instance) no longer fails a share of requests with `502`. An address a
   connection could not be made to is passed over while the name has another, for 30
