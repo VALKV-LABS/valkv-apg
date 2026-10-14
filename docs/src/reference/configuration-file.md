@@ -74,7 +74,7 @@ Under `services`. A named upstream: backends plus load-balancing, health, timeou
 | `backends[].labels` | object |  |  |
 | `load_balancing` | object |  |  |
 | `load_balancing.strategy` | `round_robin`, `least_connections`, `random`, `hash` | `round_robin` |  |
-| `load_balancing.hash_key` | string | `client_ip` | What to key a hash, a limit or a split on. |
+| `load_balancing.hash_key` | string | `client_ip` | What to key a hash, a limit or a split on. path_prefix:<n> is the first n segments of the path. |
 | `timeouts` | object |  |  |
 | `timeouts.connect_ms` | integer (≥ 1, ≤ 600000) | `5000` |  |
 | `timeouts.read_ms` | integer (≥ 1, ≤ 3600000) | `60000` |  |
@@ -128,7 +128,7 @@ Under `routes`. Match predicates that send a request to a service.
 | `split[]` | list of objects |  |  |
 | `split[].service` (required) | string |  | A reference to another resource in the same workspace, by name or id. |
 | `split[].weight` (required) | integer (≥ 0, ≤ 1000) |  |  |
-| `split_key` | string |  | What to key a hash, a limit or a split on. |
+| `split_key` | string |  | What to key a hash, a limit or a split on. path_prefix:<n> is the first n segments of the path. |
 | `hosts` | list of object |  |  |
 | `paths` | list of string or object |  |  |
 | `methods` | list of object |  |  |

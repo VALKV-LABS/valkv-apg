@@ -12,6 +12,8 @@ use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde_json::Value;
 
+use crate::upstream::hash_parts;
+
 /// What a limit is counted against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
@@ -20,6 +22,10 @@ pub enum Scope {
     Ip,
     Route,
     Global,
+    /// The request's host, so each host a route serves has its own budget.
+    Host,
+    /// The first n segments of the path.
+    PathPrefix(usize),
     Header(String),
 }
 
@@ -32,10 +38,16 @@ impl Scope {
             Some("ip") => Scope::Ip,
             Some("route") => Scope::Route,
             Some("global") => Scope::Global,
-            Some(other) => match other.strip_prefix("header:") {
-                Some(name) => Scope::Header(name.to_ascii_lowercase()),
-                None => Scope::Workspace,
-            },
+            Some("host") => Scope::Host,
+            Some(other) => {
+                if let Some(name) = other.strip_prefix("header:") {
+                    Scope::Header(name.to_ascii_lowercase())
+                } else if let Some(n) = other.strip_prefix("path_prefix:").and_then(|n| n.parse().ok()) {
+                    Scope::PathPrefix(n)
+                } else {
+                    Scope::Workspace
+                }
+            }
             None => Scope::Workspace,
         }
     }
@@ -48,7 +60,17 @@ pub struct Subject<'a> {
     pub workspace_id: &'a str,
     pub consumer_id: Option<&'a str>,
     pub client_ip: &'a str,
+    /// The request's host, without a port.
+    pub host: &'a str,
+    /// The normalised path.
+    pub path: &'a str,
     pub header: &'a dyn Fn(&str) -> Option<String>,
+}
+
+/// The first `n` segments of `path`: `/v1/db1/tables` with 2 is `/v1/db1`.
+pub fn path_prefix(path: &str, n: usize) -> String {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).take(n).collect();
+    format!("/{}", segments.join("/"))
 }
 
 /// The bucket key for a scope. Every key starts with the plugin instance, so
@@ -62,7 +84,13 @@ pub fn bucket_key(scope: &Scope, s: &Subject<'_>) -> String {
         Scope::Ip => format!("ip:{}", s.client_ip),
         Scope::Route => format!("route:{}", s.route_id),
         Scope::Global => return format!("{}|global", s.plugin_id),
-        Scope::Header(name) => format!("header:{}", (s.header)(name).unwrap_or_default()),
+        Scope::Host => format!("host:{}", s.host),
+        Scope::PathPrefix(n) => format!("path:{}", path_prefix(s.path, *n)),
+        // A header often carries a credential; only a hash of it is kept in memory.
+        Scope::Header(name) => match (s.header)(name) {
+            Some(value) => format!("header:{:016x}", hash_parts(&[&value])),
+            None => "header:-".to_string(),
+        },
     };
     format!("{}|{}|{}", s.plugin_id, s.workspace_id, who)
 }
@@ -238,20 +266,35 @@ mod tests {
         assert_eq!(Scope::parse(Some("ip")), Scope::Ip);
         assert_eq!(Scope::parse(Some("header:X-Team")), Scope::Header("x-team".into()));
         assert_eq!(Scope::parse(Some("consumer")), Scope::Consumer);
+        assert_eq!(Scope::parse(Some("host")), Scope::Host);
+        assert_eq!(Scope::parse(Some("path_prefix:2")), Scope::PathPrefix(2));
         assert_eq!(Scope::parse(None), Scope::Workspace);
     }
 
     #[test]
     fn keys_never_collide_across_plugins_or_workspaces() {
         let h = |n: &str| (n == "x-team").then(|| "blue".to_string());
-        let s = |plugin: &'static str, ws: &'static str| Subject { plugin_id: plugin, route_id: "r", workspace_id: ws, consumer_id: Some("c1"), client_ip: "1.2.3.4", header: &h };
-        for scope in [Scope::Workspace, Scope::Consumer, Scope::Ip, Scope::Route, Scope::Header("x-team".into())] {
+        let s = |plugin: &'static str, ws: &'static str| Subject { plugin_id: plugin, route_id: "r", workspace_id: ws, consumer_id: Some("c1"), client_ip: "1.2.3.4", host: "db1.example.com", path: "/v1/db1/tables/t", header: &h };
+        for scope in [Scope::Workspace, Scope::Consumer, Scope::Ip, Scope::Route, Scope::Host, Scope::PathPrefix(2), Scope::Header("x-team".into())] {
             assert_ne!(bucket_key(&scope, &s("p1", "a")), bucket_key(&scope, &s("p1", "b")), "{scope:?} must separate workspaces");
             assert_ne!(bucket_key(&scope, &s("p1", "a")), bucket_key(&scope, &s("p2", "a")), "{scope:?} must separate plugin instances");
         }
         assert_eq!(bucket_key(&Scope::Global, &s("p1", "a")), bucket_key(&Scope::Global, &s("p1", "b")));
         assert!(bucket_key(&Scope::Ip, &s("p1", "a")).ends_with("ip:1.2.3.4"));
-        assert!(bucket_key(&Scope::Header("x-team".into()), &s("p1", "a")).ends_with("header:blue"));
+        assert!(bucket_key(&Scope::Host, &s("p1", "a")).ends_with("host:db1.example.com"));
+        assert!(bucket_key(&Scope::PathPrefix(2), &s("p1", "a")).ends_with("path:/v1/db1"));
+        // A header value is kept only as a hash, never as itself.
+        let header_key = bucket_key(&Scope::Header("x-team".into()), &s("p1", "a"));
+        assert!(!header_key.contains("blue") && header_key.contains("header:"), "{header_key}");
+        assert_ne!(header_key, bucket_key(&Scope::Header("x-other".into()), &s("p1", "a")), "no value is not the same as a value");
+    }
+
+    #[test]
+    fn path_prefixes_take_whole_segments() {
+        assert_eq!(path_prefix("/v1/db1/tables/t", 2), "/v1/db1");
+        assert_eq!(path_prefix("/v1/db1/tables/t", 9), "/v1/db1/tables/t");
+        assert_eq!(path_prefix("/", 1), "/");
+        assert_eq!(path_prefix("/a//b", 2), "/a/b");
     }
 
     #[test]

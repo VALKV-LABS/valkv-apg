@@ -5,6 +5,15 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Limits can count per host (`scope: host`) and per leading path segments
+  (`scope: path_prefix:<n>`), so each host or each `/db/<name>` under one route has its own
+  budget. `path_prefix:<n>` is also a key for `hash_key` and `split_key`.
+
+### Changed
+- A limit scoped to a header keeps only a hash of the header's value, so a credential used
+  as the key is never held in memory as itself.
+
 ## [0.1.0] - 2026-10-13
 
 The first release.

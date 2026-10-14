@@ -207,6 +207,7 @@ impl KeySource<'_> {
             other => match other.split_once(':')? {
                 ("header", name) => header(self.req, name).unwrap_or(""),
                 ("cookie", name) => header(self.req, "cookie").unwrap_or("").split(';').filter_map(|pair| pair.trim().split_once('=')).find(|(k, _)| *k == name).map_or("", |(_, v)| v),
+                ("path_prefix", n) => return n.parse().ok().map(|n| crate::limits::path_prefix(self.path, n)),
                 ("query", name) => self.query.split('&').map(|pair| pair.split_once('=').unwrap_or((pair, ""))).find(|(k, _)| *k == name).map_or("", |(_, v)| v),
                 _ => "",
             },
@@ -459,7 +460,7 @@ impl ApgProxy {
                 }
                 Some(Built::RateLimit(cfg)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
-                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
                     let decision = self.buckets.take_request(&bucket_key(&cfg.scope, &subject), cfg);
                     ctx.rate = Some((cfg.clone(), decision.remaining));
                     if decision.allowed {
@@ -550,7 +551,7 @@ impl ApgProxy {
                 }
                 Some(Built::Quota(quota)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
-                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
                     let decision = self.gateway.plugins.quotas.take(&bucket_key(&quota.scope, &subject), quota, now);
                     ctx.response_headers.push(("x-quota-limit".into(), quota.limit.to_string()));
                     ctx.response_headers.push(("x-quota-remaining".into(), decision.remaining.to_string()));
@@ -606,7 +607,7 @@ impl ApgProxy {
                 }
                 Some(Built::Bandwidth(cfg)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
-                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
                     let key = bucket_key(&cfg.scope, &subject);
                     if self.buckets.admit_bytes(&key, cfg) {
                         // Charged in the log phase, once the real size is known.
@@ -1489,6 +1490,12 @@ mod tests {
         let anonymous = KeySource { req: &req, host: "h", client_ip: "", path: "/", query: "", workspace_id: "w", consumer_id: "" };
         assert_eq!(anonymous.value("client_ip"), None);
         assert_eq!(anonymous.value("consumer"), None, "no consumer was authenticated");
+
+        // The first n segments of the path: one key per database under /db/<name>.
+        let deep = KeySource { req: &req, host: "h", client_ip: "", path: "/db/sales/tables/t", query: "", workspace_id: "w", consumer_id: "" };
+        assert_eq!(deep.value("path_prefix:2").as_deref(), Some("/db/sales"));
+        assert_eq!(deep.value("path_prefix:9").as_deref(), Some("/db/sales/tables/t"));
+        assert_eq!(deep.value("path_prefix:x"), None);
     }
 
     #[test]

@@ -168,6 +168,9 @@ function config({ keyAuthOn = true } = {}) {
         { type: "response_transformer", config: { headers: { set: { "x-served-by": "apg" }, remove: ["x-powered-by"] }, body: { set: { "/gateway": "{{ route.name }}" }, remove: ["/headers"] } } },
       ]),
       route("quota", [{ type: "quota", config: { limit: 2, window: "hour", scope: "header:x-run" } }]),
+      // One budget per host the route serves, and per database under /db/<name>.
+      route("perhost", [{ type: "rate_limit", config: { per_second: 0.001, burst: 1, scope: "host" } }], { hosts: ["*.perhost.plug.test"] }),
+      route("perpath", [{ type: "rate_limit", config: { per_second: 0.001, burst: 1, scope: "path_prefix:2" } }]),
       route("gzip", [{ type: "compression", config: { min_bytes: 10, algorithms: ["gzip"] } }]),
       route("gzipbig", [{ type: "compression", config: { min_bytes: 10000000 } }]),
       route("fwd", [{ type: "forward_auth", config: { url: `http://${HOST}:${AUTH_PORT}/verify`, response_headers: ["X-Auth-User"] } }]),
@@ -440,6 +443,19 @@ step("response_transformer rewrites the upstream's headers and JSON body", async
   assert.equal(res.json.gateway, "pl-resptx");
   assert.equal(res.json.headers, undefined);
   assert.equal(res.json.method, "GET", "the rest of the body is intact");
+});
+
+step("rate_limit by host and by path prefix: each host, and each database path, has its own budget", async () => {
+  // Fresh names every run: the buckets outlive one run of the suite.
+  const run = Date.now().toString(36);
+  const host = (h) => send(NODE, { host: `${run}${h}.perhost.plug.test`, path: "/" });
+  assert.deepEqual([(await host("a")).status, (await host("a")).status], [200, 429], "one host spends its own burst");
+  assertRefused(await host("a"), 429, "RATE_LIMITED");
+  assert.equal((await host("b")).status, 200, "another host of the same route still has its budget");
+
+  const path = (p) => call("perpath", { path: p });
+  assert.deepEqual([(await path(`/db/${run}a/tables`)).status, (await path(`/db/${run}a/rows/7`)).status], [200, 429], "the first two segments name the budget");
+  assert.equal((await path(`/db/${run}b/tables`)).status, 200, "another database under the same route still has its budget");
 });
 
 step("quota: the allowance counts down, then 429 until the window ends", async () => {

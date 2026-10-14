@@ -17,7 +17,7 @@ Byte-budget token bucket: admission before proxying, debit after the response.
 |---|---|---|---|
 | `bytes_per_second` | number | `5000000` |  |
 | `burst_bytes` | number (≥ 1) | `20000000` |  |
-| `scope` | string | `workspace` |  |
+| `scope` | string | `workspace` | What a limit counts against: the workspace, the authenticated consumer, the client address, the route, everything, the request's host, the first n segments of its path, or the value of a header. |
 
 ## When to use it
 
