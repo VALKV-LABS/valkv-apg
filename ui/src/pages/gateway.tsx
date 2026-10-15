@@ -115,8 +115,7 @@ export function Routes() {
   const [inspect, setInspect] = useState<Json | null>(null);
   const spec: ResourceSpec = {
     title: "Routes", singular: "route", segment: "routes", schemaPath: "resources/route.json",
-    // idle_timeout_ms is not enforced by nodes yet, so the form does not offer it.
-    hide: ["plugins", "cache_epoch", "idle_timeout_ms"],
+    hide: ["plugins", "cache_epoch"],
     choices: { service: serviceChoices },
     blank: { paths: ["/"] },
     emptyHint: "A route sends requests for a host and path to a service.",

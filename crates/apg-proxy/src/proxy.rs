@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_core::modules::http::compression::ResponseCompression;
+use pingora_core::protocols::Digest;
 use pingora_core::protocols::http::compression::Algorithm;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::{Error, ErrorSource, ErrorType};
@@ -33,7 +34,7 @@ use crate::auth::{AuthEffects, AuthOutcome};
 use crate::callout::{Answer, Forwarded};
 use crate::config::HttpMode;
 use crate::gateway::Gateway;
-use crate::limits::{BandwidthConfig, Buckets, RateLimitConfig, Subject, bucket_key};
+use crate::limits::{BandwidthConfig, Buckets, InFlight, Permit, RateLimitConfig, Subject, bucket_key};
 use crate::plugins::{AUTH_TYPES, Built, FAIL_CLOSED, Req, Verdict};
 use crate::metrics;
 use crate::mtls::ClientCert;
@@ -56,6 +57,8 @@ pub struct ApgProxy {
     pub gateway: Arc<Gateway>,
     pub settings: ProxySettings,
     pub buckets: Arc<Buckets>,
+    /// Requests in progress, for `concurrency_limit`.
+    pub in_flight: Arc<InFlight>,
     /// Rotation of each split route, by route id.
     split_rotation: DashMap<String, AtomicUsize>,
 }
@@ -98,6 +101,14 @@ pub struct Ctx {
     bytes_out: u64,
     rate: Option<(RateLimitConfig, u64)>,
     bandwidth: Option<(String, BandwidthConfig)>,
+    /// Slots this request holds under `concurrency_limit`; given back when the context is dropped.
+    permits: Vec<Permit>,
+    /// The client asked to upgrade the connection (WebSocket and the like).
+    upgrade: bool,
+    /// A second descriptor of the upstream socket, kept while an upgrade may follow.
+    upstream_socket: Option<std::net::TcpStream>,
+    /// Set once the upstream agreed to the upgrade: the connection is watched for draining.
+    upgraded: Option<crate::long_lived::Registration>,
     /// The socket peer's address, and whether it is a trusted proxy.
     peer_ip: String,
     peer_trusted: bool,
@@ -207,6 +218,7 @@ impl KeySource<'_> {
             other => match other.split_once(':')? {
                 ("header", name) => header(self.req, name).unwrap_or(""),
                 ("cookie", name) => header(self.req, "cookie").unwrap_or("").split(';').filter_map(|pair| pair.trim().split_once('=')).find(|(k, _)| *k == name).map_or("", |(_, v)| v),
+                ("path_prefix", n) => return n.parse().ok().map(|n| crate::limits::path_prefix(self.path, n)),
                 ("query", name) => self.query.split('&').map(|pair| pair.split_once('=').unwrap_or((pair, ""))).find(|(k, _)| *k == name).map_or("", |(_, v)| v),
                 _ => "",
             },
@@ -264,7 +276,7 @@ const PAYLOAD_TOO_LARGE: (u16, &str, &str) = (413, "PAYLOAD_TOO_LARGE", "the req
 
 impl ApgProxy {
     pub fn new(gateway: Arc<Gateway>, settings: ProxySettings) -> Self {
-        Self { gateway, settings, buckets: Arc::new(Buckets::default()), split_rotation: DashMap::new() }
+        Self { gateway, settings, buckets: Arc::new(Buckets::default()), in_flight: Arc::new(InFlight::default()), split_rotation: DashMap::new() }
     }
 
     /// Chooses the service for this request: the route's only service, or one
@@ -459,7 +471,7 @@ impl ApgProxy {
                 }
                 Some(Built::RateLimit(cfg)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
-                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
                     let decision = self.buckets.take_request(&bucket_key(&cfg.scope, &subject), cfg);
                     ctx.rate = Some((cfg.clone(), decision.remaining));
                     if decision.allowed {
@@ -550,7 +562,7 @@ impl ApgProxy {
                 }
                 Some(Built::Quota(quota)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
-                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
                     let decision = self.gateway.plugins.quotas.take(&bucket_key(&quota.scope, &subject), quota, now);
                     ctx.response_headers.push(("x-quota-limit".into(), quota.limit.to_string()));
                     ctx.response_headers.push(("x-quota-remaining".into(), decision.remaining.to_string()));
@@ -606,7 +618,7 @@ impl ApgProxy {
                 }
                 Some(Built::Bandwidth(cfg)) => {
                     let lookup = |name: &str| req.header(name).map(str::to_string);
-                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, header: &lookup };
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
                     let key = bucket_key(&cfg.scope, &subject);
                     if self.buckets.admit_bytes(&key, cfg) {
                         // Charged in the log phase, once the real size is known.
@@ -615,6 +627,21 @@ impl ApgProxy {
                     } else {
                         metrics::LIMITED.with_label_values(&["bandwidth_limit"]).inc();
                         Verdict::Deny { status: 429, code: "BANDWIDTH_LIMIT_EXCEEDED", message: "bandwidth limit exceeded" }
+                    }
+                }
+                Some(Built::Concurrency(cfg)) => {
+                    let lookup = |name: &str| req.header(name).map(str::to_string);
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
+                    match self.in_flight.acquire(&bucket_key(&cfg.scope, &subject), cfg.max_in_flight) {
+                        Some(permit) => {
+                            ctx.permits.push(permit);
+                            Verdict::Continue
+                        }
+                        None => {
+                            metrics::LIMITED.with_label_values(&["concurrency_limit"]).inc();
+                            ctx.retry_after = Some(1);
+                            Verdict::Deny { status: 429, code: "CONCURRENCY_LIMITED", message: "too many requests in progress" }
+                        }
                     }
                 }
             };
@@ -785,6 +812,7 @@ impl ProxyHttp for ApgProxy {
             module.adjust_level(0);
         }
         ctx.is_tls = session.digest().is_some_and(|d| d.ssl_digest.is_some());
+        ctx.upgrade = session.is_upgrade_req();
 
         let (raw_path, query, method, host, inbound_id, forwarded_for) = {
             let req = session.req_header();
@@ -984,7 +1012,15 @@ impl ProxyHttp for ApgProxy {
             let backend = &ctx.picked.as_ref().expect("chosen above").backend;
             let reason = match upstreams.address(&service, backend, ctx.hash_key.as_deref()).await {
                 Ok(addr) => match upstreams.peer(&service, backend, addr, budget) {
-                    Ok(peer) => {
+                    Ok(mut peer) => {
+                        // An upgraded connection is closed after the route's idle timeout, not the service's read timeout.
+                        // Pingora restarts the read on traffic either way, so this is idle in both directions.
+                        if ctx.upgrade
+                            && let Some(matched) = &ctx.matched
+                        {
+                            let idle = Duration::from_millis(matched.route.idle_timeout_ms);
+                            peer.options.read_timeout = Some(budget.map_or(idle, |b| idle.min(b)));
+                        }
                         ctx.upstream_started = Some(Instant::now());
                         ctx.upstream_addr = Some(addr);
                         return Ok(Box::new(peer));
@@ -1119,6 +1155,16 @@ impl ProxyHttp for ApgProxy {
 
     async fn response_filter(&self, session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
         ctx.upstream_status = Some(upstream_response.status.as_u16());
+        let socket = ctx.upstream_socket.take();
+        if upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
+            && let (Some(matched), Some(service)) = (&ctx.matched, &ctx.service)
+        {
+            session.set_read_timeout(Some(Duration::from_millis(matched.route.idle_timeout_ms)));
+            if let Some(socket) = socket {
+                let drain = Duration::from_millis(service.spec.drain_timeout_ms);
+                ctx.upgraded = Some(self.gateway.long_lived.register(&service.id, &ctx.backend_target, drain, socket));
+            }
+        }
         if ctx.upstream_ms.is_none() {
             ctx.upstream_ms = ctx.upstream_started.map(|t| t.elapsed().as_millis() as u64);
         }
@@ -1296,7 +1342,31 @@ impl ProxyHttp for ApgProxy {
         FailToProxy { error_code: status, can_reuse_downstream: false }
     }
 
+    /// For a request that asks for an upgrade, keeps a second descriptor of
+    /// the upstream socket so the connection can be closed if its backend drains.
+    async fn connected_to_upstream(
+        &self,
+        _session: &mut Session,
+        _reused: bool,
+        _peer: &HttpPeer,
+        #[cfg(unix)] fd: std::os::unix::io::RawFd,
+        #[cfg(windows)] _sock: std::os::windows::io::RawSocket,
+        _digest: Option<&Digest>,
+        ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<()> {
+        #[cfg(unix)]
+        if ctx.upgrade {
+            // SAFETY: Pingora keeps `fd` open for the whole of this call; it is only duplicated here.
+            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+            ctx.upstream_socket = borrowed.try_clone_to_owned().ok().map(std::net::TcpStream::from);
+        }
+        Ok(())
+    }
+
     async fn logging(&self, session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX) {
+        // The connection is over: stop watching it and let its socket go.
+        ctx.upgraded = None;
+        ctx.upstream_socket = None;
         let status = session.response_written().map_or(0, |r| r.status.as_u16());
         let elapsed = ctx.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
         let class = metrics::status_class(status);
@@ -1489,6 +1559,12 @@ mod tests {
         let anonymous = KeySource { req: &req, host: "h", client_ip: "", path: "/", query: "", workspace_id: "w", consumer_id: "" };
         assert_eq!(anonymous.value("client_ip"), None);
         assert_eq!(anonymous.value("consumer"), None, "no consumer was authenticated");
+
+        // The first n segments of the path: one key per database under /db/<name>.
+        let deep = KeySource { req: &req, host: "h", client_ip: "", path: "/db/sales/tables/t", query: "", workspace_id: "w", consumer_id: "" };
+        assert_eq!(deep.value("path_prefix:2").as_deref(), Some("/db/sales"));
+        assert_eq!(deep.value("path_prefix:9").as_deref(), Some("/db/sales/tables/t"));
+        assert_eq!(deep.value("path_prefix:x"), None);
     }
 
     #[test]

@@ -17,7 +17,7 @@ Token-bucket request rate limit.
 |---|---|---|---|
 | `per_second` | number | `100` | Sustained rate. Fractions are allowed: 0.5 is 30 per minute. |
 | `burst` | number (≥ 1) | `200` | Bucket size. |
-| `scope` | string | `workspace` |  |
+| `scope` | string | `workspace` | What a limit counts against: the workspace, the authenticated consumer, the client address, the route, everything, the request's host, the first n segments of its path, or the value of a header. |
 | `response_headers` | boolean | `true` |  |
 
 **Not available yet:** `store`. Setting it to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.

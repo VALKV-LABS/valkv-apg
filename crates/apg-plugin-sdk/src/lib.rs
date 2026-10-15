@@ -51,6 +51,7 @@ pub const PLUGIN_TYPES: &[PluginTypeInfo] = &[
     PluginTypeInfo { name: "rate_limit",           default_priority: 1900, phases: &[Request, ResponseHeaders] },
     PluginTypeInfo { name: "quota",                default_priority: 1800, phases: &[Request, ResponseHeaders] },
     PluginTypeInfo { name: "bandwidth_limit",      default_priority: 1700, phases: &[Request, Log] },
+    PluginTypeInfo { name: "concurrency_limit",    default_priority: 1650, phases: &[Request, Log] },
     PluginTypeInfo { name: "http_callout",         default_priority: 1500, phases: &[Request, ResponseHeaders] },
     PluginTypeInfo { name: "wasm",                 default_priority: 1400, phases: &[Request, ResponseHeaders] },
     PluginTypeInfo { name: "redirect",             default_priority: 1300, phases: &[Request] },
@@ -73,12 +74,12 @@ mod tests {
     use std::collections::HashSet;
 
     #[test]
-    fn there_are_21_types_with_unique_names_and_priorities() {
-        assert_eq!(PLUGIN_TYPES.len(), 21);
+    fn there_are_22_types_with_unique_names_and_priorities() {
+        assert_eq!(PLUGIN_TYPES.len(), 22);
         let names: HashSet<_> = PLUGIN_TYPES.iter().map(|t| t.name).collect();
         let prios: HashSet<_> = PLUGIN_TYPES.iter().map(|t| t.default_priority).collect();
-        assert_eq!(names.len(), 21);
-        assert_eq!(prios.len(), 21, "equal priorities would make order ambiguous");
+        assert_eq!(names.len(), 22);
+        assert_eq!(prios.len(), 22, "equal priorities would make order ambiguous");
     }
 
     #[test]

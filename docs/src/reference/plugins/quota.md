@@ -17,7 +17,7 @@ A request allowance per calendar hour, day or month, UTC. Counted per node.
 |---|---|---|---|
 | `limit` (required) | integer (≥ 1, ≤ 1000000000000) |  | Requests allowed per window. |
 | `window` | `hour`, `day`, `month` | `hour` |  |
-| `scope` | string | `workspace` |  |
+| `scope` | string | `workspace` | What a limit counts against: the workspace, the authenticated consumer, the client address, the route, everything, the request's host, the first n segments of its path, or the value of a header. |
 
 **Not available yet:** `store`. Setting it to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.
 

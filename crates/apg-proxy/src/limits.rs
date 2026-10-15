@@ -1,4 +1,5 @@
-//! Request-rate and bandwidth limiting (spec §9.4: `rate_limit`, `bandwidth_limit`).
+//! Request-rate, bandwidth and concurrency limiting (spec §9.4: `rate_limit`,
+//! `bandwidth_limit`, `concurrency_limit`).
 //!
 //! Both are token buckets held per node. A fleet of N nodes therefore allows
 //! up to N times the configured rate; the plugin documentation says so.
@@ -6,11 +7,14 @@
 //! Bucket maps are bounded: idle buckets are evicted, so a limit scoped to
 //! `ip` cannot grow memory without limit (spec NFR-8).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde_json::Value;
+
+use crate::upstream::hash_parts;
 
 /// What a limit is counted against.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,6 +24,10 @@ pub enum Scope {
     Ip,
     Route,
     Global,
+    /// The request's host, so each host a route serves has its own budget.
+    Host,
+    /// The first n segments of the path.
+    PathPrefix(usize),
     Header(String),
 }
 
@@ -32,10 +40,16 @@ impl Scope {
             Some("ip") => Scope::Ip,
             Some("route") => Scope::Route,
             Some("global") => Scope::Global,
-            Some(other) => match other.strip_prefix("header:") {
-                Some(name) => Scope::Header(name.to_ascii_lowercase()),
-                None => Scope::Workspace,
-            },
+            Some("host") => Scope::Host,
+            Some(other) => {
+                if let Some(name) = other.strip_prefix("header:") {
+                    Scope::Header(name.to_ascii_lowercase())
+                } else if let Some(n) = other.strip_prefix("path_prefix:").and_then(|n| n.parse().ok()) {
+                    Scope::PathPrefix(n)
+                } else {
+                    Scope::Workspace
+                }
+            }
             None => Scope::Workspace,
         }
     }
@@ -48,7 +62,17 @@ pub struct Subject<'a> {
     pub workspace_id: &'a str,
     pub consumer_id: Option<&'a str>,
     pub client_ip: &'a str,
+    /// The request's host, without a port.
+    pub host: &'a str,
+    /// The normalised path.
+    pub path: &'a str,
     pub header: &'a dyn Fn(&str) -> Option<String>,
+}
+
+/// The first `n` segments of `path`: `/v1/db1/tables` with 2 is `/v1/db1`.
+pub fn path_prefix(path: &str, n: usize) -> String {
+    let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).take(n).collect();
+    format!("/{}", segments.join("/"))
 }
 
 /// The bucket key for a scope. Every key starts with the plugin instance, so
@@ -62,7 +86,13 @@ pub fn bucket_key(scope: &Scope, s: &Subject<'_>) -> String {
         Scope::Ip => format!("ip:{}", s.client_ip),
         Scope::Route => format!("route:{}", s.route_id),
         Scope::Global => return format!("{}|global", s.plugin_id),
-        Scope::Header(name) => format!("header:{}", (s.header)(name).unwrap_or_default()),
+        Scope::Host => format!("host:{}", s.host),
+        Scope::PathPrefix(n) => format!("path:{}", path_prefix(s.path, *n)),
+        // A header often carries a credential; only a hash of it is kept in memory.
+        Scope::Header(name) => match (s.header)(name) {
+            Some(value) => format!("header:{:016x}", hash_parts(&[&value])),
+            None => "header:-".to_string(),
+        },
     };
     format!("{}|{}|{}", s.plugin_id, s.workspace_id, who)
 }
@@ -102,6 +132,69 @@ impl BandwidthConfig {
             burst_bytes: v.get("burst_bytes").and_then(Value::as_f64).unwrap_or(20_000_000.0),
             scope: Scope::parse(v.get("scope").and_then(Value::as_str)),
         }
+    }
+}
+
+/// Parsed `concurrency_limit` configuration. Defaults equal `schemas/plugins/concurrency_limit.json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConcurrencyConfig {
+    pub max_in_flight: usize,
+    pub scope: Scope,
+}
+
+impl ConcurrencyConfig {
+    pub fn from_json(v: &Value) -> Self {
+        Self {
+            max_in_flight: v.get("max_in_flight").and_then(Value::as_u64).unwrap_or(100).max(1) as usize,
+            scope: Scope::parse(v.get("scope").and_then(Value::as_str)),
+        }
+    }
+}
+
+/// Requests in progress, per counter. An entry exists only while a request
+/// holds it, so the map is never larger than the traffic in flight.
+#[derive(Default)]
+pub struct InFlight {
+    map: Arc<DashMap<String, usize>>,
+}
+
+/// A slot taken by one request; dropping it gives the slot back.
+pub struct Permit {
+    map: Arc<DashMap<String, usize>>,
+    key: String,
+}
+
+impl InFlight {
+    /// Takes a slot under `key`, or none when `max` are already taken.
+    pub fn acquire(&self, key: &str, max: usize) -> Option<Permit> {
+        let mut count = self.map.entry(key.to_string()).or_insert(0);
+        if *count >= max {
+            return None;
+        }
+        *count += 1;
+        Some(Permit { map: self.map.clone(), key: key.to_string() })
+    }
+
+    /// Slots taken under `key`.
+    pub fn count(&self, key: &str) -> usize {
+        self.map.get(key).map_or(0, |n| *n)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.map.remove_if_mut(&self.key, |_, n| {
+            *n = n.saturating_sub(1);
+            *n == 0
+        });
     }
 }
 
@@ -231,6 +324,51 @@ mod tests {
         let d = BandwidthConfig::from_json(&json!({}));
         assert_eq!(d.bytes_per_second, schema["properties"]["bytes_per_second"]["default"].as_f64().unwrap());
         assert_eq!(d.burst_bytes, schema["properties"]["burst_bytes"]["default"].as_f64().unwrap());
+
+        let schema: Value = serde_json::from_str(include_str!("../../../schemas/plugins/concurrency_limit.json")).unwrap();
+        let d = ConcurrencyConfig::from_json(&json!({}));
+        assert_eq!(d.max_in_flight as u64, schema["properties"]["max_in_flight"]["default"].as_u64().unwrap());
+        assert_eq!(d.scope, Scope::parse(schema["properties"]["scope"]["default"].as_str()));
+    }
+
+    #[test]
+    fn slots_are_given_back_when_a_request_ends() {
+        let in_flight = InFlight::default();
+        let first = in_flight.acquire("k", 2).expect("a free slot");
+        let second = in_flight.acquire("k", 2).expect("a free slot");
+        assert!(in_flight.acquire("k", 2).is_none(), "two are in progress");
+        assert!(in_flight.acquire("other", 2).is_some(), "another counter is separate");
+        drop(first);
+        assert_eq!(in_flight.count("k"), 1);
+        let third = in_flight.acquire("k", 2).expect("the slot came back");
+        drop(second);
+        drop(third);
+        assert!(in_flight.is_empty(), "an idle counter takes no memory");
+    }
+
+    #[test]
+    fn slots_hold_under_contention() {
+        let in_flight = Arc::new(InFlight::default());
+        let taken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (in_flight, taken, peak) = (in_flight.clone(), taken.clone(), peak.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..2000 {
+                        if let Some(permit) = in_flight.acquire("k", 3) {
+                            let now = taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                            taken.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                            drop(permit);
+                        }
+                    }
+                })
+            })
+            .collect();
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert!(peak.load(std::sync::atomic::Ordering::SeqCst) <= 3);
+        assert!(in_flight.is_empty());
     }
 
     #[test]
@@ -238,20 +376,35 @@ mod tests {
         assert_eq!(Scope::parse(Some("ip")), Scope::Ip);
         assert_eq!(Scope::parse(Some("header:X-Team")), Scope::Header("x-team".into()));
         assert_eq!(Scope::parse(Some("consumer")), Scope::Consumer);
+        assert_eq!(Scope::parse(Some("host")), Scope::Host);
+        assert_eq!(Scope::parse(Some("path_prefix:2")), Scope::PathPrefix(2));
         assert_eq!(Scope::parse(None), Scope::Workspace);
     }
 
     #[test]
     fn keys_never_collide_across_plugins_or_workspaces() {
         let h = |n: &str| (n == "x-team").then(|| "blue".to_string());
-        let s = |plugin: &'static str, ws: &'static str| Subject { plugin_id: plugin, route_id: "r", workspace_id: ws, consumer_id: Some("c1"), client_ip: "1.2.3.4", header: &h };
-        for scope in [Scope::Workspace, Scope::Consumer, Scope::Ip, Scope::Route, Scope::Header("x-team".into())] {
+        let s = |plugin: &'static str, ws: &'static str| Subject { plugin_id: plugin, route_id: "r", workspace_id: ws, consumer_id: Some("c1"), client_ip: "1.2.3.4", host: "db1.example.com", path: "/v1/db1/tables/t", header: &h };
+        for scope in [Scope::Workspace, Scope::Consumer, Scope::Ip, Scope::Route, Scope::Host, Scope::PathPrefix(2), Scope::Header("x-team".into())] {
             assert_ne!(bucket_key(&scope, &s("p1", "a")), bucket_key(&scope, &s("p1", "b")), "{scope:?} must separate workspaces");
             assert_ne!(bucket_key(&scope, &s("p1", "a")), bucket_key(&scope, &s("p2", "a")), "{scope:?} must separate plugin instances");
         }
         assert_eq!(bucket_key(&Scope::Global, &s("p1", "a")), bucket_key(&Scope::Global, &s("p1", "b")));
         assert!(bucket_key(&Scope::Ip, &s("p1", "a")).ends_with("ip:1.2.3.4"));
-        assert!(bucket_key(&Scope::Header("x-team".into()), &s("p1", "a")).ends_with("header:blue"));
+        assert!(bucket_key(&Scope::Host, &s("p1", "a")).ends_with("host:db1.example.com"));
+        assert!(bucket_key(&Scope::PathPrefix(2), &s("p1", "a")).ends_with("path:/v1/db1"));
+        // A header value is kept only as a hash, never as itself.
+        let header_key = bucket_key(&Scope::Header("x-team".into()), &s("p1", "a"));
+        assert!(!header_key.contains("blue") && header_key.contains("header:"), "{header_key}");
+        assert_ne!(header_key, bucket_key(&Scope::Header("x-other".into()), &s("p1", "a")), "no value is not the same as a value");
+    }
+
+    #[test]
+    fn path_prefixes_take_whole_segments() {
+        assert_eq!(path_prefix("/v1/db1/tables/t", 2), "/v1/db1");
+        assert_eq!(path_prefix("/v1/db1/tables/t", 9), "/v1/db1/tables/t");
+        assert_eq!(path_prefix("/", 1), "/");
+        assert_eq!(path_prefix("/a//b", 2), "/a/b");
     }
 
     #[test]

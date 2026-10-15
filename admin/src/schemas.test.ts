@@ -80,6 +80,8 @@ describe("plugin config schemas", () => {
   it("accepts the documented keys", () => {
     expect(registry.validate("plugins/rate_limit.json", { per_second: 0.5, burst: 10, scope: "header:x-team", store: "redis" })).toEqual([]);
     expect(registry.validate("plugins/bandwidth_limit.json", { bytes_per_second: 1000, burst_bytes: 2000, scope: "ip" })).toEqual([]);
+    expect(registry.validate("plugins/concurrency_limit.json", { max_in_flight: 4, scope: "path_prefix:2" })).toEqual([]);
+    expect(registry.validate("plugins/concurrency_limit.json", { max_in_flight: 0 })).not.toEqual([]);
   });
 
   it("rejects an out-of-range value", () => {

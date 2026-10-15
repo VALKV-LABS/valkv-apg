@@ -47,7 +47,7 @@
       ]
     },
     "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 86400000 },
-    "idle_timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 86400000, "default": 300000 },
+    "idle_timeout_ms": { "description": "An upgraded (WebSocket) connection with no traffic either way for this long is closed.", "type": "integer", "minimum": 1000, "maximum": 86400000, "default": 300000 },
     "error_responses": { "$ref": "../common.json#/$defs/errorResponses" },
     "enabled": { "type": "boolean", "default": true },
     "cache_epoch": { "type": "integer", "minimum": 0, "readOnly": true },

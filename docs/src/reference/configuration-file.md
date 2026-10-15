@@ -74,7 +74,7 @@ Under `services`. A named upstream: backends plus load-balancing, health, timeou
 | `backends[].labels` | object |  |  |
 | `load_balancing` | object |  |  |
 | `load_balancing.strategy` | `round_robin`, `least_connections`, `random`, `hash` | `round_robin` |  |
-| `load_balancing.hash_key` | string | `client_ip` | What to key a hash, a limit or a split on. |
+| `load_balancing.hash_key` | string | `client_ip` | What to key a hash, a limit or a split on. path_prefix:<n> is the first n segments of the path. |
 | `timeouts` | object |  |  |
 | `timeouts.connect_ms` | integer (≥ 1, ≤ 600000) | `5000` |  |
 | `timeouts.read_ms` | integer (≥ 1, ≤ 3600000) | `60000` |  |
@@ -110,12 +110,12 @@ Under `services`. A named upstream: backends plus load-balancing, health, timeou
 | `keepalive.max_idle_per_backend` | integer (≥ 0, ≤ 10000) | `64` |  |
 | `egress_restricted` | boolean | `false` | When true the node refuses to connect this service to loopback, link-local and private addresses unless APG_BACKEND_ALLOW_CIDRS covers them. The admin sets it from the role of whoever wrote the service; a value sent to the Admin API is ignored. |
 | `host_header` | string | `preserve` | preserve, backend, or a literal Host value. |
-| `drain_timeout_ms` | integer (≥ 0, ≤ 3600000) | `30000` |  |
+| `drain_timeout_ms` | integer (≥ 0, ≤ 3600000) | `30000` | How long an upgraded (WebSocket) connection may stay on a backend that is draining, down or removed before it is closed. 0 closes it at once. |
 | `plugins[]` | list of objects |  | Declarative config only: plugin instances attached to this service. |
 | `labels` | object |  |  |
 | `metadata` | object |  | Free-form. Never interpreted by the gateway. At most 16 KiB serialised. |
 
-**Not available yet:** `drain_timeout_ms`, `keepalive.max_idle_per_backend`, `retries.buffer_bytes`. Setting one of them to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.
+**Not available yet:** `keepalive.max_idle_per_backend`, `retries.buffer_bytes`. Setting one of them to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.
 
 ## Route
 
@@ -128,7 +128,7 @@ Under `routes`. Match predicates that send a request to a service.
 | `split[]` | list of objects |  |  |
 | `split[].service` (required) | string |  | A reference to another resource in the same workspace, by name or id. |
 | `split[].weight` (required) | integer (≥ 0, ≤ 1000) |  |  |
-| `split_key` | string |  | What to key a hash, a limit or a split on. |
+| `split_key` | string |  | What to key a hash, a limit or a split on. path_prefix:<n> is the first n segments of the path. |
 | `hosts` | list of object |  |  |
 | `paths` | list of string or object |  |  |
 | `methods` | list of object |  |  |
@@ -144,14 +144,12 @@ Under `routes`. Match predicates that send a request to a service.
 | `strip_path` | boolean | `false` |  |
 | `rewrite` | object |  |  |
 | `timeout_ms` | integer (≥ 1, ≤ 86400000) |  |  |
-| `idle_timeout_ms` | integer (≥ 1000, ≤ 86400000) | `300000` |  |
+| `idle_timeout_ms` | integer (≥ 1000, ≤ 86400000) | `300000` | An upgraded (WebSocket) connection with no traffic either way for this long is closed. |
 | `error_responses` | object |  | Custom gateway error responses, keyed by error code. |
 | `enabled` | boolean | `true` |  |
 | `plugins[]` | list of objects |  | Declarative config only: plugin instances attached to this route. |
 | `labels` | object |  |  |
 | `metadata` | object |  | Free-form. Never interpreted by the gateway. At most 16 KiB serialised. |
-
-**Not available yet:** `idle_timeout_ms`. Setting it to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.
 
 ## Consumer
 
@@ -190,7 +188,7 @@ Under `plugins`. A plugin instance attached at a scope. `config` is validated se
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string |  |  |
-| `type` (required) | `ip_restriction`, `cors`, `request_size_limit`, `mtls_auth`, `jwt_auth`, `key_auth`, `basic_auth`, `forward_auth`, `acl`, `rate_limit`, `quota`, `bandwidth_limit`, `http_callout`, `wasm`, `redirect`, `static_response`, `request_transformer`, `response_cache`, `response_transformer`, `compression`, `access_log` |  |  |
+| `type` (required) | `ip_restriction`, `cors`, `request_size_limit`, `mtls_auth`, `jwt_auth`, `key_auth`, `basic_auth`, `forward_auth`, `acl`, `rate_limit`, `quota`, `bandwidth_limit`, `concurrency_limit`, `http_callout`, `wasm`, `redirect`, `static_response`, `request_transformer`, `response_cache`, `response_transformer`, `compression`, `access_log` |  |  |
 | `scope` (required) | `global`, `workspace`, `service`, `route` |  |  |
 | `scope_ref` | string |  | Service or route name or id. Required for those scopes. |
 | `consumer` | string |  | A reference to another resource in the same workspace, by name or id. |

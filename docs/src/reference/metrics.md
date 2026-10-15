@@ -13,6 +13,8 @@ Both processes serve Prometheus metrics at `/metrics`: the node on its managemen
 | `apg_upstream_duration_seconds` | histogram | `route`, `service` | Time from choosing a backend to its response headers. |
 | `apg_request_bytes_total` | counter | `route`, `service` | Request body bytes received. |
 | `apg_response_bytes_total` | counter | `route`, `service` | Response body bytes sent. |
+| `apg_upgraded_connections` | gauge |  | Upgraded (WebSocket) connections open. |
+| `apg_drained_connections_total` | counter |  | Upgraded connections closed because their backend was drained or removed. |
 | `apg_active_requests` | gauge |  | Requests in progress. |
 | `apg_usage_windows_pending` | gauge |  | Closed usage windows waiting to be delivered. |
 | `apg_usage_windows_dropped_total` | counter |  | Usage windows given up after waiting a day. |

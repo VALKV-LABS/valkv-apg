@@ -13,12 +13,10 @@
 #          GET returns), anything else is refused. Omitted when there is none.
 
 service:
-  - { path: drain_timeout_ms, default: 30000 }
   - { path: keepalive.max_idle_per_backend, default: 64 }
   - { path: retries.buffer_bytes, default: 65536 }
 
-route:
-  - { path: idle_timeout_ms, default: 300000 }
+route: []
 
 # Refused by the admin only: keys that work from a file but not yet from a
 # control plane. Empty at present.

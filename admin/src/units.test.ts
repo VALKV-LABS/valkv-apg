@@ -182,7 +182,7 @@ describe("plugin type table", () => {
       default_priority: Number(m[2]),
       phases: m[3]!.split(",").map((p) => p.trim()).filter(Boolean).map((p) => p.replace(/([a-z])([A-Z])/g, "$1_$2").toLowerCase()),
     }));
-    expect(fromRust).toHaveLength(21);
+    expect(fromRust).toHaveLength(22);
     expect(PLUGIN_TYPES).toEqual(fromRust);
   });
 });

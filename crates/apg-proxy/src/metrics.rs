@@ -36,6 +36,13 @@ pub static REQUEST_BYTES: LazyLock<IntCounterVec> =
 pub static RESPONSE_BYTES: LazyLock<IntCounterVec> =
     LazyLock::new(|| register_int_counter_vec!("apg_response_bytes_total", "Response body bytes sent.", &["route", "service"]).unwrap());
 
+pub static UPGRADED: LazyLock<IntGauge> =
+    LazyLock::new(|| register_int_gauge!("apg_upgraded_connections", "Upgraded (WebSocket) connections open.").unwrap());
+
+pub static DRAINED: LazyLock<IntCounter> = LazyLock::new(|| {
+    register_int_counter!("apg_drained_connections_total", "Upgraded connections closed because their backend was drained or removed.").unwrap()
+});
+
 pub static ACTIVE_REQUESTS: LazyLock<IntGauge> = LazyLock::new(|| register_int_gauge!("apg_active_requests", "Requests in progress.").unwrap());
 
 pub static USAGE_PENDING: LazyLock<IntGauge> =
@@ -152,6 +159,8 @@ pub fn init() {
     LazyLock::force(&REQUEST_BYTES);
     LazyLock::force(&RESPONSE_BYTES);
     LazyLock::force(&ACTIVE_REQUESTS);
+    LazyLock::force(&UPGRADED);
+    LazyLock::force(&DRAINED);
     LazyLock::force(&USAGE_PENDING);
     LazyLock::force(&USAGE_DROPPED);
     LazyLock::force(&USAGE_FLUSH_FAILURES);

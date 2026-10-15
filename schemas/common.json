@@ -31,13 +31,14 @@
     "cidr": { "type": "string", "pattern": "^([0-9]{1,3}(\\.[0-9]{1,3}){3}(/[0-9]{1,2})?|[0-9a-fA-F:]+(/[0-9]{1,3})?)$" },
     "template": { "description": "A string that may contain {{ variable }} placeholders (spec §9.5).", "type": "string", "maxLength": 8192 },
     "keySelector": {
-      "description": "What to key a hash, a limit or a split on.",
+      "description": "What to key a hash, a limit or a split on. path_prefix:<n> is the first n segments of the path.",
       "type": "string",
-      "pattern": "^(host|client_ip|path|consumer|workspace|(header|cookie|query):[A-Za-z0-9_-]{1,64})$"
+      "pattern": "^(host|client_ip|path|consumer|workspace|path_prefix:[1-9]|(header|cookie|query):[A-Za-z0-9_-]{1,64})$"
     },
     "limitScope": {
+      "description": "What a limit counts against: the workspace, the authenticated consumer, the client address, the route, everything, the request's host, the first n segments of its path, or the value of a header.",
       "type": "string",
-      "pattern": "^(workspace|consumer|ip|route|global|header:[A-Za-z0-9_-]{1,64})$"
+      "pattern": "^(workspace|consumer|ip|route|global|host|path_prefix:[1-9]|header:[A-Za-z0-9_-]{1,64})$"
     },
     "secretValue": {
       "description": "A secret-typed field never takes a bare string (spec §9.6).",

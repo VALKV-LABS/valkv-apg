@@ -7,6 +7,7 @@
 //
 // Runs in every config mode through the shared driver (spec ARC-1).
 
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import http2 from "node:http2";
@@ -54,10 +55,23 @@ function handler(name) {
   };
 }
 
+/**
+ * Accepts a WebSocket handshake and then echoes whatever it is sent. The
+ * gateway passes the bytes on as they are, so the steps send plain text, not frames.
+ */
+function upgrader(name) {
+  return (req, socket) => {
+    socket.on("error", () => {});
+    const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\nX-Server: ${name}\r\n\r\n`);
+    socket.on("data", (data) => socket.write(data));
+  };
+}
+
 const listen = (server, port) => new Promise((resolve, reject) => server.once("error", reject).listen(port, "0.0.0.0", resolve));
 
 async function startUpstreams() {
-  for (const name of ["a", "b", "c"]) await listen(http.createServer(handler(name)), PORTS[name]);
+  for (const name of ["a", "b", "c"]) await listen(http.createServer(handler(name)).on("upgrade", upgrader(name)), PORTS[name]);
   // HTTP/2 without TLS, with prior knowledge.
   await listen(http2.createServer(handler("h2")), PORTS.h2);
   await listen(https.createServer({ cert: CERT, key: KEY }, handler("tls")), PORTS.tls);
@@ -69,7 +83,7 @@ async function startUpstreams() {
 
 const NO_BREAKER = { health_check: { passive: { enabled: false } } };
 
-function config() {
+function config({ drainB = false } = {}) {
   const svc = (name, backends, extra = {}) => ({ name: `up-${name}`, backends: backends.map((b) => (typeof b === "string" ? { target: target(b) } : b)), ...extra });
   const trusted = { sni: "api.example.com", ca_certificates: ["test-ca"] };
   const services = [
@@ -93,13 +107,16 @@ function config() {
     svc("side-b", ["b"]),
     svc("unresolvable", [{ target: "no-such-host.invalid:80" }], { retries: { attempts: 0 } }),
     svc("unresolvable-retry", [{ target: "no-such-host.invalid:80" }, "a"], NO_BREAKER),
+    svc("ws", ["a"]),
+    svc("ws-idle", ["a"]),
+    svc("ws-drain", ["a", drainB ? { target: target("b"), status: "draining" } : "b"], { drain_timeout_ms: 1000 }),
   ];
   // The client certificate's key is read from the file, or arrives sealed from the control plane.
   services.push(svc("mtls", ["mtls"], { scheme: "https", tls: { ...trusted, client_certificate: "client" } }));
   services.push(svc("mtls-missing", ["mtls"], { scheme: "https", tls: trusted }));
   const routes = services
     .filter((s) => !s.name.startsWith("up-side-"))
-    .map((s) => ({ name: s.name, service: s.name, hosts: [`${s.name}.up.test`], ...(s.name === "up-deadline" ? { timeout_ms: 400 } : {}) }));
+    .map((s) => ({ name: s.name, service: s.name, hosts: [`${s.name}.up.test`], ...(s.name === "up-deadline" ? { timeout_ms: 400 } : {}), ...(s.name === "up-ws-idle" ? { idle_timeout_ms: 1000 } : {}) }));
   routes.push({ name: "up-split", hosts: ["up-split.up.test"], split_key: "header:x-user", split: [{ service: "up-side-a", weight: 1 }, { service: "up-side-b", weight: 1 }] });
   return {
     version: 1,
@@ -130,6 +147,48 @@ async function timed(fn) {
   const res = await fn();
   return { res, ms: Date.now() - started };
 }
+
+/** Opens an upgraded connection through the node. */
+function upgrade(name) {
+  const url = new URL(NODE);
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      hostname: url.hostname,
+      port: url.port,
+      path: "/ws",
+      setHost: false,
+      agent: false,
+      headers: { host: `up-${name}.up.test`, connection: "Upgrade", upgrade: "websocket", "sec-websocket-key": randomBytes(16).toString("base64"), "sec-websocket-version": "13" },
+    });
+    req.on("upgrade", (res, socket) => {
+      socket.on("error", () => {});
+      const closed = new Promise((done) => socket.once("close", () => done(Date.now())));
+      resolve({ server: res.headers["x-server"], socket, closed });
+    });
+    req.on("response", (res) => reject(new Error(`expected 101, got ${res.statusCode}`)));
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/** Sends text over an upgraded connection and waits for it to come back. */
+function echo(conn, text) {
+  return new Promise((resolve, reject) => {
+    let got = "";
+    const timer = setTimeout(() => reject(new Error(`no echo of ${text}`)), 5000);
+    conn.socket.on("data", function onData(data) {
+      got += data.toString();
+      if (got.length >= text.length) {
+        clearTimeout(timer);
+        conn.socket.off("data", onData);
+        resolve(got);
+      }
+    });
+    conn.socket.write(text);
+  });
+}
+
+const isOpen = (conn) => !conn.socket.destroyed && conn.socket.readyState === "open";
 
 function assertGatewayError(res, status, code) {
   assert.equal(res.status, status, res.text);
@@ -301,6 +360,50 @@ step("a split with split_key keeps one caller on one side (UP-15)", async () => 
   assert.deepEqual(Object.keys(everyone).sort(), ["a", "b"], JSON.stringify(everyone));
   // Without the key the split is by rotation: exactly half each.
   assert.deepEqual(await tally("split", 10), { a: 5, b: 5 });
+});
+
+step("an upgraded connection is passed through both ways", async () => {
+  const conn = await upgrade("ws");
+  assert.equal(conn.server, "a", "the 101 and its headers come from the upstream");
+  assert.equal(await echo(conn, "hello"), "hello");
+  assert.equal(await echo(conn, "again"), "again");
+  conn.socket.end();
+});
+
+step("an upgraded connection with no traffic either way is closed after the route's idle_timeout_ms", async () => {
+  const quiet = await upgrade("ws-idle");
+  const busy = await upgrade("ws-idle");
+  const opened = Date.now();
+  // Only the client speaks on one, and only the upstream's echo answers: traffic either way keeps it open.
+  for (let i = 0; i < 8; i++) {
+    await sleep(300);
+    assert.equal(await echo(busy, `m${i}`), `m${i}`);
+  }
+  assert.ok(!isOpen(quiet), "the quiet connection is gone");
+  const lasted = (await quiet.closed) - opened;
+  assert.ok(lasted >= 900 && lasted < 2400, `closed after ${lasted} ms`);
+  assert.ok(isOpen(busy), "the busy connection is still open");
+  busy.socket.end();
+});
+
+step("an upgraded connection to a backend set draining is closed after drain_timeout_ms (UP-11)", async () => {
+  // Round robin over a and b: open connections until one is on each.
+  const conns = [];
+  for (let i = 0; i < 6 && !(conns.some((c) => c.server === "a") && conns.some((c) => c.server === "b")); i++) conns.push(await upgrade("ws-drain"));
+  const onA = conns.find((c) => c.server === "a");
+  const onB = conns.find((c) => c.server === "b");
+  assert.ok(onA && onB, "connections on both backends");
+
+  await apply(config({ drainB: true }));
+  const closedAt = await Promise.race([onB.closed, sleep(15000).then(() => 0)]);
+  assert.ok(closedAt > 0, "the connection to the draining backend was closed");
+  assert.equal(await echo(onA, "still here"), "still here", "the connection to the active backend is untouched");
+  const fresh = await upgrade("ws-drain");
+  assert.equal(fresh.server, "a", "a new connection goes to the backend that stays");
+  conns.push(fresh);
+
+  for (const c of conns) c.socket.destroy();
+  await apply(config());
 });
 
 step("a backend name that does not resolve is a 502, and a retry gets past it (UP-5)", async () => {

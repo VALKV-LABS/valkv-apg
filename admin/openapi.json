@@ -10564,13 +10564,14 @@
             "maxLength": 8192
           },
           "keySelector": {
-            "description": "What to key a hash, a limit or a split on.",
+            "description": "What to key a hash, a limit or a split on. path_prefix:<n> is the first n segments of the path.",
             "type": "string",
-            "pattern": "^(host|client_ip|path|consumer|workspace|(header|cookie|query):[A-Za-z0-9_-]{1,64})$"
+            "pattern": "^(host|client_ip|path|consumer|workspace|path_prefix:[1-9]|(header|cookie|query):[A-Za-z0-9_-]{1,64})$"
           },
           "limitScope": {
+            "description": "What a limit counts against: the workspace, the authenticated consumer, the client address, the route, everything, the request's host, the first n segments of its path, or the value of a header.",
             "type": "string",
-            "pattern": "^(workspace|consumer|ip|route|global|header:[A-Za-z0-9_-]{1,64})$"
+            "pattern": "^(workspace|consumer|ip|route|global|host|path_prefix:[1-9]|header:[A-Za-z0-9_-]{1,64})$"
           },
           "secretValue": {
             "description": "A secret-typed field never takes a bare string (spec §9.6).",
@@ -10819,6 +10820,25 @@
               "type": "string",
               "pattern": "^[a-z0-9.+-]+/([a-z0-9.+-]+|\\*)$"
             }
+          }
+        }
+      },
+      "PluginConfigConcurrencyLimit": {
+        "title": "concurrency_limit",
+        "description": "A cap on requests in progress at once: a request takes a slot when it starts and gives it back when it ends.",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "max_in_flight": {
+            "description": "Requests one counter allows in progress at once. A WebSocket holds its slot until it closes.",
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 1000000,
+            "default": 100
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Common/$defs/limitScope",
+            "default": "workspace"
           }
         }
       },
@@ -12166,7 +12186,7 @@
         "properties": {
           "name": {
             "type": "string",
-            "pattern": "^(usage_metering|active_health_checks|circuit_breaker|access_log|plugin_(ip_restriction|cors|request_size_limit|mtls_auth|jwt_auth|key_auth|basic_auth|forward_auth|acl|rate_limit|quota|bandwidth_limit|http_callout|wasm|redirect|static_response|request_transformer|response_cache|response_transformer|compression|access_log))$"
+            "pattern": "^(usage_metering|active_health_checks|circuit_breaker|access_log|plugin_(ip_restriction|cors|request_size_limit|mtls_auth|jwt_auth|key_auth|basic_auth|forward_auth|acl|rate_limit|quota|bandwidth_limit|concurrency_limit|http_callout|wasm|redirect|static_response|request_transformer|response_cache|response_transformer|compression|access_log))$"
           },
           "enabled": {
             "type": "boolean"
@@ -12283,6 +12303,7 @@
               "rate_limit",
               "quota",
               "bandwidth_limit",
+              "concurrency_limit",
               "http_callout",
               "wasm",
               "redirect",
@@ -12511,6 +12532,7 @@
             "maximum": 86400000
           },
           "idle_timeout_ms": {
+            "description": "An upgraded (WebSocket) connection with no traffic either way for this long is closed.",
             "type": "integer",
             "minimum": 1000,
             "maximum": 86400000,
@@ -12948,6 +12970,7 @@
             "default": "preserve"
           },
           "drain_timeout_ms": {
+            "description": "How long an upgraded (WebSocket) connection may stay on a backend that is draining, down or removed before it is closed. 0 closes it at once.",
             "type": "integer",
             "minimum": 0,
             "maximum": 3600000,

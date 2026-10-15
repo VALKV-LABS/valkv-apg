@@ -5,6 +5,24 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Limits can count per host (`scope: host`) and per leading path segments
+  (`scope: path_prefix:<n>`), so each host or each `/db/<name>` under one route has its own
+  budget. `path_prefix:<n>` is also a key for `hash_key` and `split_key`.
+- `concurrency_limit`: a cap on requests in progress at once, per scope. A request over
+  the cap gets `429 CONCURRENCY_LIMITED`; a WebSocket holds its slot until it closes.
+- Route `idle_timeout_ms`: an upgraded (WebSocket) connection with no traffic either way
+  for this long is closed (five minutes unless set). It was refused before. An upgraded
+  connection was closed by the service's `read_ms` until now.
+- Service `drain_timeout_ms`: an upgraded connection to a backend that is draining, down
+  or removed is closed this long after the change, so its client reconnects to a backend
+  that stays. It was refused before. Metrics `apg_upgraded_connections` and
+  `apg_drained_connections_total`.
+
+### Changed
+- A limit scoped to a header keeps only a hash of the header's value, so a credential used
+  as the key is never held in memory as itself.
+
 ## [0.1.0] - 2026-10-13
 
 The first release.

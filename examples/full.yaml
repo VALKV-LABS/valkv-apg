@@ -189,6 +189,10 @@ routes:
           bytes_per_second: 5000000
           burst_bytes: 50000000
           scope: consumer
+      - type: concurrency_limit
+        config:
+          max_in_flight: 20
+          scope: consumer
 
   # Tokens from an identity provider, for a browser application on another origin.
   - name: accounts-api

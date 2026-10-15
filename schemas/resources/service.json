@@ -103,7 +103,7 @@
     },
     "egress_restricted": { "description": "When true the node refuses to connect this service to loopback, link-local and private addresses unless APG_BACKEND_ALLOW_CIDRS covers them (spec SEC-4). The admin sets it from the role of whoever wrote the service; a value sent to the Admin API is ignored.", "type": "boolean", "default": false },
     "host_header": { "description": "preserve, backend, or a literal Host value.", "type": "string", "default": "preserve" },
-    "drain_timeout_ms": { "type": "integer", "minimum": 0, "maximum": 3600000, "default": 30000 },
+    "drain_timeout_ms": { "description": "How long an upgraded (WebSocket) connection may stay on a backend that is draining, down or removed before it is closed. 0 closes it at once.", "type": "integer", "minimum": 0, "maximum": 3600000, "default": 30000 },
     "plugins": { "description": "Declarative config only: plugin instances attached to this service.", "type": "array", "items": { "$ref": "plugin.json#/$defs/nested" } },
     "labels": { "$ref": "../common.json#/$defs/labels" },
     "metadata": { "$ref": "../common.json#/$defs/metadata" },
