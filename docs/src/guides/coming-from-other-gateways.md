@@ -56,7 +56,7 @@ Grouped by how much it is likely to matter to an enterprise evaluation.
 |---|---|
 | Rate limits and quotas counted across nodes (a shared store) | Limits are per node. Divide by the number of nodes, or keep callers on one node at the load balancer |
 | Exporting traces (OpenTelemetry) | Trace context is passed on and logged, so your services' traces connect; the gateway emits no spans of its own |
-| gRPC and gRPC-Web as first-class protocols, WebSocket and server-sent events verified end to end | Not tested; do not rely on them |
+| gRPC and gRPC-Web as first-class protocols, server-sent events verified end to end | Not tested; do not rely on them. WebSocket is tested end to end, with an idle timeout and draining |
 | OAuth 2.0 token introspection and the OpenID Connect relying-party flow *for API callers* | `jwt_auth` verifies tokens locally; `forward_auth` can delegate to a service that introspects |
 | A stable release, and the record of running in production that comes with one | None yet |
 

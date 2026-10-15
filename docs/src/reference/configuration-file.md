@@ -110,12 +110,12 @@ Under `services`. A named upstream: backends plus load-balancing, health, timeou
 | `keepalive.max_idle_per_backend` | integer (≥ 0, ≤ 10000) | `64` |  |
 | `egress_restricted` | boolean | `false` | When true the node refuses to connect this service to loopback, link-local and private addresses unless APG_BACKEND_ALLOW_CIDRS covers them. The admin sets it from the role of whoever wrote the service; a value sent to the Admin API is ignored. |
 | `host_header` | string | `preserve` | preserve, backend, or a literal Host value. |
-| `drain_timeout_ms` | integer (≥ 0, ≤ 3600000) | `30000` |  |
+| `drain_timeout_ms` | integer (≥ 0, ≤ 3600000) | `30000` | How long an upgraded (WebSocket) connection may stay on a backend that is draining, down or removed before it is closed. 0 closes it at once. |
 | `plugins[]` | list of objects |  | Declarative config only: plugin instances attached to this service. |
 | `labels` | object |  |  |
 | `metadata` | object |  | Free-form. Never interpreted by the gateway. At most 16 KiB serialised. |
 
-**Not available yet:** `drain_timeout_ms`, `keepalive.max_idle_per_backend`, `retries.buffer_bytes`. Setting one of them to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.
+**Not available yet:** `keepalive.max_idle_per_backend`, `retries.buffer_bytes`. Setting one of them to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.
 
 ## Route
 
@@ -144,14 +144,12 @@ Under `routes`. Match predicates that send a request to a service.
 | `strip_path` | boolean | `false` |  |
 | `rewrite` | object |  |  |
 | `timeout_ms` | integer (≥ 1, ≤ 86400000) |  |  |
-| `idle_timeout_ms` | integer (≥ 1000, ≤ 86400000) | `300000` |  |
+| `idle_timeout_ms` | integer (≥ 1000, ≤ 86400000) | `300000` | An upgraded (WebSocket) connection with no traffic either way for this long is closed. |
 | `error_responses` | object |  | Custom gateway error responses, keyed by error code. |
 | `enabled` | boolean | `true` |  |
 | `plugins[]` | list of objects |  | Declarative config only: plugin instances attached to this route. |
 | `labels` | object |  |  |
 | `metadata` | object |  | Free-form. Never interpreted by the gateway. At most 16 KiB serialised. |
-
-**Not available yet:** `idle_timeout_ms`. Setting it to anything but the default is refused, in a file and through the Admin API alike, so nothing is accepted and then ignored.
 
 ## Consumer
 

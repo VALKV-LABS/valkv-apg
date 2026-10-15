@@ -329,7 +329,6 @@ describe("everything accepted is enforced", () => {
   it("policy no node enforces yet is refused, not stored and ignored", async () => {
     const base = { backends: [{ target: "10.0.1.1:80" }] };
     const refused: Array<[Record<string, unknown>, string]> = [
-      [{ drain_timeout_ms: 5000 }, "/drain_timeout_ms"],
       [{ keepalive: { max_idle_per_backend: 8 } }, "/keepalive/max_idle_per_backend"],
       [{ retries: { buffer_bytes: 1024 } }, "/retries/buffer_bytes"],
       [{ retries: { on: ["connect_failure", 503] } }, "/retries/on/1"],
@@ -343,13 +342,17 @@ describe("everything accepted is enforced", () => {
     expect((await h.call("GET", `${D}/services/unbuilt`)).status).toBe(404);
 
     // A value equal to the default is what a GET returns, so sending it back works.
-    const ok = await h.call("PUT", `${D}/services/unbuilt`, { body: { ...base, drain_timeout_ms: 30000, retries: { attempts: 0 } } });
+    const ok = await h.call("PUT", `${D}/services/unbuilt`, { body: { ...base, keepalive: { max_idle_per_backend: 64 }, retries: { attempts: 0 } } });
     expect(ok.status).toBe(200);
     expect((await h.call("PUT", `${D}/services/unbuilt`, { body: ok.json, headers: { "if-match": String(ok.json.revision) } })).status).toBe(200);
 
+    // Built since: a drain timeout and an idle timeout are taken and kept.
+    const drain = await h.call("PUT", `${D}/services/unbuilt`, { body: { ...base, drain_timeout_ms: 5000 } });
+    expect(drain.status).toBe(200);
+    expect(drain.json.drain_timeout_ms).toBe(5000);
     const route = await h.call("PUT", `${D}/routes/unbuilt`, { body: { service: "unbuilt", paths: ["/unbuilt"], idle_timeout_ms: 1000 } });
-    expect(route.status).toBe(422);
-    expect(route.json.error.details[0].pointer).toBe("/idle_timeout_ms");
+    expect(route.status).toBe(200);
+    expect(route.json.idle_timeout_ms).toBe(1000);
 
     const setting = await h.call("PUT", "/v1/settings/access_log", { body: { value: { sink: "https://logs.example.com/ingest" } } });
     expect(setting.status).toBe(422);

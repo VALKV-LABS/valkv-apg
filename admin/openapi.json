@@ -12532,6 +12532,7 @@
             "maximum": 86400000
           },
           "idle_timeout_ms": {
+            "description": "An upgraded (WebSocket) connection with no traffic either way for this long is closed.",
             "type": "integer",
             "minimum": 1000,
             "maximum": 86400000,
@@ -12969,6 +12970,7 @@
             "default": "preserve"
           },
           "drain_timeout_ms": {
+            "description": "How long an upgraded (WebSocket) connection may stay on a backend that is draining, down or removed before it is closed. 0 closes it at once.",
             "type": "integer",
             "minimum": 0,
             "maximum": 3600000,

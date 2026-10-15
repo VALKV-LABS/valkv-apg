@@ -70,6 +70,8 @@ pub struct Gateway {
     pub upstreams: Arc<Upstreams>,
     /// Built plugin instances.
     pub plugins: Arc<Runtime>,
+    /// Upgraded connections, closed when their backend drains (spec UP-11).
+    pub long_lived: Arc<crate::long_lived::LongLived>,
     pub access_log: crate::accesslog::AccessLogger,
     /// Usage counters, once the node has been told how to keep them.
     pub usage: std::sync::OnceLock<Arc<crate::usage::Usage>>,
@@ -95,6 +97,7 @@ impl Gateway {
             applied_seq: AtomicU64::new(0),
             health: SourceHealth::new(stale_after_secs),
             plugins: Arc::new(Runtime::new(upstreams.secrets.clone())),
+            long_lived: Arc::new(crate::long_lived::LongLived::default()),
             access_log: crate::accesslog::AccessLogger::new(8192, upstreams.redact_query.clone()),
             usage: std::sync::OnceLock::new(),
             upstreams: Arc::new(Upstreams::new(upstreams)),

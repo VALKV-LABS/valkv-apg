@@ -58,6 +58,8 @@ The request is sent with these headers set by the gateway, whatever the client s
 
 A client cannot forge the `X-Apg-*` headers: they are removed from what it sent and written by the gateway.
 
+A request that asks to upgrade the connection (a WebSocket) is forwarded with its `Upgrade` header. If the upstream answers `101`, the connection carries bytes both ways from then on, until either side closes it, nothing passes either way for the route's `idle_timeout_ms`, or its backend is drained or removed and the service's `drain_timeout_ms` has passed.
+
 If connecting fails or times out, the request may be retried on another backend, as the service's `retries` allow. A request that is not safe to repeat is never replayed once any of it has been sent.
 
 Upstream failure after retries: `502 UPSTREAM_ERROR` or `504 UPSTREAM_TIMEOUT`.

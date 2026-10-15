@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use dashmap::DashMap;
 use pingora_core::modules::http::compression::ResponseCompression;
+use pingora_core::protocols::Digest;
 use pingora_core::protocols::http::compression::Algorithm;
 use pingora_core::upstreams::peer::HttpPeer;
 use pingora_core::{Error, ErrorSource, ErrorType};
@@ -102,6 +103,12 @@ pub struct Ctx {
     bandwidth: Option<(String, BandwidthConfig)>,
     /// Slots this request holds under `concurrency_limit`; given back when the context is dropped.
     permits: Vec<Permit>,
+    /// The client asked to upgrade the connection (WebSocket and the like).
+    upgrade: bool,
+    /// A second descriptor of the upstream socket, kept while an upgrade may follow.
+    upstream_socket: Option<std::net::TcpStream>,
+    /// Set once the upstream agreed to the upgrade: the connection is watched for draining.
+    upgraded: Option<crate::long_lived::Registration>,
     /// The socket peer's address, and whether it is a trusted proxy.
     peer_ip: String,
     peer_trusted: bool,
@@ -805,6 +812,7 @@ impl ProxyHttp for ApgProxy {
             module.adjust_level(0);
         }
         ctx.is_tls = session.digest().is_some_and(|d| d.ssl_digest.is_some());
+        ctx.upgrade = session.is_upgrade_req();
 
         let (raw_path, query, method, host, inbound_id, forwarded_for) = {
             let req = session.req_header();
@@ -1004,7 +1012,15 @@ impl ProxyHttp for ApgProxy {
             let backend = &ctx.picked.as_ref().expect("chosen above").backend;
             let reason = match upstreams.address(&service, backend, ctx.hash_key.as_deref()).await {
                 Ok(addr) => match upstreams.peer(&service, backend, addr, budget) {
-                    Ok(peer) => {
+                    Ok(mut peer) => {
+                        // An upgraded connection is closed after the route's idle timeout, not the service's read timeout.
+                        // Pingora restarts the read on traffic either way, so this is idle in both directions.
+                        if ctx.upgrade
+                            && let Some(matched) = &ctx.matched
+                        {
+                            let idle = Duration::from_millis(matched.route.idle_timeout_ms);
+                            peer.options.read_timeout = Some(budget.map_or(idle, |b| idle.min(b)));
+                        }
                         ctx.upstream_started = Some(Instant::now());
                         ctx.upstream_addr = Some(addr);
                         return Ok(Box::new(peer));
@@ -1139,6 +1155,16 @@ impl ProxyHttp for ApgProxy {
 
     async fn response_filter(&self, session: &mut Session, upstream_response: &mut ResponseHeader, ctx: &mut Self::CTX) -> pingora_core::Result<()> {
         ctx.upstream_status = Some(upstream_response.status.as_u16());
+        let socket = ctx.upstream_socket.take();
+        if upstream_response.status == http::StatusCode::SWITCHING_PROTOCOLS
+            && let (Some(matched), Some(service)) = (&ctx.matched, &ctx.service)
+        {
+            session.set_read_timeout(Some(Duration::from_millis(matched.route.idle_timeout_ms)));
+            if let Some(socket) = socket {
+                let drain = Duration::from_millis(service.spec.drain_timeout_ms);
+                ctx.upgraded = Some(self.gateway.long_lived.register(&service.id, &ctx.backend_target, drain, socket));
+            }
+        }
         if ctx.upstream_ms.is_none() {
             ctx.upstream_ms = ctx.upstream_started.map(|t| t.elapsed().as_millis() as u64);
         }
@@ -1316,7 +1342,31 @@ impl ProxyHttp for ApgProxy {
         FailToProxy { error_code: status, can_reuse_downstream: false }
     }
 
+    /// For a request that asks for an upgrade, keeps a second descriptor of
+    /// the upstream socket so the connection can be closed if its backend drains.
+    async fn connected_to_upstream(
+        &self,
+        _session: &mut Session,
+        _reused: bool,
+        _peer: &HttpPeer,
+        #[cfg(unix)] fd: std::os::unix::io::RawFd,
+        #[cfg(windows)] _sock: std::os::windows::io::RawSocket,
+        _digest: Option<&Digest>,
+        ctx: &mut Self::CTX,
+    ) -> pingora_core::Result<()> {
+        #[cfg(unix)]
+        if ctx.upgrade {
+            // SAFETY: Pingora keeps `fd` open for the whole of this call; it is only duplicated here.
+            let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
+            ctx.upstream_socket = borrowed.try_clone_to_owned().ok().map(std::net::TcpStream::from);
+        }
+        Ok(())
+    }
+
     async fn logging(&self, session: &mut Session, e: Option<&Error>, ctx: &mut Self::CTX) {
+        // The connection is over: stop watching it and let its socket go.
+        ctx.upgraded = None;
+        ctx.upstream_socket = None;
         let status = session.response_written().map_or(0, |r| r.status.as_u16());
         let elapsed = ctx.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
         let class = metrics::status_class(status);

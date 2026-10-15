@@ -877,21 +877,20 @@ routes:
     #[test]
     fn schema_valid_keys_with_no_implementation_are_refused() {
         let svc = |extra: &str| format!("version: 1\nservices:\n  - name: s\n    backends: [{{ target: 'a:1' }}]\n    {extra}\n");
-        assert_eq!(pointers(compile_yaml(&svc("drain_timeout_ms: 5000"))), ["/services/0/drain_timeout_ms"]);
         assert_eq!(pointers(compile_yaml(&svc("keepalive: { max_idle_per_backend: 8 }"))), ["/services/0/keepalive/max_idle_per_backend"]);
         assert_eq!(pointers(compile_yaml(&svc("retries: { attempts: 2, buffer_bytes: 1024 }"))), ["/services/0/retries/buffer_bytes"]);
         assert_eq!(pointers(compile_yaml(&svc("retries: { attempts: 2, 'on': [connect_failure, 503] }"))), ["/services/0/retries/on/1"]);
         // a key carrying its schema default is what a GET returns, so it is not refused
-        assert!(compile_yaml(&svc("drain_timeout_ms: 30000")).is_ok());
+        assert!(compile_yaml(&svc("keepalive: { max_idle_per_backend: 64 }")).is_ok());
         // what IS enforced is accepted
         assert!(compile_yaml(&svc("timeouts: { connect_ms: 100, read_ms: 2000 }\n    retries: { attempts: 2, 'on': [connect_failure, timeout] }")).is_ok());
         assert!(compile_yaml(&svc("health_check: { active: { path: /h, interval_ms: 1000 }, passive: { consecutive_failures: 2 } }")).is_ok());
         assert!(compile_yaml(&svc("load_balancing: { strategy: hash, hash_key: 'header:x-user' }\n    http_version: '2'\n    keepalive: { idle_ms: 5000 }")).is_ok());
         assert!(compile_yaml(&svc("scheme: https\n    tls: { verify: false, sni: internal.example }\n    host_header: backend")).is_ok());
+        assert!(compile_yaml(&svc("drain_timeout_ms: 5000")).is_ok());
 
         let route = |extra: &str| format!("version: 1\nservices:\n  - {{ name: s, backends: [{{ target: 'a:1' }}] }}\nroutes:\n  - name: r\n    service: s\n    {extra}\n");
-        assert_eq!(pointers(compile_yaml(&route("idle_timeout_ms: 60000"))), ["/routes/0/idle_timeout_ms"]);
-        assert!(compile_yaml(&route("timeout_ms: 1000")).is_ok());
+        assert!(compile_yaml(&route("timeout_ms: 1000\n    idle_timeout_ms: 60000")).is_ok());
         assert!(compile_yaml(&route("strip_path: true\n    rewrite: { prefix: /v2 }\n    methods: [GET]\n    priority: 5")).is_ok());
 
         // the list itself: every entry names a real schema property

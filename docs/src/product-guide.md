@@ -111,11 +111,11 @@ If every backend of a service looks bad, the gateway sends traffic anyway, becau
 
 **Timeouts and retries.** Separate limits for connecting, reading and writing; a per-route deadline over everything. A retry goes to a different backend, and happens only when it cannot cause a request to be carried out twice, unless you say otherwise.
 
-**Draining.** Mark a backend `draining` and it gets no new requests while the ones in flight finish.
+**Draining.** Mark a backend `draining` and it gets no new requests while the ones in flight finish. A WebSocket still open to it is closed after the service's `drain_timeout_ms` (30 seconds unless set), so the client reconnects to a backend that stays. Removing a backend, or its service, does the same.
 
 **TLS to the upstream.** Verified by default, against the system's authorities or ones you supply, with an optional client certificate. HTTP/2 to the upstream, which gRPC needs, is one setting.
 
-WebSocket, gRPC and server-sent events pass through without buffering.
+WebSocket, gRPC and server-sent events pass through without buffering. A WebSocket with no traffic either way for the route's `idle_timeout_ms` (five minutes unless set) is closed.
 
 More: [resources](concepts/resources.md), [the configuration file](reference/configuration-file.md).
 
@@ -163,10 +163,11 @@ More: [authentication](guides/authentication.md).
 | `rate_limit` | Requests per second, with a burst |
 | `quota` | Requests per hour, day or month |
 | `bandwidth_limit` | Bytes per second |
+| `concurrency_limit` | Requests in progress at once |
 | `request_size_limit` | The size of a request body |
 | `ip_restriction` | Which client addresses may call |
 
-Each can count per consumer, per client address, per workspace, per route, per the value of a header, or globally. A refused request gets `429` with headers that say when to try again.
+Each can count per consumer, per client address, per workspace, per route, per host, per leading part of the path, per the value of a header, or globally. A refused request gets `429` with headers that say when to try again.
 
 Limits are counted on each gateway separately. With three gateways behind a load balancer, a limit of 100 a second allows about 300 in total. Size limits with that in mind.
 

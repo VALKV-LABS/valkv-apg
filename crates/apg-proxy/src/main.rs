@@ -185,6 +185,8 @@ fn run(upgrade: bool) -> anyhow::Result<()> {
             rt.block_on(async move {
                 // Backend name resolution and active health checks.
                 tokio::spawn(gateway.upstreams.clone().run());
+                // Upgraded connections to a drained or removed backend are let go (spec UP-11).
+                tokio::spawn(gateway.long_lived.clone().run(gateway.clone()));
                 tokio::spawn(gateway.clone().report_status());
                 tokio::spawn(certificates.run());
                 tokio::spawn(apg_proxy::usage::run(usage, gateway.clone(), usage_sink));
