@@ -7,6 +7,7 @@
 //
 // Runs in every config mode through the shared driver (spec ARC-1).
 
+import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import http from "node:http";
 import http2 from "node:http2";
@@ -54,11 +55,15 @@ function handler(name) {
   };
 }
 
-/** Answers an upgrade with 101 and then echoes whatever it is sent. */
+/**
+ * Accepts a WebSocket handshake and then echoes whatever it is sent. The
+ * gateway passes the bytes on as they are, so the steps send plain text, not frames.
+ */
 function upgrader(name) {
-  return (_req, socket) => {
+  return (req, socket) => {
     socket.on("error", () => {});
-    socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: apg-echo\r\nX-Server: ${name}\r\n\r\n`);
+    const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
+    socket.write(`HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: ${accept}\r\nX-Server: ${name}\r\n\r\n`);
     socket.on("data", (data) => socket.write(data));
   };
 }
@@ -153,7 +158,7 @@ function upgrade(name) {
       path: "/ws",
       setHost: false,
       agent: false,
-      headers: { host: `up-${name}.up.test`, connection: "Upgrade", upgrade: "apg-echo" },
+      headers: { host: `up-${name}.up.test`, connection: "Upgrade", upgrade: "websocket", "sec-websocket-key": randomBytes(16).toString("base64"), "sec-websocket-version": "13" },
     });
     req.on("upgrade", (res, socket) => {
       socket.on("error", () => {});
