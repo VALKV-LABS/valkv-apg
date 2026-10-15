@@ -22,6 +22,7 @@ The body can be replaced per code, for a route or for every route, with `error_r
 | 404 | `NO_ROUTE` | no route matches this request |
 | 413 | `PAYLOAD_TOO_LARGE` | the request body is larger than this route accepts |
 | 429 | `BANDWIDTH_LIMIT_EXCEEDED` | bandwidth limit exceeded |
+| 429 | `CONCURRENCY_LIMITED` | too many requests in progress |
 | 429 | `QUOTA_EXCEEDED` | the quota for this period is used up |
 | 429 | `RATE_LIMITED` | rate limit exceeded |
 | 500 | `PLUGIN_ERROR` | a plugin that guards this route could not run; a service this route depends on could not be asked |

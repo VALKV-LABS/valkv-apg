@@ -20,7 +20,7 @@ use crate::template::Template;
 /// Plugin types this build can enforce. A document that uses any other type is
 /// rejected: accepting configuration nothing enforces is the failure this
 /// project exists to avoid (spec property 5).
-pub const ENFORCED_PLUGIN_TYPES: &[&str] = &["rate_limit", "bandwidth_limit", "key_auth", "basic_auth", "jwt_auth", "acl", "ip_restriction", "request_size_limit", "cors",
+pub const ENFORCED_PLUGIN_TYPES: &[&str] = &["rate_limit", "bandwidth_limit", "concurrency_limit", "key_auth", "basic_auth", "jwt_auth", "acl", "ip_restriction", "request_size_limit", "cors",
     "quota", "redirect", "static_response", "request_transformer", "response_transformer", "compression", "access_log",
     "forward_auth", "http_callout", "mtls_auth", "response_cache",
 ];

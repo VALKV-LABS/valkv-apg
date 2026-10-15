@@ -33,7 +33,7 @@ use crate::auth::{AuthEffects, AuthOutcome};
 use crate::callout::{Answer, Forwarded};
 use crate::config::HttpMode;
 use crate::gateway::Gateway;
-use crate::limits::{BandwidthConfig, Buckets, RateLimitConfig, Subject, bucket_key};
+use crate::limits::{BandwidthConfig, Buckets, InFlight, Permit, RateLimitConfig, Subject, bucket_key};
 use crate::plugins::{AUTH_TYPES, Built, FAIL_CLOSED, Req, Verdict};
 use crate::metrics;
 use crate::mtls::ClientCert;
@@ -56,6 +56,8 @@ pub struct ApgProxy {
     pub gateway: Arc<Gateway>,
     pub settings: ProxySettings,
     pub buckets: Arc<Buckets>,
+    /// Requests in progress, for `concurrency_limit`.
+    pub in_flight: Arc<InFlight>,
     /// Rotation of each split route, by route id.
     split_rotation: DashMap<String, AtomicUsize>,
 }
@@ -98,6 +100,8 @@ pub struct Ctx {
     bytes_out: u64,
     rate: Option<(RateLimitConfig, u64)>,
     bandwidth: Option<(String, BandwidthConfig)>,
+    /// Slots this request holds under `concurrency_limit`; given back when the context is dropped.
+    permits: Vec<Permit>,
     /// The socket peer's address, and whether it is a trusted proxy.
     peer_ip: String,
     peer_trusted: bool,
@@ -265,7 +269,7 @@ const PAYLOAD_TOO_LARGE: (u16, &str, &str) = (413, "PAYLOAD_TOO_LARGE", "the req
 
 impl ApgProxy {
     pub fn new(gateway: Arc<Gateway>, settings: ProxySettings) -> Self {
-        Self { gateway, settings, buckets: Arc::new(Buckets::default()), split_rotation: DashMap::new() }
+        Self { gateway, settings, buckets: Arc::new(Buckets::default()), in_flight: Arc::new(InFlight::default()), split_rotation: DashMap::new() }
     }
 
     /// Chooses the service for this request: the route's only service, or one
@@ -616,6 +620,21 @@ impl ApgProxy {
                     } else {
                         metrics::LIMITED.with_label_values(&["bandwidth_limit"]).inc();
                         Verdict::Deny { status: 429, code: "BANDWIDTH_LIMIT_EXCEEDED", message: "bandwidth limit exceeded" }
+                    }
+                }
+                Some(Built::Concurrency(cfg)) => {
+                    let lookup = |name: &str| req.header(name).map(str::to_string);
+                    let subject = Subject { plugin_id: &instance.id, route_id: &matched.route.id, workspace_id: &matched.workspace_id, consumer_id: consumer_id.as_deref(), client_ip: req.client_ip, host: req.host, path: req.path, header: &lookup };
+                    match self.in_flight.acquire(&bucket_key(&cfg.scope, &subject), cfg.max_in_flight) {
+                        Some(permit) => {
+                            ctx.permits.push(permit);
+                            Verdict::Continue
+                        }
+                        None => {
+                            metrics::LIMITED.with_label_values(&["concurrency_limit"]).inc();
+                            ctx.retry_after = Some(1);
+                            Verdict::Deny { status: 429, code: "CONCURRENCY_LIMITED", message: "too many requests in progress" }
+                        }
                     }
                 }
             };

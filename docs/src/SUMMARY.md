@@ -50,6 +50,7 @@
   - [rate_limit](reference/plugins/rate_limit.md)
   - [quota](reference/plugins/quota.md)
   - [bandwidth_limit](reference/plugins/bandwidth_limit.md)
+  - [concurrency_limit](reference/plugins/concurrency_limit.md)
   - [http_callout](reference/plugins/http_callout.md)
   - [redirect](reference/plugins/redirect.md)
   - [static_response](reference/plugins/static_response.md)

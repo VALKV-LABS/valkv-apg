@@ -1,12 +1,13 @@
 # Rate limits, quotas and bandwidth
 
-Three plugins, three questions.
+Four plugins, four questions.
 
 | Question | Plugin | Refusal |
 |---|---|---|
 | How fast may they call? | [`rate_limit`](../reference/plugins/rate_limit.md) | `429 RATE_LIMITED` |
 | How many calls this hour, day or month? | [`quota`](../reference/plugins/quota.md) | `429 QUOTA_EXCEEDED` |
 | How many bytes a second? | [`bandwidth_limit`](../reference/plugins/bandwidth_limit.md) | `429 BANDWIDTH_LIMIT_EXCEEDED` |
+| How many at once? | [`concurrency_limit`](../reference/plugins/concurrency_limit.md) | `429 CONCURRENCY_LIMITED` |
 
 They combine: a plan can be "10 requests a second, 100,000 a month, 5 MB a second".
 
@@ -19,7 +20,9 @@ They combine: a plan can be "10 requests a second, 100,000 a month, 5 MB a secon
 | `workspace` | workspace |
 | `route` | route |
 | `global` | node |
-| `header:<name>` | value of a request header |
+| `host` | host the request was sent to |
+| `path_prefix:<n>` | first n segments of the path (`path_prefix:2` of `/db/orders/rows` is `/db/orders`) |
+| `header:<name>` | value of a request header (kept as a hash) |
 
 Counters of different workspaces are always separate, whatever the scope.
 

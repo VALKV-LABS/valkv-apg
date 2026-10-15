@@ -9,6 +9,8 @@ the project uses [Semantic Versioning](https://semver.org/).
 - Limits can count per host (`scope: host`) and per leading path segments
   (`scope: path_prefix:<n>`), so each host or each `/db/<name>` under one route has its own
   budget. `path_prefix:<n>` is also a key for `hash_key` and `split_key`.
+- `concurrency_limit`: a cap on requests in progress at once, per scope. A request over
+  the cap gets `429 CONCURRENCY_LIMITED`; a WebSocket holds its slot until it closes.
 
 ### Changed
 - A limit scoped to a header keeps only a hash of the header's value, so a credential used

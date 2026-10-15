@@ -20,6 +20,7 @@ In the order they run by default:
 | [rate_limit](rate_limit.md) | Token-bucket request rate limit. | 1900 |
 | [quota](quota.md) | A request allowance per calendar hour, day or month, UTC. Counted per node. | 1800 |
 | [bandwidth_limit](bandwidth_limit.md) | Byte-budget token bucket: admission before proxying, debit after the response. | 1700 |
+| [concurrency_limit](concurrency_limit.md) | A cap on requests in progress at once: a request takes a slot when it starts and gives it back when it ends. | 1650 |
 | [http_callout](http_callout.md) | Custom logic in any language: the node describes the request to a service (callout-request.json) and acts on its answer (callout-response.json). | 1500 |
 | [redirect](redirect.md) | Answers with a redirect. Parts left out are taken from the request. | 1300 |
 | [static_response](static_response.md) | Answers without an upstream: maintenance pages and mocks. | 1200 |

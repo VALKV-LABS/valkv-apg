@@ -25,6 +25,7 @@ export const PLUGIN_TYPES: PluginTypeInfo[] = [
   { name: "rate_limit", default_priority: 1900, phases: ["request", "response_headers"] },
   { name: "quota", default_priority: 1800, phases: ["request", "response_headers"] },
   { name: "bandwidth_limit", default_priority: 1700, phases: ["request", "log"] },
+  { name: "concurrency_limit", default_priority: 1650, phases: ["request", "log"] },
   { name: "http_callout", default_priority: 1500, phases: ["request", "response_headers"] },
   { name: "wasm", default_priority: 1400, phases: ["request", "response_headers"] },
   { name: "redirect", default_priority: 1300, phases: ["request"] },

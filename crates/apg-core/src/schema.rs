@@ -36,6 +36,7 @@ const FILES: &[(&str, &str)] = schema_files![
     "resources/settings.json",
     "plugins/rate_limit.json",
     "plugins/bandwidth_limit.json",
+    "plugins/concurrency_limit.json",
     "plugins/key_auth.json",
     "plugins/basic_auth.json",
     "plugins/jwt_auth.json",

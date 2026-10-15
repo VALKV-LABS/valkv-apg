@@ -23,7 +23,7 @@ use crate::auth::{BasicAuth, JwtAuth, KeyAuth, VerifiedCache};
 use crate::callout::{ForwardAuth, HttpCallout};
 use crate::mtls::MtlsAuth;
 use crate::response_cache::{CacheConfig, ResponseCache};
-use crate::limits::{BandwidthConfig, RateLimitConfig};
+use crate::limits::{BandwidthConfig, ConcurrencyConfig, RateLimitConfig};
 use crate::net::Cidr;
 use crate::secrets::SecretBox;
 use crate::transform::{AccessLog, Compression, Quota, Quotas, Redirect, StaticResponse, Transformer};
@@ -224,6 +224,7 @@ pub enum Built {
     Acl(Acl),
     RateLimit(RateLimitConfig),
     Bandwidth(BandwidthConfig),
+    Concurrency(ConcurrencyConfig),
     Quota(Quota),
     Redirect(Redirect),
     StaticResponse(StaticResponse),
@@ -296,6 +297,7 @@ impl Runtime {
             "acl" => parse(serde_json::from_value(config.clone()).map(Built::Acl).map_err(typed)),
             "rate_limit" => Built::RateLimit(RateLimitConfig::from_json(config)),
             "bandwidth_limit" => Built::Bandwidth(BandwidthConfig::from_json(config)),
+            "concurrency_limit" => Built::Concurrency(ConcurrencyConfig::from_json(config)),
             "quota" => parse(Quota::build(config).map(Built::Quota)),
             "redirect" => parse(Redirect::build(config).map(Built::Redirect)),
             "static_response" => parse(StaticResponse::build(config).map(Built::StaticResponse)),

@@ -19,6 +19,7 @@ const HOST = process.env.UPSTREAM_HOST ?? "e2e";
 const JWKS_PORT = 9050;
 const AUTH_PORT = 9060;
 const HOOK_PORT = 9061;
+const HELD_PORT = 9062;
 const fixture = (name) => readFileSync(new URL(`../../admin/test/fixtures/${name}`, import.meta.url), "utf8");
 const CERT = fixture("test-cert.crt");
 const CERT_KEY = fixture("test-cert.key");
@@ -97,6 +98,18 @@ function startHookService() {
   );
 }
 
+/** An upstream that holds every response until told to answer, so requests stay in progress. */
+const held = [];
+function startHeldService() {
+  return listen(
+    http.createServer((_req, res) => held.push(res)),
+    HELD_PORT,
+  );
+}
+function releaseHeld() {
+  for (const res of held.splice(0)) reply(res, 200, { "content-type": "text/plain" }, "done");
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 const jwt = (extra = {}) => ({ issuer: ISSUER, jwks: { keys: [JWK] }, algorithms: ["ES256"], ...extra });
@@ -127,6 +140,7 @@ function config({ keyAuthOn = true } = {}) {
       // Two services on one upstream, told apart by the Host they send.
       { name: "pl-side-a", backends: [{ target: "echo:8080" }], host_header: "side-a.internal" },
       { name: "pl-side-b", backends: [{ target: "echo:8080" }], host_header: "side-b.internal" },
+      { name: "pl-held", backends: [{ target: `${HOST}:${HELD_PORT}` }], timeouts: { read_ms: 30000 } },
     ],
     routes: [
       route("key", [{ type: "key_auth" }]),
@@ -171,6 +185,7 @@ function config({ keyAuthOn = true } = {}) {
       // One budget per host the route serves, and per database under /db/<name>.
       route("perhost", [{ type: "rate_limit", config: { per_second: 0.001, burst: 1, scope: "host" } }], { hosts: ["*.perhost.plug.test"] }),
       route("perpath", [{ type: "rate_limit", config: { per_second: 0.001, burst: 1, scope: "path_prefix:2" } }]),
+      route("inflight", [{ type: "concurrency_limit", config: { max_in_flight: 2, scope: "route" } }], { service: "pl-held" }),
       route("gzip", [{ type: "compression", config: { min_bytes: 10, algorithms: ["gzip"] } }]),
       route("gzipbig", [{ type: "compression", config: { min_bytes: 10000000 } }]),
       route("fwd", [{ type: "forward_auth", config: { url: `http://${HOST}:${AUTH_PORT}/verify`, response_headers: ["X-Auth-User"] } }]),
@@ -217,6 +232,7 @@ step("the plugin configuration is accepted and served", async () => {
   await startJwks();
   await startAuthService();
   await startHookService();
+  await startHeldService();
   await apply(config());
   assert.equal((await call("key", withKey(KEYS.alice))).status, 200);
 });
@@ -456,6 +472,21 @@ step("rate_limit by host and by path prefix: each host, and each database path, 
   const path = (p) => call("perpath", { path: p });
   assert.deepEqual([(await path(`/db/${run}a/tables`)).status, (await path(`/db/${run}a/rows/7`)).status], [200, 429], "the first two segments name the budget");
   assert.equal((await path(`/db/${run}b/tables`)).status, 200, "another database under the same route still has its budget");
+});
+
+step("concurrency_limit: two in progress, the third refused at once, the slots given back when they finish", async () => {
+  const running = [call("inflight"), call("inflight")];
+  await until(() => held.length === 2, { what: "two requests held at the upstream" });
+  const over = await call("inflight");
+  assertRefused(over, 429, "CONCURRENCY_LIMITED");
+  assert.equal(over.headers["retry-after"], "1");
+  assert.equal(held.length, 2, "the refused request never reached the upstream");
+  releaseHeld();
+  assert.deepEqual((await Promise.all(running)).map((r) => r.status), [200, 200]);
+  const again = call("inflight");
+  await until(() => held.length === 1, { what: "a new request admitted" });
+  releaseHeld();
+  assert.equal((await again).status, 200);
 });
 
 step("quota: the allowance counts down, then 429 until the window ends", async () => {

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://valkv-apg.dev/schemas/plugins/concurrency_limit.json",
+  "title": "concurrency_limit",
+  "description": "A cap on requests in progress at once: a request takes a slot when it starts and gives it back when it ends.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "max_in_flight": { "description": "Requests one counter allows in progress at once. A WebSocket holds its slot until it closes.", "type": "integer", "minimum": 1, "maximum": 1000000, "default": 100 },
+    "scope": { "$ref": "../common.json#/$defs/limitScope", "default": "workspace" }
+  }
+}

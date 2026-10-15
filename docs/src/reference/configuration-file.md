@@ -190,7 +190,7 @@ Under `plugins`. A plugin instance attached at a scope. `config` is validated se
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` | string |  |  |
-| `type` (required) | `ip_restriction`, `cors`, `request_size_limit`, `mtls_auth`, `jwt_auth`, `key_auth`, `basic_auth`, `forward_auth`, `acl`, `rate_limit`, `quota`, `bandwidth_limit`, `http_callout`, `wasm`, `redirect`, `static_response`, `request_transformer`, `response_cache`, `response_transformer`, `compression`, `access_log` |  |  |
+| `type` (required) | `ip_restriction`, `cors`, `request_size_limit`, `mtls_auth`, `jwt_auth`, `key_auth`, `basic_auth`, `forward_auth`, `acl`, `rate_limit`, `quota`, `bandwidth_limit`, `concurrency_limit`, `http_callout`, `wasm`, `redirect`, `static_response`, `request_transformer`, `response_cache`, `response_transformer`, `compression`, `access_log` |  |  |
 | `scope` (required) | `global`, `workspace`, `service`, `route` |  |  |
 | `scope_ref` | string |  | Service or route name or id. Required for those scopes. |
 | `consumer` | string |  | A reference to another resource in the same workspace, by name or id. |

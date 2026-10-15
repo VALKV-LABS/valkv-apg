@@ -1,4 +1,5 @@
-//! Request-rate and bandwidth limiting (spec §9.4: `rate_limit`, `bandwidth_limit`).
+//! Request-rate, bandwidth and concurrency limiting (spec §9.4: `rate_limit`,
+//! `bandwidth_limit`, `concurrency_limit`).
 //!
 //! Both are token buckets held per node. A fleet of N nodes therefore allows
 //! up to N times the configured rate; the plugin documentation says so.
@@ -6,6 +7,7 @@
 //! Bucket maps are bounded: idle buckets are evicted, so a limit scoped to
 //! `ip` cannot grow memory without limit (spec NFR-8).
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use dashmap::DashMap;
@@ -130,6 +132,69 @@ impl BandwidthConfig {
             burst_bytes: v.get("burst_bytes").and_then(Value::as_f64).unwrap_or(20_000_000.0),
             scope: Scope::parse(v.get("scope").and_then(Value::as_str)),
         }
+    }
+}
+
+/// Parsed `concurrency_limit` configuration. Defaults equal `schemas/plugins/concurrency_limit.json`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConcurrencyConfig {
+    pub max_in_flight: usize,
+    pub scope: Scope,
+}
+
+impl ConcurrencyConfig {
+    pub fn from_json(v: &Value) -> Self {
+        Self {
+            max_in_flight: v.get("max_in_flight").and_then(Value::as_u64).unwrap_or(100).max(1) as usize,
+            scope: Scope::parse(v.get("scope").and_then(Value::as_str)),
+        }
+    }
+}
+
+/// Requests in progress, per counter. An entry exists only while a request
+/// holds it, so the map is never larger than the traffic in flight.
+#[derive(Default)]
+pub struct InFlight {
+    map: Arc<DashMap<String, usize>>,
+}
+
+/// A slot taken by one request; dropping it gives the slot back.
+pub struct Permit {
+    map: Arc<DashMap<String, usize>>,
+    key: String,
+}
+
+impl InFlight {
+    /// Takes a slot under `key`, or none when `max` are already taken.
+    pub fn acquire(&self, key: &str, max: usize) -> Option<Permit> {
+        let mut count = self.map.entry(key.to_string()).or_insert(0);
+        if *count >= max {
+            return None;
+        }
+        *count += 1;
+        Some(Permit { map: self.map.clone(), key: key.to_string() })
+    }
+
+    /// Slots taken under `key`.
+    pub fn count(&self, key: &str) -> usize {
+        self.map.get(key).map_or(0, |n| *n)
+    }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+}
+
+impl Drop for Permit {
+    fn drop(&mut self) {
+        self.map.remove_if_mut(&self.key, |_, n| {
+            *n = n.saturating_sub(1);
+            *n == 0
+        });
     }
 }
 
@@ -259,6 +324,51 @@ mod tests {
         let d = BandwidthConfig::from_json(&json!({}));
         assert_eq!(d.bytes_per_second, schema["properties"]["bytes_per_second"]["default"].as_f64().unwrap());
         assert_eq!(d.burst_bytes, schema["properties"]["burst_bytes"]["default"].as_f64().unwrap());
+
+        let schema: Value = serde_json::from_str(include_str!("../../../schemas/plugins/concurrency_limit.json")).unwrap();
+        let d = ConcurrencyConfig::from_json(&json!({}));
+        assert_eq!(d.max_in_flight as u64, schema["properties"]["max_in_flight"]["default"].as_u64().unwrap());
+        assert_eq!(d.scope, Scope::parse(schema["properties"]["scope"]["default"].as_str()));
+    }
+
+    #[test]
+    fn slots_are_given_back_when_a_request_ends() {
+        let in_flight = InFlight::default();
+        let first = in_flight.acquire("k", 2).expect("a free slot");
+        let second = in_flight.acquire("k", 2).expect("a free slot");
+        assert!(in_flight.acquire("k", 2).is_none(), "two are in progress");
+        assert!(in_flight.acquire("other", 2).is_some(), "another counter is separate");
+        drop(first);
+        assert_eq!(in_flight.count("k"), 1);
+        let third = in_flight.acquire("k", 2).expect("the slot came back");
+        drop(second);
+        drop(third);
+        assert!(in_flight.is_empty(), "an idle counter takes no memory");
+    }
+
+    #[test]
+    fn slots_hold_under_contention() {
+        let in_flight = Arc::new(InFlight::default());
+        let taken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (in_flight, taken, peak) = (in_flight.clone(), taken.clone(), peak.clone());
+                std::thread::spawn(move || {
+                    for _ in 0..2000 {
+                        if let Some(permit) = in_flight.acquire("k", 3) {
+                            let now = taken.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                            peak.fetch_max(now, std::sync::atomic::Ordering::SeqCst);
+                            taken.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                            drop(permit);
+                        }
+                    }
+                })
+            })
+            .collect();
+        threads.into_iter().for_each(|t| t.join().unwrap());
+        assert!(peak.load(std::sync::atomic::Ordering::SeqCst) <= 3);
+        assert!(in_flight.is_empty());
     }
 
     #[test]
