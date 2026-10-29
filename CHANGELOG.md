@@ -5,6 +5,8 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-28
+
 ### Added
 - TCP routes: a route with `protocol: tcp` is matched by the SNI name of a TLS connection on
   a new TCP listener (`APG_LISTEN_TCP`, off unless set) and forwards the connection as a byte
