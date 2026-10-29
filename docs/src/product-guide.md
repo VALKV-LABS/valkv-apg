@@ -37,7 +37,7 @@ More: [architecture and the two modes](concepts/architecture.md), [five-minute s
 | **Workspace** | A tenant. It owns everything below. There is always one called `default`, and you can ignore workspaces until you need a second. |
 | **Domain** | A host name a workspace owns, and how it gets its certificate. |
 | **Service** | One upstream application: its backends, and how to balance, check, time out and retry. |
-| **Route** | Which requests go to which service. |
+| **Route** | Which requests (or, with `protocol: tcp`, which TLS connections) go to which service. |
 | **Plugin** | Something done to requests or responses, attached to everything, a workspace, a service or a route. |
 | **Consumer** | An identified caller, with its credentials: API keys, passwords, client certificates. |
 | **Certificate** | A certificate and key you supply, or one the gateway obtained. |
@@ -92,7 +92,9 @@ A route can also **split traffic** between services by weight, which is how you 
 
 The **route tester** answers "which route would this request hit, and why not the others". It asks a running gateway, so the answer is the real one. It is in the console, in `apgctl route match`, and in the Admin API.
 
-More: [what happens to a request](concepts/request-lifecycle.md), [traffic splitting and canaries](guides/traffic-splitting.md).
+A route with `protocol: tcp` is not for HTTP at all. On a separate TCP listener it matches a TLS connection by the name the client asks for (SNI) and forwards the connection as bytes, so services such as Redis with TLS can be reached per tenant on one port. The gateway either terminates TLS with its own certificate for the name, or passes the encrypted bytes through to a backend that terminates it. Host ownership, load balancing, health checks and draining work as for HTTP routes; plugins do not apply.
+
+More: [what happens to a request](concepts/request-lifecycle.md), [traffic splitting and canaries](guides/traffic-splitting.md), [TCP routing by SNI](guides/tcp-routing.md).
 
 ## Upstreams
 

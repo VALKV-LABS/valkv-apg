@@ -355,6 +355,14 @@ pub struct ErrorResponseSpec {
 #[derive(Debug, Clone, Deserialize)]
 pub struct Route {
     pub name: String,
+    /// `http`, or `tcp` for a route that forwards whole TLS connections,
+    /// chosen by SNI, on the TCP listener.
+    #[serde(default = "d_http")]
+    pub protocol: String,
+    /// `tcp` only: forward the client's TLS bytes untouched instead of
+    /// terminating TLS at the node.
+    #[serde(default)]
+    pub tls_passthrough: bool,
     #[serde(default)]
     pub service: Option<String>,
     #[serde(default)]

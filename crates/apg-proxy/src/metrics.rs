@@ -43,6 +43,16 @@ pub static DRAINED: LazyLock<IntCounter> = LazyLock::new(|| {
     register_int_counter!("apg_drained_connections_total", "Upgraded connections closed because their backend was drained or removed.").unwrap()
 });
 
+pub static TCP_CONNECTIONS: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!("apg_tcp_connections_total", "Connections on the TCP listener, by route, service and outcome.", &["route", "service", "outcome"]).unwrap()
+});
+
+pub static TCP_ACTIVE: LazyLock<IntGauge> = LazyLock::new(|| register_int_gauge!("apg_tcp_active_connections", "Connections the TCP listener is forwarding.").unwrap());
+
+pub static TCP_BYTES: LazyLock<IntCounterVec> = LazyLock::new(|| {
+    register_int_counter_vec!("apg_tcp_bytes_total", "Bytes forwarded by the TCP listener, counted when a connection ends, by route, service and direction.", &["route", "service", "direction"]).unwrap()
+});
+
 pub static ACTIVE_REQUESTS: LazyLock<IntGauge> = LazyLock::new(|| register_int_gauge!("apg_active_requests", "Requests in progress.").unwrap());
 
 pub static USAGE_PENDING: LazyLock<IntGauge> =
@@ -159,6 +169,9 @@ pub fn init() {
     LazyLock::force(&REQUEST_BYTES);
     LazyLock::force(&RESPONSE_BYTES);
     LazyLock::force(&ACTIVE_REQUESTS);
+    LazyLock::force(&TCP_CONNECTIONS);
+    LazyLock::force(&TCP_ACTIVE);
+    LazyLock::force(&TCP_BYTES);
     LazyLock::force(&UPGRADED);
     LazyLock::force(&DRAINED);
     LazyLock::force(&USAGE_PENDING);

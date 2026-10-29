@@ -248,6 +248,31 @@ describe("host ownership (DOM-1, DOM-2)", () => {
     expect(claim.json.error.code).toBe("HOST_NOT_OWNED");
   });
 
+  it("a tcp route routes an owned SNI name, carries its protocol to nodes, and takes no plugins", async () => {
+    const before = await h.lastSeq();
+    const notOwned = await h.call("POST", `${T()}/routes`, { token: editor, body: { name: "redis", protocol: "tcp", service: "app", hosts: ["cache.rival.test"] } });
+    expect(notOwned.json.error.code).toBe("HOST_NOT_OWNED");
+    const ok = await h.call("POST", `${T()}/routes`, { token: editor, body: { name: "redis", protocol: "tcp", tls_passthrough: true, service: "app", hosts: ["cache.apps.acme.test"] } });
+    expect(ok.status).toBe(201);
+    expect(ok.json).toMatchObject({ protocol: "tcp", tls_passthrough: true, hosts: ["cache.apps.acme.test"] });
+    const events = await h.events(before);
+    expect(events.at(-1)!.data["data"]).toMatchObject({ protocol: "tcp", tls_passthrough: true });
+
+    // Nothing that only means something to HTTP, and no plugins.
+    const paths = await h.call("PUT", `${T()}/routes/redis`, { token: editor, body: { protocol: "tcp", service: "app", hosts: ["cache.apps.acme.test"], paths: ["/a"] } });
+    expect(paths.status).toBe(422);
+    const plugin = await h.call("POST", `${T()}/plugins`, { token: editor, body: { type: "rate_limit", scope: "route", scope_ref: "redis", config: { per_second: 5 } } });
+    expect(plugin.status).toBe(422);
+    expect(plugin.json.error.details[0].pointer).toBe("/scope_ref");
+    // An HTTP route with a plugin cannot become a tcp route underneath it.
+    expect((await h.call("POST", `${T()}/plugins`, { token: editor, body: { type: "rate_limit", scope: "route", scope_ref: "wild", config: { per_second: 5 } } })).status).toBe(201);
+    const flip = await h.call("PUT", `${T()}/routes/wild`, { token: editor, body: { protocol: "tcp", service: "app", hosts: ["a.apps.acme.test"] } });
+    expect(flip.status).toBe(422);
+    expect(flip.json.error.details[0].pointer).toBe("/protocol");
+    // tls_passthrough means nothing to an HTTP route.
+    expect((await h.call("PUT", `${T()}/routes/wild`, { token: editor, body: { service: "app", hosts: ["a.apps.acme.test"], tls_passthrough: true } })).status).toBe(422);
+  });
+
   it("deleting a domain that routes depend on is refused", async () => {
     const res = await h.call("DELETE", `${T()}/domains/shop.acme.test`, { token: editor });
     expect(res.status).toBe(409);

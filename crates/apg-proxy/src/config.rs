@@ -9,7 +9,7 @@ use crate::net::{Cidr, parse_cidr_list};
 /// Variables this module reads. A test checks each is listed for the node in
 /// `schemas/process-config.yaml`.
 pub const READ_VARIABLES: &[&str] = &[
-    "APG_CONFIG_SOURCE", "APG_CONFIG_FILE", "APG_NODE_ID", "APG_LISTEN_HTTPS", "APG_LISTEN_HTTP", "APG_LISTEN_MGMT",
+    "APG_CONFIG_SOURCE", "APG_CONFIG_FILE", "APG_NODE_ID", "APG_LISTEN_HTTPS", "APG_LISTEN_HTTP", "APG_LISTEN_MGMT", "APG_LISTEN_TCP",
     "APG_HTTP_MODE", "APG_TRAFFIC_HEALTH_PATH", "APG_DATA_DIR", "APG_TRUSTED_PROXIES", "APG_REGION",
     "APG_TLS_FALLBACK_CERT", "APG_TLS_FALLBACK_KEY", "APG_LOG_LEVEL", "APG_LOG_FORMAT", "APG_SHUTDOWN_GRACE_SECS",
     "APG_STUB_UPSTREAM", "APG_ALLOW_TEST_MODES", "APG_CONFIG_URL", "APG_ADMIN_URL", "APG_NODE_TOKEN",
@@ -62,6 +62,8 @@ pub struct Config {
     pub listen_https: Option<String>,
     pub listen_http: Option<String>,
     pub listen_mgmt: Option<String>,
+    /// TLS connections routed by SNI to `tcp` routes. Off unless set.
+    pub listen_tcp: Option<String>,
     pub http_mode: HttpMode,
     pub traffic_health_path: Option<String>,
     pub data_dir: String,
@@ -289,6 +291,10 @@ impl Config {
             listen_https,
             listen_http,
             listen_mgmt: listener(env, "APG_LISTEN_MGMT", "127.0.0.1:9100")?,
+            listen_tcp: match get(env, "APG_LISTEN_TCP") {
+                Some(_) => listener(env, "APG_LISTEN_TCP", "")?,
+                None => None,
+            },
             http_mode,
             traffic_health_path,
             data_dir: get(env, "APG_DATA_DIR").unwrap_or_else(|| "/var/lib/apg".into()),
@@ -387,6 +393,10 @@ mod tests {
         let c = load(&[("APG_LISTEN_HTTP", ""), ("APG_LISTEN_MGMT", "")]).unwrap();
         assert!(c.listen_http.is_none() && c.listen_mgmt.is_none() && c.listen_https.is_some());
         assert!(err(&[("APG_LISTEN_HTTP", ""), ("APG_LISTEN_HTTPS", "")]).contains("serve nothing"));
+        // The TCP listener is off unless asked for.
+        assert!(c.listen_tcp.is_none());
+        assert_eq!(load(&[("APG_LISTEN_TCP", "0.0.0.0:6380")]).unwrap().listen_tcp.as_deref(), Some("0.0.0.0:6380"));
+        assert!(err(&[("APG_LISTEN_TCP", "6380")]).contains("APG_LISTEN_TCP"));
     }
 
     #[test]

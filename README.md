@@ -34,6 +34,7 @@ metering and automatic TLS. Built in Rust on [Pingora](https://github.com/cloudf
 | Control plane: Admin API, roles, delegated JWT, audit, OpenAPI | Working, tested against Postgres |
 | Nodes polling the control plane, local cache, resync | Working, tested end to end including control-plane outages |
 | Routing: hosts, paths (prefix, exact, regex), methods, headers, query, priorities, rewrites, traffic split by weight | Working |
+| TCP routes by TLS SNI name (Redis and other TLS protocols), terminating or passing TLS through | Working, tested against Redis |
 | Workspaces, host ownership, base domains | Working |
 | Plugins, 20 types: authentication (`key_auth`, `basic_auth`, `jwt_auth`, `mtls_auth`, `forward_auth`), `acl`, `ip_restriction`, `cors`, `request_size_limit`, `rate_limit`, `quota`, `bandwidth_limit`, `redirect`, `static_response`, request and response transformers, `response_cache`, `compression`, `http_callout`, `access_log` | Working, tested end to end |
 | Consumers and credentials (API keys, passwords, client certificates), stored and distributed as hashes | Working |

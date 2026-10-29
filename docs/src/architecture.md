@@ -50,7 +50,7 @@ Two rules shape everything:
 
 | Part | Does |
 |---|---|
-| **Listeners** | HTTPS and HTTP for traffic. A separate management listener, private by default, for health, readiness, metrics, status and backend health. |
+| **Listeners** | HTTPS and HTTP for traffic, and optionally a TCP listener that forwards TLS connections by SNI name to `tcp` routes. A separate management listener, private by default, for health, readiness, metrics, status and backend health. |
 | **Configuration source** | Gets configuration from exactly one place: a file it watches, or a control plane it polls. Both feed the same apply step, so behaviour cannot differ by mode. |
 | **Snapshot** | An immutable, indexed copy of the whole configuration. Each request uses one snapshot from start to finish. A change builds a new snapshot beside the old and swaps it in, so no request waits for a change and no change is half visible. |
 | **Cache on disk** | The last configuration applied, so a restart does not depend on the control plane. Losing it is safe: the node fetches everything again. |

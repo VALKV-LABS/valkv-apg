@@ -124,6 +124,8 @@ Under `routes`. Match predicates that send a request to a service.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `name` (required) | string |  |  |
+| `protocol` | `http`, `tcp` | `http` | http: the route matches HTTP requests. tcp: the route matches TLS connections on the TCP listener by their SNI name and forwards the connection as a byte stream. |
+| `tls_passthrough` | boolean | `false` | tcp only. false: the node terminates TLS with the certificate for the SNI name and forwards the decrypted stream. true: the node forwards the client's TLS bytes untouched and the backend terminates TLS. |
 | `service` | string |  | A reference to another resource in the same workspace, by name or id. |
 | `split[]` | list of objects |  |  |
 | `split[].service` (required) | string |  | A reference to another resource in the same workspace, by name or id. |
@@ -144,7 +146,7 @@ Under `routes`. Match predicates that send a request to a service.
 | `strip_path` | boolean | `false` |  |
 | `rewrite` | object |  |  |
 | `timeout_ms` | integer (≥ 1, ≤ 86400000) |  |  |
-| `idle_timeout_ms` | integer (≥ 1000, ≤ 86400000) | `300000` | An upgraded (WebSocket) connection with no traffic either way for this long is closed. |
+| `idle_timeout_ms` | integer (≥ 1000, ≤ 86400000) | `300000` | An upgraded (WebSocket) connection, or a tcp connection, with no traffic either way for this long is closed. |
 | `error_responses` | object |  | Custom gateway error responses, keyed by error code. |
 | `enabled` | boolean | `true` |  |
 | `plugins[]` | list of objects |  | Declarative config only: plugin instances attached to this route. |

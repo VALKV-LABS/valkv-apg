@@ -90,6 +90,60 @@ pub struct CompiledRoute {
     query: Vec<CompiledPredicate>,
 }
 
+/// A `tcp` route: TLS connections whose SNI name it lists go to its service.
+#[derive(Debug)]
+pub struct CompiledTcpRoute {
+    pub id: String,
+    pub name: String,
+    pub workspace_id: String,
+    /// `(service id, weight)`. One entry unless the route splits traffic.
+    pub targets: Vec<(String, u32)>,
+    /// Forward the client's TLS bytes untouched instead of terminating TLS.
+    pub passthrough: bool,
+    pub idle_timeout_ms: u64,
+}
+
+/// `tcp` routes by SNI name. Within a name, the order is priority, then an
+/// exact name before a wildcard, then id: the same order HTTP routes use.
+#[derive(Debug, Default)]
+struct TcpIndex {
+    exact: HashMap<String, Vec<TcpEntry>>,
+    /// Keyed by the suffix after the first label, with its leading dot: `.example.com`.
+    wildcard: HashMap<String, Vec<TcpEntry>>,
+}
+
+#[derive(Debug)]
+struct TcpEntry {
+    /// `(-priority, -host rank, id)`: smaller wins.
+    key: (i64, i8, String),
+    route: Arc<CompiledTcpRoute>,
+}
+
+impl TcpIndex {
+    fn sort(&mut self) {
+        for v in self.exact.values_mut().chain(self.wildcard.values_mut()) {
+            v.sort_by(|a, b| a.key.cmp(&b.key));
+        }
+    }
+
+    fn find(&self, host: &str) -> Option<&Arc<CompiledTcpRoute>> {
+        let exact = self.exact.get(host).and_then(|v| v.first());
+        let wild = host.find('.').and_then(|i| self.wildcard.get(&host[i..])).and_then(|v| v.first());
+        match (exact, wild) {
+            (Some(e), Some(w)) => Some(if e.key <= w.key { &e.route } else { &w.route }),
+            (e, w) => e.or(w).map(|x| &x.route),
+        }
+    }
+}
+
+/// The result of matching a TLS connection to a `tcp` route.
+#[derive(Debug, Clone)]
+pub struct TcpMatched {
+    pub route: Arc<CompiledTcpRoute>,
+    /// The workspace the connection is attributed to.
+    pub workspace_id: String,
+}
+
 #[derive(Debug, Clone)]
 enum PathMatcher {
     Any,
@@ -374,6 +428,8 @@ pub struct Snapshot {
     services: HashMap<String, Arc<ServiceEntry>>,
     system_routes: RouteIndex,
     workspace_routes: HashMap<String, RouteIndex>,
+    system_tcp_routes: TcpIndex,
+    workspace_tcp_routes: HashMap<String, TcpIndex>,
     domains_exact: HashMap<String, String>,
     domains_wildcard: HashMap<String, String>,
     base_domains: Vec<String>,
@@ -525,6 +581,10 @@ impl Snapshot {
         for ix in snap.workspace_routes.values_mut() {
             ix.sort();
         }
+        snap.system_tcp_routes.sort();
+        for ix in snap.workspace_tcp_routes.values_mut() {
+            ix.sort();
+        }
 
         for (id, s) in resources.kind("plugin") {
             let (Ok(p), Some(ws)) = (serde_json::from_value::<Plugin>(s.data.clone()), &s.workspace_id) else {
@@ -547,6 +607,13 @@ impl Snapshot {
         };
         if targets.is_empty() || targets.iter().any(|(sid, _)| !self.services.contains_key(sid)) {
             self.report.dangling += 1;
+            return;
+        }
+        if spec.protocol == "tcp" {
+            return self.add_tcp_route(id, workspace_id, &spec, targets);
+        }
+        if spec.protocol != "http" {
+            self.report.undecodable += 1;
             return;
         }
         let (Some(headers), Some(query)) = (compile_predicates(&spec.headers, true), compile_predicates(&spec.query, false)) else {
@@ -649,6 +716,46 @@ impl Snapshot {
                 }
             }
         }
+    }
+
+    fn add_tcp_route(&mut self, id: &str, workspace_id: &str, spec: &Route, targets: Vec<(String, u32)>) {
+        // Without a name to match there is nothing to route by; the loaders refuse it.
+        if spec.hosts.is_empty() {
+            self.report.undecodable += 1;
+            return;
+        }
+        let route = Arc::new(CompiledTcpRoute {
+            id: id.to_string(),
+            name: spec.name.clone(),
+            workspace_id: workspace_id.to_string(),
+            targets,
+            passthrough: spec.tls_passthrough,
+            idle_timeout_ms: spec.idle_timeout_ms,
+        });
+        self.route_count += 1;
+        let system = self.workspaces.get(workspace_id).is_some_and(|w| w.spec.system);
+        let index = if system { &mut self.system_tcp_routes } else { self.workspace_tcp_routes.entry(workspace_id.to_string()).or_default() };
+        for host in &spec.hosts {
+            let host = host.to_ascii_lowercase();
+            match host.strip_prefix('*') {
+                Some(suffix) => index.wildcard.entry(suffix.to_string()).or_default().push(TcpEntry { key: (-spec.priority, -1, id.to_string()), route: route.clone() }),
+                None => index.exact.entry(host).or_default().push(TcpEntry { key: (-spec.priority, -2, id.to_string()), route: route.clone() }),
+            }
+        }
+    }
+
+    /// Matches a TLS connection's SNI name to a `tcp` route. As for HTTP, system
+    /// routes come first and a workspace's routes only see hosts it owns (RT-1).
+    pub fn match_tcp(&self, sni: &str) -> Option<TcpMatched> {
+        let host = sni.to_ascii_lowercase();
+        let owner = self.host_owner(&host);
+        if let Some(route) = self.system_tcp_routes.find(&host) {
+            let workspace_id = owner.or(self.system_workspace.as_deref()).unwrap_or(&route.workspace_id).to_string();
+            return Some(TcpMatched { route: route.clone(), workspace_id });
+        }
+        let owner = owner?;
+        let route = self.workspace_tcp_routes.get(owner)?.find(&host)?;
+        Some(TcpMatched { route: route.clone(), workspace_id: owner.to_string() })
     }
 
     /// The workspace that owns `host` through a domain or a base domain (spec DOM-1, DOM-2).
@@ -1162,5 +1269,54 @@ mod tests {
         assert_eq!(parse_query("a=1&b=hello+world&c=%2Fx&d"), vec![
             ("a".to_string(), "1".to_string()), ("b".into(), "hello world".into()), ("c".into(), "/x".into()), ("d".into(), String::new()),
         ]);
+    }
+
+    #[test]
+    fn tcp_routes_match_by_sni_and_never_match_http_requests() {
+        let mut r = base();
+        domain(&mut r, ACME, "*.redis.acme.io", "active");
+        route(&mut r, "redis-all", ACME, "svc-acme", json!({ "protocol": "tcp", "hosts": ["*.redis.acme.io"] }));
+        route(&mut r, "redis-one", ACME, "svc-acme", json!({ "protocol": "tcp", "tls_passthrough": true, "idle_timeout_ms": 5000, "hosts": ["cache.redis.acme.io"] }));
+        let snap = Snapshot::build(&r);
+        assert_eq!(snap.route_count(), 2);
+
+        let m = snap.match_tcp("CACHE.redis.acme.io").unwrap();
+        assert_eq!((m.route.id.as_str(), m.route.passthrough, m.route.idle_timeout_ms), ("redis-one", true, 5000), "an exact name beats a wildcard");
+        assert_eq!(m.workspace_id, ACME);
+        assert_eq!(snap.match_tcp("other.redis.acme.io").unwrap().route.id, "redis-all");
+        assert!(!snap.match_tcp("other.redis.acme.io").unwrap().route.passthrough);
+        assert!(snap.match_tcp("a.b.redis.acme.io").is_none(), "a wildcard covers one label");
+        assert!(snap.match_tcp("redis.acme.io").is_none());
+        assert_eq!(find(&snap, "GET", "cache.redis.acme.io", "/"), None, "a tcp route is not an HTTP route");
+    }
+
+    #[test]
+    fn tcp_routes_follow_priority_tiers_and_host_ownership() {
+        let mut r = base();
+        domain(&mut r, ACME, "db.acme.io", "active");
+        route(&mut r, "acme-db", ACME, "svc-acme", json!({ "protocol": "tcp", "hosts": ["db.acme.io"] }));
+        // A rival lists a host it does not own: the loaders refuse this, and the matcher never reaches it either.
+        route(&mut r, "rival-db", RIVAL, "svc-rival", json!({ "protocol": "tcp", "hosts": ["db.acme.io"], "priority": 100 }));
+        assert_eq!(snap_tcp(&r, "db.acme.io"), Some("acme-db".into()));
+
+        // The system tier is tried first, and priority orders routes within a name.
+        route(&mut r, "sys-low", SYS, "svc-sys", json!({ "protocol": "tcp", "hosts": ["*.acme.io"], "priority": 1 }));
+        assert_eq!(snap_tcp(&r, "db.acme.io"), Some("sys-low".into()), "priority beats the more specific name");
+        route(&mut r, "sys-high", SYS, "svc-sys", json!({ "protocol": "tcp", "hosts": ["db.acme.io"], "priority": 1 }));
+        assert_eq!(snap_tcp(&r, "db.acme.io"), Some("sys-high".into()), "same priority: the exact name wins");
+
+        // Disabled, dangling and host-less tcp routes are left out.
+        let mut r = base();
+        route(&mut r, "off", SYS, "svc-sys", json!({ "protocol": "tcp", "hosts": ["a.io"], "enabled": false }));
+        route(&mut r, "dangling", SYS, "missing", json!({ "protocol": "tcp", "hosts": ["b.io"] }));
+        route(&mut r, "nameless", SYS, "svc-sys", json!({ "protocol": "tcp" }));
+        let snap = Snapshot::build(&r);
+        assert_eq!(snap.route_count(), 0);
+        assert_eq!(snap.report.dangling, 1);
+        assert_eq!(snap.report.undecodable, 1);
+    }
+
+    fn snap_tcp(r: &Resources, sni: &str) -> Option<String> {
+        Snapshot::build(r).match_tcp(sni).map(|m| m.route.id.clone())
     }
 }

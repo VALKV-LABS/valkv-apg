@@ -22,6 +22,7 @@ Each process is configured by its environment, read once at start. A variable th
 | `APG_POLL_WAIT_MS` | integer | `25000` | Long-poll wait. 0 disables long polling. |
 | `APG_LISTEN_HTTPS` | address | `0.0.0.0:8443` | Traffic listener (TLS). Empty disables it. |
 | `APG_LISTEN_HTTP` | address | `0.0.0.0:8080` | ACME challenges, plus redirect or clear-text proxying per APG_HTTP_MODE. |
+| `APG_LISTEN_TCP` | address |  | TLS connections routed by SNI name to routes with protocol tcp (Redis, and other protocols that speak TLS from the first byte). Unset disables it. |
 | `APG_LISTEN_MGMT` | address | `127.0.0.1:9100` | Health, readiness, metrics, status. Never exposed to clients. |
 | `APG_HTTP_MODE` | `redirect`, `proxy` | `redirect` | What the HTTP listener does with non-ACME requests. |
 | `APG_TRAFFIC_HEALTH_PATH` | string |  | A path the node answers itself on traffic listeners, for load balancers that cannot probe the management port. |

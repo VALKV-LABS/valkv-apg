@@ -22,6 +22,7 @@ variables:
   - { name: APG_POLL_WAIT_MS, component: node, type: integer, default: 25000, phase: "2b", description: "Long-poll wait. 0 disables long polling." }
   - { name: APG_LISTEN_HTTPS, component: node, type: address, default: "0.0.0.0:8443", phase: "0", description: "Traffic listener (TLS). Empty disables it." }
   - { name: APG_LISTEN_HTTP, component: node, type: address, default: "0.0.0.0:8080", phase: "0", description: "ACME challenges, plus redirect or clear-text proxying per APG_HTTP_MODE." }
+  - { name: APG_LISTEN_TCP, component: node, type: address, phase: "2a", description: "TLS connections routed by SNI name to routes with protocol tcp (Redis, and other protocols that speak TLS from the first byte). Unset disables it." }
   - { name: APG_LISTEN_MGMT, component: node, type: address, default: "127.0.0.1:9100", phase: "0", description: "Health, readiness, metrics, status. Never exposed to clients." }
   - { name: APG_HTTP_MODE, component: node, type: enum, values: [redirect, proxy], default: redirect, phase: "2a", description: "What the HTTP listener does with non-ACME requests." }
   - { name: APG_TRAFFIC_HEALTH_PATH, component: node, type: string, phase: "2a", description: "A path the node answers itself on traffic listeners, for load balancers that cannot probe the management port (DP-3)." }

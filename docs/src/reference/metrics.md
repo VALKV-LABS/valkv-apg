@@ -15,6 +15,9 @@ Both processes serve Prometheus metrics at `/metrics`: the node on its managemen
 | `apg_response_bytes_total` | counter | `route`, `service` | Response body bytes sent. |
 | `apg_upgraded_connections` | gauge |  | Upgraded (WebSocket) connections open. |
 | `apg_drained_connections_total` | counter |  | Upgraded connections closed because their backend was drained or removed. |
+| `apg_tcp_connections_total` | counter | `route`, `service`, `outcome` | Connections on the TCP listener, by route, service and outcome. |
+| `apg_tcp_active_connections` | gauge |  | Connections the TCP listener is forwarding. |
+| `apg_tcp_bytes_total` | counter | `route`, `service`, `direction` | Bytes forwarded by the TCP listener, counted when a connection ends, by route, service and direction. |
 | `apg_active_requests` | gauge |  | Requests in progress. |
 | `apg_usage_windows_pending` | gauge |  | Closed usage windows waiting to be delivered. |
 | `apg_usage_windows_dropped_total` | counter |  | Usage windows given up after waiting a day. |

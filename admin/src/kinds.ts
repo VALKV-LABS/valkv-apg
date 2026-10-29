@@ -475,6 +475,10 @@ const route: KindDef = {
   async prepare({ store, tx, ws, id, body }) {
     rejectNested(body, "plugins");
     refuseUnbuilt(body, UNBUILT.route);
+    if (body["protocol"] === "tcp") {
+      const [attached] = await tx<Row[]>`SELECT name FROM apg_plugins WHERE route_id = ${id} LIMIT 1`;
+      if (attached) fail("/protocol", `plugin '${attached["name"]}' is attached to this route; a tcp route cannot have plugins`);
+    }
 
     const targets: Array<{ service: string; weight: number }> = [];
     if (body["service"] !== undefined) {
@@ -723,7 +727,12 @@ const plugin: KindDef = {
     let serviceId: string | null = null;
     let routeId: string | null = null;
     if (scope === "service") serviceId = (await resolveRef(tx, "apg_services", ws, body["scope_ref"], "service", "/scope_ref"))["id"];
-    if (scope === "route") routeId = (await resolveRef(tx, "apg_routes", ws, body["scope_ref"], "route", "/scope_ref"))["id"];
+    if (scope === "route") {
+      const route = await resolveRef(tx, "apg_routes", ws, body["scope_ref"], "route", "/scope_ref");
+      // A tcp route forwards bytes; nothing a plugin does could be enforced on it.
+      if (route["spec"]?.["protocol"] === "tcp") fail("/scope_ref", `route '${body["scope_ref"]}' is a tcp route; plugins do not apply to it`);
+      routeId = route["id"];
+    }
     const consumerId = body["consumer"] !== undefined ? (await resolveRef(tx, "apg_consumers", ws, body["consumer"], "consumer", "/consumer"))["id"] : null;
 
     let targetWorkspace: string | null = null;
