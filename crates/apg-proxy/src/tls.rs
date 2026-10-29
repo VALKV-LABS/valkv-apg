@@ -316,6 +316,21 @@ impl TlsStore {
     }
 }
 
+/// Puts a certificate chain and its key on a handshake in progress.
+pub fn install(ssl: &mut TlsRef, pair: &CertPair) -> Result<(), String> {
+    // The PEM holds the leaf first, then any intermediates.
+    let mut chain = match X509::stack_from_pem(&pair.cert_pem) {
+        Ok(c) if !c.is_empty() => c,
+        _ => return Err("the certificate could not be parsed".to_string()),
+    };
+    let leaf = chain.remove(0);
+    ssl_use_certificate(ssl, &leaf).map_err(|e| format!("failed to install the certificate: {e}"))?;
+    for intermediate in chain {
+        ssl_add_chain_cert(ssl, &intermediate).map_err(|e| format!("failed to install an intermediate certificate: {e}"))?;
+    }
+    PKey::private_key_from_pem(&pair.key_pem).and_then(|key| ssl_use_private_key(ssl, &key)).map_err(|e| format!("failed to install the private key: {e}"))
+}
+
 /// Presents the selected certificate during the handshake.
 pub struct SniAcceptor {
     pub store: Arc<TlsStore>,
@@ -332,27 +347,8 @@ impl TlsAccept for SniAcceptor {
             ssl.set_verify_callback(SslVerifyMode::PEER, |_, _| true);
         }
 
-        // The PEM holds the leaf first, then any intermediates.
-        let mut chain = match X509::stack_from_pem(&pair.cert_pem) {
-            Ok(c) if !c.is_empty() => c,
-            _ => {
-                tracing::error!(?sni, "certificate could not be parsed for the handshake");
-                return;
-            }
-        };
-        let leaf = chain.remove(0);
-        if let Err(e) = ssl_use_certificate(ssl, &leaf) {
-            tracing::error!(?sni, %e, "failed to install the certificate");
-            return;
-        }
-        for intermediate in chain {
-            if let Err(e) = ssl_add_chain_cert(ssl, &intermediate) {
-                tracing::error!(?sni, %e, "failed to install an intermediate certificate");
-                return;
-            }
-        }
-        if let Err(e) = PKey::private_key_from_pem(&pair.key_pem).and_then(|key| ssl_use_private_key(ssl, &key)) {
-            tracing::error!(?sni, %e, "failed to install the private key");
+        if let Err(message) = install(ssl, &pair) {
+            tracing::error!(?sni, %message, "certificate could not be installed for the handshake");
         }
     }
 

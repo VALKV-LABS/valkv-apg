@@ -25,6 +25,7 @@ pub mod response_cache;
 pub mod secrets;
 pub mod source_api;
 pub mod source_file;
+pub mod tcp;
 pub mod tls;
 pub mod transform;
 pub mod upstream;

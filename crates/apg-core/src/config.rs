@@ -253,6 +253,8 @@ struct Names {
     ca_certificates: HashMap<String, String>,
     services: HashMap<String, String>,
     routes: HashMap<String, String>,
+    /// Ids of `tcp` routes, which plugins cannot attach to.
+    tcp_routes: HashSet<String>,
     consumers: HashMap<String, String>,
     /// Hostnames this workspace owns through its domains.
     hosts: Vec<String>,
@@ -498,6 +500,9 @@ impl Compiler<'_> {
             let name = route["name"].as_str().unwrap_or_default();
             let id = self.name(d, "route", &mut names.routes, name, format!("{at}/name"));
             self.refuse_unbuilt(route, &unbuilt().route, &at);
+            if route.get("protocol").and_then(Value::as_str) == Some("tcp") {
+                names.tcp_routes.insert(id.clone());
+            }
             let mut data = route.clone();
             data.remove("plugins");
 
@@ -629,6 +634,10 @@ impl Compiler<'_> {
                     let reference = p.get("scope_ref").and_then(Value::as_str).unwrap_or_default();
                     let map = if scope == "service" { &names.services } else { &names.routes };
                     match map.get(reference) {
+                        Some(id) if scope == "route" && names.tcp_routes.contains(id) => {
+                            self.fault(format!("{at}/scope_ref"), format!("route '{reference}' is a tcp route; plugins do not apply to it"));
+                            continue;
+                        }
                         Some(id) => Some(id.clone()),
                         None => {
                             self.fault(format!("{at}/scope_ref"), format!("{scope} '{reference}' is not defined in this workspace"));
@@ -953,6 +962,35 @@ workspaces:
         assert_eq!(pointers(compile_yaml(&other_slug)), ["/workspaces/0/routes/1/hosts/0"]);
         let claim_base = TENANTS.replace("hostname: shop.acme.test", "hostname: x.gw.example.net");
         assert!(pointers(compile_yaml(&claim_base)).contains(&"/workspaces/0/domains/0/hostname".to_string()));
+    }
+
+    #[test]
+    fn tcp_routes_route_by_sni_and_refuse_what_only_http_means() {
+        let base = "version: 1\nservices:\n  - { name: redis, backends: [{ target: 'redis:6379' }] }\nroutes:\n  - name: r\n    service: redis\n    protocol: tcp\n";
+        let events = compile_yaml(&format!("{base}    hosts: ['*.redis.example.com']\n    tls_passthrough: true\n    idle_timeout_ms: 600000\n")).unwrap();
+        let mut r = Resources::new();
+        for e in &events {
+            r.apply(e);
+        }
+        let m = Snapshot::build(&r).match_tcp("a.redis.example.com").unwrap();
+        assert!(m.route.passthrough);
+        assert_eq!(m.route.idle_timeout_ms, 600_000);
+
+        // A tcp route needs a name to route by, and takes nothing that only means something to HTTP.
+        assert!(pointers(compile_yaml(base)).iter().all(|p| p.starts_with("/routes/0")));
+        assert!(compile_yaml(base).is_err());
+        assert!(compile_yaml(&format!("{base}    hosts: []\n")).is_err());
+        for extra in ["paths: [/a]", "methods: [GET]", "strip_path: true", "timeout_ms: 1000", "rewrite: { prefix: /v2 }", "plugins: [{ type: cors }]"] {
+            assert!(compile_yaml(&format!("{base}    hosts: [a.example.com]\n    {extra}\n")).is_err(), "{extra} on a tcp route");
+        }
+        // tls_passthrough means nothing to an HTTP route.
+        let http = "version: 1\nservices:\n  - { name: s, backends: [{ target: 'a:1' }] }\nroutes:\n  - { name: r, service: s, protocol: http";
+        assert!(compile_yaml(&format!("{http}, tls_passthrough: true }}\n")).is_err());
+        assert!(compile_yaml(&format!("{http}, tls_passthrough: false }}\n")).is_ok());
+
+        // Plugins cannot attach to a tcp route by reference either.
+        let plugin = format!("{base}    hosts: [a.example.com]\nplugins:\n  - {{ type: cors, scope: route, scope_ref: r }}\n");
+        assert_eq!(pointers(compile_yaml(&plugin)), ["/plugins/0/scope_ref"]);
     }
 
     #[test]

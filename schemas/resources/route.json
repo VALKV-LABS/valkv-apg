@@ -10,6 +10,8 @@
     "id": { "$ref": "../common.json#/$defs/id" },
     "workspace_id": { "type": "string" },
     "name": { "$ref": "../common.json#/$defs/name" },
+    "protocol": { "description": "http: the route matches HTTP requests. tcp: the route matches TLS connections on the TCP listener by their SNI name and forwards the connection as a byte stream.", "enum": ["http", "tcp"], "default": "http" },
+    "tls_passthrough": { "description": "tcp only. false: the node terminates TLS with the certificate for the SNI name and forwards the decrypted stream. true: the node forwards the client's TLS bytes untouched and the backend terminates TLS.", "type": "boolean", "default": false },
     "service": { "$ref": "../common.json#/$defs/ref" },
     "split": {
       "type": "array", "minItems": 2, "maxItems": 16,
@@ -47,7 +49,7 @@
       ]
     },
     "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 86400000 },
-    "idle_timeout_ms": { "description": "An upgraded (WebSocket) connection with no traffic either way for this long is closed.", "type": "integer", "minimum": 1000, "maximum": 86400000, "default": 300000 },
+    "idle_timeout_ms": { "description": "An upgraded (WebSocket) connection, or a tcp connection, with no traffic either way for this long is closed.", "type": "integer", "minimum": 1000, "maximum": 86400000, "default": 300000 },
     "error_responses": { "$ref": "../common.json#/$defs/errorResponses" },
     "enabled": { "type": "boolean", "default": true },
     "cache_epoch": { "type": "integer", "minimum": 0, "readOnly": true },
@@ -62,6 +64,18 @@
     { "required": ["service"], "not": { "required": ["split"] } },
     { "required": ["split"], "not": { "required": ["service"] } }
   ],
+  "if": { "required": ["protocol"], "properties": { "protocol": { "const": "tcp" } } },
+  "then": {
+    "description": "A tcp route is chosen by SNI name alone and forwards bytes; HTTP matching, rewriting and plugins do not apply to it.",
+    "required": ["hosts"],
+    "properties": {
+      "hosts": { "minItems": 1 },
+      "strip_path": { "const": false },
+      "paths": false, "methods": false, "headers": false, "query": false, "rewrite": false,
+      "split_key": false, "timeout_ms": false, "error_responses": false, "plugins": false
+    }
+  },
+  "else": { "properties": { "tls_passthrough": { "const": false } } },
   "$defs": {
     "predicate": {
       "type": "object", "required": ["name"], "additionalProperties": false,

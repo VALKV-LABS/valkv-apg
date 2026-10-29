@@ -8,6 +8,8 @@ On the HTTPS port the client says which host it wants (SNI). The node picks the 
 
 On the HTTP port the node answers ACME challenges, and then either redirects to HTTPS (the default) or serves the request (`APG_HTTP_MODE=proxy`).
 
+A connection on the TCP listener (`APG_LISTEN_TCP`) never becomes a request: it is matched to a `tcp` route by its SNI name and forwarded as bytes, and none of the steps below apply. See [TCP routing by SNI](../guides/tcp-routing.md).
+
 ## 2. A request id, and who the client is
 
 Every request gets an id. A well-formed `X-Request-Id` from the client is kept; otherwise one is made. It is sent to the upstream, returned to the client, and written in the access log, so one request can be followed everywhere. W3C trace context (`traceparent`) is passed on, and started if absent.

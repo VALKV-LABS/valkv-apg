@@ -3,6 +3,19 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- TCP routes: a route with `protocol: tcp` is matched by the SNI name of a TLS connection on
+  a new TCP listener (`APG_LISTEN_TCP`, off unless set) and forwards the connection as a byte
+  stream, so services such as Redis with TLS can be routed per tenant on one port. The node
+  terminates TLS with the certificate it holds for the name, or with `tls_passthrough: true`
+  forwards the client's TLS untouched. Host ownership, load balancing, connect retries, health
+  checks, the circuit breaker, egress restriction, draining and `idle_timeout_ms` apply as for
+  HTTP routes; HTTP-only route keys and plugins are refused on a tcp route. Metrics
+  `apg_tcp_connections_total`, `apg_tcp_active_connections` and `apg_tcp_bytes_total`.
+  Upgrade nodes before creating a tcp route: an older node would treat it as an HTTP route.
+
 ## [0.1.1] - 2026-10-14
 
 ### Added

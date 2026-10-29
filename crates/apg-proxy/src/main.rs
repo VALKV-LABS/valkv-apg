@@ -237,6 +237,10 @@ fn run(upgrade: bool) -> anyhow::Result<()> {
     }
 
     let https_port = config.listen_https.as_deref().and_then(|a| a.rsplit_once(':')).and_then(|(_, p)| p.parse::<u16>().ok()).filter(|p| *p != 443);
+    let tcp_proxy = match &config.listen_tcp {
+        Some(_) => Some(apg_proxy::tcp::TcpProxy::new(gateway.clone(), tls.clone(), config.tls13_only).map_err(|e| anyhow::anyhow!("TCP listener setup failed: {e}"))?),
+        None => None,
+    };
     let proxy = ApgProxy::new(
         gateway,
         ProxySettings {
@@ -281,10 +285,16 @@ fn run(upgrade: bool) -> anyhow::Result<()> {
         https = config.listen_https.as_deref().unwrap_or("disabled"),
         http = config.listen_http.as_deref().unwrap_or("disabled"),
         mgmt = config.listen_mgmt.as_deref().unwrap_or("disabled"),
+        tcp = config.listen_tcp.as_deref().unwrap_or("disabled"),
         source = source_name,
         "valkv-apg starting"
     );
     server.add_service(service);
+    if let (Some(addr), Some(app)) = (&config.listen_tcp, tcp_proxy) {
+        let mut tcp = pingora_core::services::listening::Service::new("tcp routes".to_string(), app);
+        tcp.add_tcp(addr);
+        server.add_service(tcp);
+    }
     server.run_forever();
 }
 

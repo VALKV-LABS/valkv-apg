@@ -26,6 +26,7 @@
 - [Rate limits, quotas and bandwidth](guides/limits.md)
 - [Many tenants on one gateway](guides/multi-tenant.md)
 - [Traffic splitting and canaries](guides/traffic-splitting.md)
+- [TCP routing by SNI (Redis and friends)](guides/tcp-routing.md)
 - [Observability](guides/observability.md)
 - [GitOps with apgctl](guides/gitops.md)
 - [Single sign-on for the console](guides/single-sign-on.md)
