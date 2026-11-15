@@ -5,6 +5,23 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-14
+
+### Fixed
+- ACME: a wildcard domain and its parent name (`*.example.com` and `example.com`) were stored
+  under one certificate name, `acme-example.com`, so each issuance overwrote the other and the
+  proxy kept ordering both until the authority's weekly limit was used up. A wildcard's
+  certificate is now `acme-wildcard.<parent>`, as wildcard domains are named. After upgrading
+  the control plane, the wildcard is issued once more under its new name; the old
+  `acme-<parent>` certificate is then the parent name's again.
+- ACME: when the authority refuses with a time to come back ("retry after …" or a
+  `Retry-After` header, as Let's Encrypt does for rate limits), the name is ordered again only
+  after that time, up to a week, instead of on the usual one-minute-and-up backoff. The node
+  that failed keeps the name's lease until its next try, so no other node orders it meanwhile
+  and the backoff holds for the whole fleet, not per node.
+- ACME: a name removed from the configuration while a pass was ordering other certificates is
+  no longer ordered later in that pass.
+
 ## [0.1.2] - 2026-10-28
 
 ### Added
