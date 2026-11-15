@@ -74,7 +74,7 @@ and the node's log, which has the authority's own words.
 |---|---|
 | The authority cannot fetch the challenge | DNS for the name does not point at your gateway yet; port 80 does not reach a node; something in front redirects `/.well-known/acme-challenge/` |
 | DNS-01 fails | The webhook did not create the record, or `APG_ACME_DNS_PROPAGATION_SECS` is too short for your DNS |
-| Rate limited by the authority | Too many attempts for one name. Wait; the gateway backs off by itself |
+| Rate limited by the authority | Too many attempts for one name. Wait: the gateway orders again only after the time the authority gave ("retry after …"), and no other node orders the name before then |
 | No account contact | `APG_ACME_EMAIL` is not set on the nodes |
 | The domain is `pending` | Ownership has not been verified; a certificate is not requested until it is |
 

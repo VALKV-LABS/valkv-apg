@@ -12,6 +12,7 @@ import { buildOpenApi } from "./openapi.js";
 import { PLUGIN_TYPES } from "./plugin-types.js";
 import { ENDPOINTS, registerApi } from "./routes/api.js";
 import { registerConfig } from "./routes/config.js";
+import { acmeCertificateName } from "./routes/dp.js";
 import { canonical, credentialName, diffFields, pluginName } from "./declarative.js";
 import { cookieOf } from "./server.js";
 import { securityHeaders } from "./ui.js";
@@ -362,5 +363,14 @@ describe("the UI host", () => {
     expect(() => loadConfig({ ...base, APG_UI_PRIMARY_COLOR: "blue" })).toThrow(/APG_UI_PRIMARY_COLOR/);
     expect(() => loadConfig({ ...base, APG_UI_LOGO_URL: "javascript:alert(1)" })).toThrow(/APG_UI_LOGO_URL/);
     expect(() => loadConfig({ ...base, APG_DEBUG_NODE_URL: "node:9100" })).toThrow(/APG_DEBUG_NODE_URL/);
+  });
+});
+
+describe("issued certificate names", () => {
+  it("a wildcard and its parent name get two names, so neither overwrites the other", () => {
+    expect(acmeCertificateName("us-west-1.dev-sqldb.valkv.com")).toBe("acme-us-west-1.dev-sqldb.valkv.com");
+    expect(acmeCertificateName("*.us-west-1.dev-sqldb.valkv.com")).toBe("acme-wildcard.us-west-1.dev-sqldb.valkv.com");
+    expect(acmeCertificateName("API.Example.com")).toBe("acme-api.example.com");
+    expect(acmeCertificateName(`${"a".repeat(200)}.example.com`)).toHaveLength(128);
   });
 });

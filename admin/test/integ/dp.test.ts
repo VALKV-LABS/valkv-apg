@@ -259,6 +259,29 @@ describe("certificate coordination", () => {
     expect((await h.sql`SELECT count(*)::int AS n FROM apg_cert_leases WHERE hostname = 'api.example.com'`)[0]!["n"]).toBe(0);
   });
 
+  it("a wildcard and its parent name are stored as two certificates", async () => {
+    const cert = fixture("test-cert.crt");
+    const key = fixture("test-cert.key");
+    for (const hostname of ["pair.example.com", "*.pair.example.com"]) {
+      const lease = (await h.call("POST", "/dp/certs/lease", { ...node(), body: { hostname, node_id: "n1" } })).json;
+      expect((await h.call("POST", "/dp/certs", { ...node(), body: { hostname, lease_id: lease.lease_id, cert_pem: cert, key_pem: key } })).status).toBe(201);
+    }
+    const names = (await h.sql`SELECT name FROM apg_certificates WHERE name LIKE 'acme-%pair.example.com' ORDER BY name`).map((r) => r["name"]);
+    expect(names).toEqual(["acme-pair.example.com", "acme-wildcard.pair.example.com"]);
+  });
+
+  it("a failed issuer can hold its lease, so no other node orders the name before then", async () => {
+    const a = (await h.call("POST", "/dp/certs/lease", { ...node(), body: { hostname: "held.example.com", node_id: "n1" } })).json;
+    await h.call("POST", "/dp/certs/lease/release", { ...node(), body: { hostname: "held.example.com", lease_id: a.lease_id, hold_secs: 3600 } });
+    expect((await h.call("POST", "/dp/certs/lease", { ...node(), body: { hostname: "held.example.com", node_id: "n2" } })).status).toBe(409);
+    const [row] = await h.sql`SELECT expires_at > now() + interval '50 minutes' AS held FROM apg_cert_leases WHERE hostname = 'held.example.com'`;
+    expect(row!["held"]).toBe(true);
+    // the hold is bounded by a week
+    await h.call("POST", "/dp/certs/lease/release", { ...node(), body: { hostname: "held.example.com", lease_id: a.lease_id, hold_secs: 10 ** 9 } });
+    const [capped] = await h.sql`SELECT expires_at <= now() + interval '7 days' AS ok FROM apg_cert_leases WHERE hostname = 'held.example.com'`;
+    expect(capped!["ok"]).toBe(true);
+  });
+
   it("an ACME challenge is announced to every node and withdrawn afterwards (TLS-10)", async () => {
     const before = await h.lastSeq();
     const res = await h.call("POST", "/dp/acme/challenges", { ...node(), body: { token: "tok_abcdefgh", key_authorization: "tok_abcdefgh.thumb" } });

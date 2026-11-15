@@ -18,6 +18,17 @@ import type { Json, Row, Store } from "../store.js";
 import { ingest } from "../usage.js";
 
 const MAX_WAIT_MS = 55_000;
+/** The longest a failed issuer may keep a lease: Let's Encrypt's weekly window. */
+const MAX_LEASE_HOLD_SECS = 7 * 86_400;
+
+/**
+ * The name an issued certificate is stored under. A wildcard and its parent
+ * name are two certificates, so they get two names, the way domains do:
+ * `*.example.com` is `acme-wildcard.example.com`, `example.com` is `acme-example.com`.
+ */
+export function acmeCertificateName(hostname: string): string {
+  return `acme-${hostname.toLowerCase().replace(/^\*\./, "wildcard.")}`.slice(0, 128);
+}
 
 /** Wakes long-polling readers when a changelog row commits, on this replica or any other. */
 export class ChangeNotifier {
@@ -188,9 +199,19 @@ export function registerDp(app: FastifyInstance, store: Store, notifier: ChangeN
     return { lease_id: row["lease_id"], expires_at: row["expires_at"] };
   });
 
+  // A node that failed may ask to keep the lease for a while (`hold_secs`), so
+  // no other node orders the same name before the authority's "retry after"
+  // or the failing node's backoff: the backoff then holds for the whole fleet.
   app.post("/dp/certs/lease/release", async (request, reply) => {
     const b = bodyOf(request);
-    await sql`DELETE FROM apg_cert_leases WHERE hostname = ${String(b["hostname"] ?? "").toLowerCase()} AND lease_id = ${String(b["lease_id"] ?? "")}`;
+    const hostname = String(b["hostname"] ?? "").toLowerCase();
+    const leaseId = String(b["lease_id"] ?? "");
+    const hold = Math.min(MAX_LEASE_HOLD_SECS, Math.max(0, Math.floor(Number(b["hold_secs"] ?? 0) || 0)));
+    if (hold > 0) {
+      await sql`UPDATE apg_cert_leases SET expires_at = now() + make_interval(secs => ${hold}) WHERE hostname = ${hostname} AND lease_id = ${leaseId}`;
+    } else {
+      await sql`DELETE FROM apg_cert_leases WHERE hostname = ${hostname} AND lease_id = ${leaseId}`;
+    }
     return reply.status(204).send();
   });
 
@@ -205,10 +226,12 @@ export function registerDp(app: FastifyInstance, store: Store, notifier: ChangeN
     // The certificate belongs to the workspace that owns the domain; a base
     // domain's wildcard belongs to the system workspace.
     const bare = hostname.replace(/^\*\./, "");
-    const [owner] = await sql<Row[]>`SELECT workspace_id FROM apg_domains WHERE hostname = ${hostname} OR hostname = ${bare}`;
+    const [owner] = await sql<Row[]>`
+      SELECT workspace_id FROM apg_domains WHERE hostname = ${hostname} OR hostname = ${bare}
+      ORDER BY (hostname = ${hostname}) DESC LIMIT 1`;
     const [system] = await sql<Row[]>`SELECT id FROM apg_workspaces WHERE system`;
     const workspaceId: string = owner?.["workspace_id"] ?? system!["id"];
-    const name = `acme-${bare}`.slice(0, 128);
+    const name = acmeCertificateName(hostname);
 
     const stored = await store.put(
       { ...ctx, actor: { ...ctx.actor, role: "admin", workspaces: "*" } },

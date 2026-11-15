@@ -29,6 +29,8 @@ Within about a minute the gateway has proved to the authority that it answers fo
 
 **How the proof works (HTTP-01).** The authority fetches a token from `http://api.example.com/.well-known/acme-challenge/…`. So port 80 must reach a node. With several nodes behind a load balancer, any node can answer: the token is shared through the control plane, one node does the issuing, and the certificate is distributed to all.
 
+**Where issued certificates are stored.** With a control plane, each one is a certificate resource in the domain's workspace named `acme-<hostname>`; a wildcard is `acme-wildcard.<parent>`. So `*.apps.example.com` and `apps.example.com` are two certificates, `acme-wildcard.apps.example.com` and `acme-apps.example.com`.
+
 **Wildcards, and names not reachable on port 80 (DNS-01).** The proof is a TXT record instead:
 
 ```yaml

@@ -45,6 +45,8 @@ const RENEW_BEFORE_SECS: i64 = 30 * 86_400;
 /// Retry delays after a failure grow from one minute to six hours (spec TLS-7).
 const BACKOFF_FIRST: Duration = Duration::from_secs(60);
 const BACKOFF_MAX: Duration = Duration::from_secs(6 * 3600);
+/// The furthest ahead an authority's "retry after" is believed: a rate-limit window is a week.
+const RETRY_AFTER_MAX: Duration = Duration::from_secs(7 * 86_400);
 
 /// A failed attempt, with the step that failed for `apg_acme_failures_total{reason}`.
 #[derive(Debug)]
@@ -60,6 +62,75 @@ trait Stage<T> {
 impl<T, E: Into<anyhow::Error>> Stage<T> for Result<T, E> {
     fn stage(self, reason: &'static str) -> Result<T, Failure> {
         self.map_err(|e| Failure { reason, error: e.into() })
+    }
+}
+
+impl Failure {
+    /// When the authority said to try again (Unix seconds), if it did.
+    pub fn retry_after(&self) -> Option<i64> {
+        self.error.chain().find_map(|e| e.downcast_ref::<Refused>()).and_then(|r| r.retry_after)
+    }
+}
+
+/// The authority answered a request with an error.
+#[derive(Debug)]
+pub struct Refused {
+    pub status: StatusCode,
+    pub detail: String,
+    /// When the authority said to try again (Unix seconds): from `Retry-After`
+    /// or from a "retry after <time> UTC" in the problem detail.
+    pub retry_after: Option<i64>,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the authority answered {}: {}", self.status, self.detail)
+    }
+}
+
+impl std::error::Error for Refused {}
+
+/// Days since 1970-01-01 of a proleptic Gregorian date.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn unix_time(y: i64, mo: i64, d: i64, h: i64, mi: i64, s: i64) -> Option<i64> {
+    let valid = (1..=12).contains(&mo) && (1..=31).contains(&d) && (0..24).contains(&h) && (0..60).contains(&mi) && (0..=60).contains(&s);
+    valid.then(|| days_from_civil(y, mo, d) * 86_400 + h * 3600 + mi * 60 + s)
+}
+
+/// When to try again, from a `Retry-After` header (seconds or an HTTP date)
+/// or, failing that, from Let's Encrypt's "retry after 2026-11-16 05:36:27 UTC".
+pub fn parse_retry_after(header: Option<&str>, detail: &str, now: i64) -> Option<i64> {
+    if let Some(h) = header.map(str::trim) {
+        if let Ok(secs) = h.parse::<i64>() {
+            return Some(now + secs.max(0));
+        }
+        // IMF-fixdate: "Sun, 16 Nov 2026 05:36:27 GMT".
+        let parts: Vec<&str> = h.split([' ', ':', ',']).filter(|p| !p.is_empty()).collect();
+        if let [_, d, mon, y, hh, mm, ss, ..] = parts.as_slice() {
+            const MONTHS: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+            let mon = MONTHS.iter().position(|m| mon.eq_ignore_ascii_case(m)).map(|i| i as i64 + 1);
+            let num = |v: &str| v.parse::<i64>().ok();
+            if let (Some(mon), Some(d), Some(y), Some(hh), Some(mm), Some(ss)) = (mon, num(d), num(y), num(hh), num(mm), num(ss))
+                && let Some(t) = unix_time(y, mon, d, hh, mm, ss)
+            {
+                return Some(t);
+            }
+        }
+    }
+    let lower = detail.to_ascii_lowercase();
+    let rest = &detail[lower.find("retry after ")? + "retry after ".len()..];
+    let digits: Vec<i64> = rest.split([' ', '-', ':', 'T']).take(6).map(|p| p.trim_end_matches(|c: char| !c.is_ascii_digit()).parse().ok()).collect::<Option<_>>()?;
+    match digits.as_slice() {
+        [y, mo, d, h, mi, s] => unix_time(*y, *mo, *d, *h, *mi, *s),
+        _ => None,
     }
 }
 
@@ -275,12 +346,18 @@ impl Client {
             }
             let status = res.status();
             let location = res.headers().get("location").and_then(|v| v.to_str().ok()).map(str::to_string);
+            let retry_after = res.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(str::to_string);
             let body = res.bytes().await?.to_vec();
             if status == StatusCode::BAD_REQUEST && String::from_utf8_lossy(&body).contains("badNonce") {
                 continue;
             }
             if !status.is_success() {
-                anyhow::bail!("the authority answered {status}: {}", problem(&body));
+                let detail = problem(&body);
+                // Only a refusal that means "not now" carries a time worth waiting for.
+                let retry_after = (status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE || detail.contains("rateLimited") || detail.to_ascii_lowercase().contains("too many"))
+                    .then(|| parse_retry_after(retry_after.as_deref(), &detail, now_unix()))
+                    .flatten();
+                return Err(Refused { status, detail, retry_after }.into());
             }
             return Ok(Reply { location, body });
         }
@@ -550,8 +627,10 @@ impl Fleet {
         }
     }
 
-    async fn release(&self, hostname: &str, lease_id: &str) {
-        let _ = self.request(reqwest::Method::POST, "/certs/lease/release").json(&json!({ "hostname": hostname, "lease_id": lease_id })).send().await;
+    /// Gives the lease back. A non-zero `hold` keeps it that much longer, so no
+    /// other node orders the name before this node's next try is due.
+    async fn release(&self, hostname: &str, lease_id: &str, hold: Duration) {
+        let _ = self.request(reqwest::Method::POST, "/certs/lease/release").json(&json!({ "hostname": hostname, "lease_id": lease_id, "hold_secs": hold.as_secs() })).send().await;
     }
 
     async fn publish(&self, hostname: &str, lease_id: &str, issued: &Issued) -> anyhow::Result<()> {
@@ -701,6 +780,13 @@ pub fn backoff(failures: u32) -> Duration {
     BACKOFF_FIRST.saturating_mul(1u32 << failures.saturating_sub(1).min(16)).min(BACKOFF_MAX)
 }
 
+/// The wait after a failure: the backoff, or longer when the authority said
+/// when to come back. Ordering before then only spends more of a rate limit.
+pub fn wait_after(failures: u32, retry_after: Option<i64>, now: i64) -> Duration {
+    let told = retry_after.map_or(Duration::ZERO, |at| Duration::from_secs((at - now).max(0) as u64 + 60).min(RETRY_AFTER_MAX));
+    backoff(failures).max(told)
+}
+
 fn now_unix() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }
@@ -813,8 +899,8 @@ impl Manager {
     }
 
     /// Obtains a certificate for one hostname. `Ok(false)` means another node
-    /// is doing it.
-    async fn obtain(&self, host: &AcmeHost) -> Result<bool, Failure> {
+    /// is doing it. `failures` counts this attempt, should it fail.
+    async fn obtain(&self, host: &AcmeHost, failures: u32) -> Result<bool, Failure> {
         let email = self.settings.email.clone().unwrap_or_default();
         if host.dns01 && self.settings.dns.is_none() {
             return Err(Failure { reason: "config", error: anyhow::anyhow!("the name needs a DNS challenge and no DNS provider is configured (APG_ACME_DNS_PROVIDER)") });
@@ -841,8 +927,9 @@ impl Manager {
                     fleet.publish(&host.hostname, &lease, &issued).await.stage("publish")
                 };
                 let result = attempt.await;
-                if result.is_err() {
-                    fleet.release(&host.hostname, &lease).await;
+                if let Err(failure) = &result {
+                    // Held for as long as this node will wait, so the backoff is the fleet's, not just this node's.
+                    fleet.release(&host.hostname, &lease, wait_after(failures, failure.retry_after(), now_unix())).await;
                 }
                 result.map(|()| true)
             }
@@ -885,7 +972,14 @@ impl Manager {
             } else {
                 complaint = None;
                 for host in due {
-                    match self.obtain(host).await {
+                    // An earlier name in this pass may have taken minutes; skip a name
+                    // deleted meanwhile, or one another node has covered.
+                    let current = self.gateway.snapshot();
+                    if !current.acme_hosts().iter().any(|h| h.hostname == host.hostname) || !needs_certificate(self.tls.not_after(&host.hostname), now_unix()) {
+                        continue;
+                    }
+                    let failures = retry.get(&host.hostname).map_or(0, |(n, _)| *n) + 1;
+                    match self.obtain(host, failures).await {
                         Ok(true) => {
                             metrics::ACME_ISSUANCES.inc();
                             tracing::info!(hostname = %host.hostname, "certificate issued");
@@ -897,8 +991,7 @@ impl Manager {
                             retry.insert(host.hostname.clone(), (0, Instant::now() + Duration::from_secs(20)));
                         }
                         Err(failure) => {
-                            let failures = retry.get(&host.hostname).map_or(0, |(n, _)| *n) + 1;
-                            let wait = backoff(failures);
+                            let wait = wait_after(failures, failure.retry_after(), now_unix());
                             metrics::ACME_FAILURES.with_label_values(&[failure.reason]).inc();
                             tracing::warn!(hostname = %host.hostname, reason = failure.reason, error = %failure.error, retry_in_secs = wait.as_secs(), "certificate request failed; the fallback certificate is served meanwhile");
                             retry.insert(host.hostname.clone(), (failures, Instant::now() + wait));
@@ -941,6 +1034,34 @@ mod tests {
         assert_eq!(backoff(5), Duration::from_secs(960));
         assert_eq!(backoff(10), Duration::from_secs(6 * 3600));
         assert_eq!(backoff(1000), Duration::from_secs(6 * 3600));
+    }
+
+    #[test]
+    fn the_authoritys_retry_after_is_read_from_the_header_or_the_detail() {
+        let now = 1_800_000_000;
+        assert_eq!(parse_retry_after(Some("120"), "", now), Some(now + 120));
+        // 2026-11-16 05:36:27 UTC
+        let at = 1_794_807_387;
+        assert_eq!(parse_retry_after(Some("Mon, 16 Nov 2026 05:36:27 GMT"), "", now), Some(at));
+        let detail = "too many certificates (5) already issued for this exact set of identifiers in the last 168h0m0s, retry after 2026-11-16 05:36:27 UTC: see https://letsencrypt.org/docs/rate-limits/";
+        assert_eq!(parse_retry_after(None, detail, now), Some(at));
+        assert_eq!(parse_retry_after(Some("garbage"), detail, now), Some(at), "a header that cannot be read falls back to the detail");
+        assert_eq!(parse_retry_after(None, "too many certificates", now), None);
+        assert_eq!(parse_retry_after(None, "retry after soon", now), None);
+    }
+
+    #[test]
+    fn a_failure_waits_until_the_authority_said_to_come_back() {
+        let now = 1_800_000_000;
+        assert_eq!(wait_after(1, None, now), Duration::from_secs(60));
+        assert_eq!(wait_after(1, Some(now + 2 * 86_400), now), Duration::from_secs(2 * 86_400 + 60));
+        assert_eq!(wait_after(10, Some(now + 10), now), Duration::from_secs(6 * 3600), "a nearer time does not shorten the backoff");
+        assert_eq!(wait_after(1, Some(now + 365 * 86_400), now), RETRY_AFTER_MAX, "bounded");
+
+        let refused = Failure { reason: "order", error: Refused { status: StatusCode::TOO_MANY_REQUESTS, detail: "x".into(), retry_after: Some(now + 5) }.into() };
+        assert_eq!(refused.retry_after(), Some(now + 5));
+        assert!(refused.error.to_string().starts_with("the authority answered 429 Too Many Requests: x"));
+        assert_eq!(Failure { reason: "order", error: anyhow::anyhow!("other") }.retry_after(), None);
     }
 
     #[test]
