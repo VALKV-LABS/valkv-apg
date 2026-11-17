@@ -65,6 +65,16 @@ APG_UI_PRIMARY_COLOR=#0f766e
 
 The console has a light and a dark theme and follows the visitor's system setting. Text on the accent colour is chosen automatically to stay readable.
 
+### Names your platform chose
+
+When your platform names routes and services by its own ids (`r-<uuid>`, `app-<id>`), give each one a label with a readable name and tell the console which label that is:
+
+```sh
+APG_UI_DISPLAY_LABEL=app.example.com/name
+```
+
+The Routes and Services lists then show that label's value under each name. Every label is also listed in a Labels column and in the route's and the service's own dialog. The filter box above each list takes `key=value` to show only what carries that label, as `?label=key=value` does on the list endpoints (repeat it to require several); clicking a label in the list filters by it.
+
 ## What the customer can and cannot do there
 
 Exactly what the token allows: with the `editor` role, manage the routes, services, domains, plugins and consumers of their own workspace; with `viewer`, look. Every rule in [workspaces and who owns a host](../concepts/workspaces.md) applies, because the embedded console uses the same public API as everything else.

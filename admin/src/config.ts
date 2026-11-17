@@ -23,7 +23,7 @@ export const READ_VARIABLES = [
   "APG_DOMAIN_VERIFICATION", "APG_CHANGELOG_RETENTION_HOURS", "APG_NODE_SLOT_TTL_HOURS", "APG_NODE_RETENTION_HOURS", "APG_AUDIT_RETENTION_DAYS",
   "APG_EGRESS_ALLOW_CIDRS", "APG_BACKEND_ALLOW_CIDRS", "APG_LOG_LEVEL", "APG_LOG_FORMAT",
   "APG_USAGE_ROLLUP_INTERVAL_SECS", "APG_USAGE_RAW_RETENTION_DAYS", "APG_USAGE_HOURLY_RETENTION_DAYS", "APG_USAGE_WEBHOOK_URL",
-  "APG_UI_ENABLED", "APG_UI_DIR", "APG_UI_BRAND_NAME", "APG_UI_LOGO_URL", "APG_UI_PRIMARY_COLOR", "APG_UI_EMBED_ORIGINS",
+  "APG_UI_ENABLED", "APG_UI_DIR", "APG_UI_BRAND_NAME", "APG_UI_LOGO_URL", "APG_UI_PRIMARY_COLOR", "APG_UI_EMBED_ORIGINS", "APG_UI_DISPLAY_LABEL",
   "APG_DEBUG_NODE_URL", "APG_OIDC_ISSUER", "APG_OIDC_CLIENT_ID", "APG_OIDC_CLIENT_SECRET", "APG_OIDC_ROLE_CLAIM", "APG_OIDC_ROLE_MAP",
   "APG_OIDC_SCOPES", "APG_PUBLIC_URL",
 ] as const;
@@ -58,6 +58,8 @@ export interface UiConfig {
   primaryColor: string | null;
   /** Origins allowed to frame the UI (spec UI-7). Empty: nobody may. */
   embedOrigins: string[];
+  /** A label key whose value the console shows under a route's or service's name, or null. */
+  displayLabel?: string | null;
 }
 
 /** Parsed admin configuration. */
@@ -134,6 +136,10 @@ export function loadConfig(env: Env = process.env): Config {
   if (logoUrl !== null && !/^(https:\/\/|\/)/.test(logoUrl)) {
     throw new ConfigError("APG_UI_LOGO_URL must be an https URL or a path on this server");
   }
+  const displayLabel = get(env, "APG_UI_DISPLAY_LABEL");
+  if (displayLabel !== null && !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,62}$/.test(displayLabel)) {
+    throw new ConfigError(`APG_UI_DISPLAY_LABEL must be a label key such as app.example.com/name; got '${displayLabel}'`);
+  }
   const debugNodeUrl = get(env, "APG_DEBUG_NODE_URL");
   if (debugNodeUrl !== null && !/^https?:\/\/[^/]+\/?$/.test(debugNodeUrl)) {
     throw new ConfigError(`APG_DEBUG_NODE_URL must be a node's management address such as http://node:9100; got '${debugNodeUrl}'`);
@@ -145,6 +151,7 @@ export function loadConfig(env: Env = process.env): Config {
       brandName: get(env, "APG_UI_BRAND_NAME") ?? "valkv-apg",
       logoUrl,
       primaryColor,
+      displayLabel,
       embedOrigins: (get(env, "APG_UI_EMBED_ORIGINS") ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((origin) => {
         let parsed: URL;
         try {

@@ -11,7 +11,7 @@ import { ApiError, type Json, api, ws } from "../api";
 import { useCollection, useSchemas } from "../hooks";
 import { useSession } from "../session";
 import { type Choices, SchemaForm, shownPointers } from "./schema-form";
-import { Card, Confirm, Dialog, Empty, ErrorNotice, ErrorState, Loading } from "./ui";
+import { Card, Confirm, Dialog, Empty, ErrorNotice, ErrorState, Labels, Loading, matchesFilter } from "./ui";
 
 export interface Column {
   head: string;
@@ -36,6 +36,8 @@ export interface ResourceSpec {
   choices?: Choices;
   /** Order of the rows; default is creation order. */
   sort?: (a: Json, b: Json) => number;
+  /** Show a Labels column, and always offer the filter, which also takes `key=value`. */
+  labels?: boolean;
 }
 
 /** A dialog that edits one resource with a schema-driven form and reports the server's faults on the fields. */
@@ -104,8 +106,8 @@ export function ResourcePage({ spec, rowActions, headActions, onCreated }: {
   const [busy, setBusy] = useState(false);
   const [filter, setFilter] = useState("");
   const all = spec.sort ? [...(list.data ?? [])].sort(spec.sort) : (list.data ?? []);
-  const needle = filter.trim().toLowerCase();
-  const rows = needle ? all.filter((r) => JSON.stringify(r).toLowerCase().includes(needle)) : all;
+  const rows = filter.trim() ? all.filter((r) => matchesFilter(r, filter)) : all;
+  const columns = spec.labels ? [...spec.columns, { head: "Labels", cell: (r: Json) => <Labels labels={r["labels"]} onPick={setFilter} /> }] : spec.columns;
   const base = ws(workspace, spec.segment);
   const refresh = () => client.invalidateQueries({ queryKey: ["ws", workspace] });
 
@@ -130,8 +132,9 @@ export function ResourcePage({ spec, rowActions, headActions, onCreated }: {
       title={spec.title}
       subtitle={list.data ? `${list.data.length} in ${workspace}` : undefined}
       actions={<>
-        {all.length > 6 && (
-          <input className="input" style={{ width: 180, height: 26 }} type="search" aria-label={`Filter ${spec.title.toLowerCase()}`} placeholder="Filter" value={filter} onChange={(e) => setFilter(e.target.value)} />
+        {(all.length > 6 || spec.labels) && (
+          <input className="input" style={{ width: spec.labels ? 220 : 180, height: 26 }} type="search" aria-label={`Filter ${spec.title.toLowerCase()}`}
+            placeholder={spec.labels ? "Filter, or label key=value" : "Filter"} value={filter} onChange={(e) => setFilter(e.target.value)} />
         )}
         {headActions}
         {canWrite && (
@@ -151,14 +154,14 @@ export function ResourcePage({ spec, rowActions, headActions, onCreated }: {
           <table className="t">
             <thead>
               <tr>
-                {spec.columns.map((c) => <th key={c.head} scope="col">{c.head}</th>)}
+                {columns.map((c) => <th key={c.head} scope="col">{c.head}</th>)}
                 <th scope="col"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row) => (
                 <tr key={row["id"]}>
-                  {spec.columns.map((c) => <td key={c.head} className="wrap">{c.cell(row)}</td>)}
+                  {columns.map((c) => <td key={c.head} className="wrap">{c.cell(row)}</td>)}
                   <td className="actions">
                     {rowActions?.(row)}
                     {canWrite && <>

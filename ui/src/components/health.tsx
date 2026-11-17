@@ -10,7 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { type Json, api, relativeTime, ws } from "../api";
 import { useSession } from "../session";
-import { Card, Dialog, Empty, ErrorState, Loading, Tag } from "./ui";
+import { Card, Dialog, Empty, ErrorState, Labels, Loading, Tag } from "./ui";
 
 export interface Health {
   data: Json[];
@@ -44,11 +44,12 @@ export function HealthTag({ health, live }: { health: Json | undefined; live: nu
 }
 
 /** Every backend of one service, with what each node says about it. */
-export function HealthDialog({ name, health, onClose }: { name: string; health: Json | undefined; onClose: () => void }) {
+export function HealthDialog({ name, health, labels, onClose }: { name: string; health: Json | undefined; labels?: unknown; onClose: () => void }) {
   const backends = (health?.["backends"] ?? []) as Json[];
   return (
     <Dialog title={`Health of ${name}`} onClose={onClose} foot={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
       <div className="form">
+        {labels !== undefined && <div><h3>Labels</h3><Labels labels={labels} /></div>}
         {health && !health["health_check"] && (
           <div className="notice">This service has no health check, so a node learns about a backend only from the requests it sends there. To have every node check each backend on its own, edit the service and fill in the health check.</div>
         )}

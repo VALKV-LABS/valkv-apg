@@ -104,6 +104,36 @@ export function Tags({ items }: { items: unknown }) {
   return <span className="tags">{list.map((x, i) => <Tag key={i}>{String(x)}</Tag>)}</span>;
 }
 
+/** A resource's labels as `key=value` chips. With `onPick`, each chip is a button that filters by it. */
+export function Labels({ labels, onPick }: { labels: unknown; onPick?: (term: string) => void }) {
+  const entries = labels && typeof labels === "object" ? Object.entries(labels as Record<string, unknown>) : [];
+  if (entries.length === 0) return <span className="dim">none</span>;
+  return (
+    <span className="tags">
+      {entries.map(([k, v]) => {
+        const term = `${k}=${String(v)}`;
+        return onPick
+          ? <button key={k} type="button" className="tag" title="Show only these" aria-label={`Filter by ${term}`} onClick={() => onPick(term)}>{term}</button>
+          : <Tag key={k}>{term}</Tag>;
+      })}
+    </span>
+  );
+}
+
+/**
+ * Whether a row matches a filter: every space-separated term must match.
+ * `key=value` matches a label exactly; anything else is looked for anywhere in the row.
+ */
+export function matchesFilter(row: Record<string, unknown>, filter: string): boolean {
+  const labels = (row["labels"] ?? {}) as Record<string, unknown>;
+  const text = JSON.stringify(row).toLowerCase();
+  return filter.trim().split(/\s+/).filter(Boolean).every((term) => {
+    const i = term.indexOf("=");
+    if (i > 0 && Object.hasOwn(labels, term.slice(0, i))) return String(labels[term.slice(0, i)]) === term.slice(i + 1);
+    return text.includes(term.toLowerCase());
+  });
+}
+
 export function Tabs<T extends string>({ tabs, value, onChange, label }: { tabs: Array<[T, string]>; value: T; onChange: (t: T) => void; label: string }) {
   return (
     <div className="tabs" role="tablist" aria-label={label}>

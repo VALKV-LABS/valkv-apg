@@ -30,7 +30,7 @@ beforeAll(async () => {
   const port = (node.address() as { port: number }).port;
 
   h = await start("config", {
-    ui: { enabled: true, dir, brandName: "Acme Gateway", logoUrl: null, primaryColor: "#0f766e", embedOrigins: ["https://portal.example.com"] },
+    ui: { enabled: true, dir, brandName: "Acme Gateway", logoUrl: null, primaryColor: "#0f766e", embedOrigins: ["https://portal.example.com"], displayLabel: "valkv-name" },
     debugNodeUrl: `http://127.0.0.1:${port}`,
   });
   const ws = await h.call("POST", "/v1/workspaces", { body: { name: "acme" } });
@@ -317,7 +317,7 @@ describe("the UI host", () => {
     expect((await h.call("GET", "/", { token: null })).headers["location"]).toBe("/ui/");
 
     const settings = await h.call("GET", "/ui/config.json", { token: null });
-    expect(settings.json).toMatchObject({ brand_name: "Acme Gateway", primary_color: "#0f766e", embed_origins: ["https://portal.example.com"] });
+    expect(settings.json).toMatchObject({ brand_name: "Acme Gateway", primary_color: "#0f766e", embed_origins: ["https://portal.example.com"], display_label: "valkv-name" });
     // the API behind it still needs credentials
     expect((await h.call("GET", "/v1/workspaces", { token: null })).status).toBe(401);
   });

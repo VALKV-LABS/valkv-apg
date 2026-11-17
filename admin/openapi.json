@@ -118,7 +118,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -2135,7 +2135,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -2563,7 +2563,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -3276,7 +3276,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -4034,7 +4034,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -4792,7 +4792,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -5062,7 +5062,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -6362,7 +6362,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -7333,7 +7333,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -8091,7 +8091,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {
@@ -9071,7 +9071,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "key=value"
+            "description": "key=value: only resources carrying this label. Repeat to require several."
           }
         ],
         "responses": {

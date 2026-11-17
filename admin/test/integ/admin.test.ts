@@ -212,6 +212,28 @@ describe("services and routes", () => {
     expect((await h.call("GET", `${D}/services?name=page-b`)).json.data.map((s: any) => s.name)).toEqual(["page-b"]);
     expect((await h.call("GET", `${D}/services?limit=0`)).status).toBe(400);
   });
+
+  // Issue #14: list endpoints filter by label; repeat ?label= to require several.
+  it("routes and services are filtered by one label or several", async () => {
+    // Its own caller, so this test does not spend the shared admin token's rate-limit budget.
+    const own = await h.token("admin");
+    const call = (method: string, url: string, o: { body?: unknown } = {}) => h.call(method, url, { ...o, token: own });
+    await call("PUT", `${D}/services/lbl-svc-a`, { body: { backends: [{ target: "p:1" }], labels: { "valkv-name": "portal", owner: "a" } } });
+    await call("PUT", `${D}/services/lbl-svc-b`, { body: { backends: [{ target: "p:1" }], labels: { "valkv-name": "billing", owner: "a" } } });
+    for (const [name, labels] of [["lbl-r-a", { "valkv-name": "portal", owner: "a" }], ["lbl-r-b", { "valkv-name": "billing", owner: "a" }], ["lbl-r-c", {}]] as const) {
+      expect((await call("PUT", `${D}/routes/${name}`, { body: { service: "lbl-svc-a", hosts: [`${name}.example.com`], paths: ["/"], labels } })).status).toBe(200);
+    }
+    const names = async (url: string) => (await call("GET", url)).json.data.map((r: any) => r.name).sort();
+    expect(await names(`${D}/routes?label=valkv-name=portal`)).toEqual(["lbl-r-a"]);
+    expect(await names(`${D}/services?label=valkv-name=portal`)).toEqual(["lbl-svc-a"]);
+    expect(await names(`${D}/routes?label=owner=a`)).toEqual(["lbl-r-a", "lbl-r-b"]);
+    expect(await names(`${D}/routes?label=owner=a&label=valkv-name=billing`)).toEqual(["lbl-r-b"]);
+    expect(await names(`${D}/routes?label=owner=a&label=valkv-name=nobody`)).toEqual([]);
+    // Labels come back on the list, as given.
+    expect((await call("GET", `${D}/routes?label=valkv-name=portal`)).json.data[0].labels).toEqual({ "valkv-name": "portal", owner: "a" });
+    expect((await call("GET", `${D}/routes?label=owner`)).status).toBe(400);
+    expect((await call("GET", `${D}/routes?label=owner=a&label=owner=b`)).status).toBe(400);
+  });
 });
 
 describe("host ownership (DOM-1, DOM-2)", () => {

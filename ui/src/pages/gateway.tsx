@@ -7,11 +7,18 @@ import { type Json, api, formatNumber, formatTime, ws } from "../api";
 import { BarChart, byBucket } from "../components/chart";
 import { HealthDialog, HealthTag, useHealth } from "../components/health";
 import { ResourceEditor, ResourcePage, type ResourceSpec } from "../components/resource";
-import { Card, Confirm, Dialog, Empty, ErrorNotice, ErrorState, Field, Loading, PageHead, SecretOnce, Tag, Tags } from "../components/ui";
+import { Card, Confirm, Dialog, Empty, ErrorNotice, ErrorState, Field, Labels, Loading, PageHead, SecretOnce, Tag, Tags } from "../components/ui";
 import { useCollection, useNames, useUsage } from "../hooks";
 import { useSession } from "../session";
 
 // ── Routes ───────────────────────────────────────────────────────────────────
+
+/** A route's or service's name, with the value of the configured display label under it. */
+function NameCell({ row }: { row: Json }) {
+  const { brand } = useSession();
+  const shown = brand.display_label ? row["labels"]?.[brand.display_label] : undefined;
+  return <><span className="row-link">{row["name"]}</span>{shown !== undefined && <span className="cell-sub">{String(shown)}</span>}</>;
+}
 
 const pathText = (p: Json | string) => (typeof p === "string" ? p : p["type"] === "prefix" ? p["value"] : `${p["type"]} ${p["value"]}`);
 
@@ -78,6 +85,10 @@ function EffectivePlugins({ route, onClose }: { route: Json; onClose: () => void
     <Dialog title={`Route ${route["name"]}`} onClose={onClose} foot={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
       <div className="form">
         <div>
+          <h3>Labels</h3>
+          <Labels labels={route["labels"]} />
+        </div>
+        <div>
           <h3>Requests in the last 24 hours</h3>
           {usage.isLoading && <Loading />}
           {usage.error && <ErrorState error={usage.error} retry={() => void usage.refetch()} />}
@@ -119,10 +130,11 @@ export function Routes() {
     choices: { service: serviceChoices },
     blank: { paths: ["/"] },
     emptyHint: "A route sends requests for a host and path to a service.",
+    labels: true,
     // The order nodes try them in, most important first (priority, then how specific the route is).
     sort: (a, b) => Number(b["priority"]) - Number(a["priority"]) || (b["hosts"]?.length ? 1 : 0) - (a["hosts"]?.length ? 1 : 0) || String(a["name"]).localeCompare(b["name"]),
     columns: [
-      { head: "Name", cell: (r) => <span className="row-link">{r["name"]}</span> },
+      { head: "Name", cell: (r) => <NameCell row={r} /> },
       { head: "Hosts", cell: (r) => <Tags items={r["hosts"]} /> },
       { head: "Paths", cell: (r) => <span className="mono">{((r["paths"] ?? []) as Json[]).map(pathText).join(", ") || "any"}</span> },
       { head: "Methods", cell: (r) => (r["methods"]?.length ? r["methods"].join(", ") : <span className="dim">any</span>) },
@@ -159,8 +171,9 @@ export function Services() {
     // A new service checks that each backend accepts connections, so that a dead one shows without waiting for traffic.
     blank: { backends: [{ target: "" }], health_check: { active: { type: "tcp" } } },
     emptyHint: "A service is one upstream application and the backends that serve it.",
+    labels: true,
     columns: [
-      { head: "Name", cell: (r) => <span className="row-link">{r["name"]}</span> },
+      { head: "Name", cell: (r) => <NameCell row={r} /> },
       { head: "Backends", cell: (r) => (
         <span className="tags">{((r["backends"] ?? []) as Json[]).map((b) => (
           <Tag key={b["target"]} tone={b["status"] === "active" ? undefined : "warn"}>{b["target"]}{b["weight"] !== 1 ? ` ×${b["weight"]}` : ""}{b["status"] !== "active" ? ` ${b["status"]}` : ""}</Tag>
@@ -177,7 +190,7 @@ export function Services() {
       <ResourcePage spec={spec} rowActions={(row) => (
         <button type="button" className="icon-btn" aria-label={`Health of ${row["name"]}`} title="Health of each backend" onClick={() => setInspect(row)}><Activity size={14} aria-hidden="true" /></button>
       )} />
-      {inspect && <HealthDialog name={inspect["name"]} health={health.get(inspect["id"])} onClose={() => setInspect(null)} />}
+      {inspect && <HealthDialog name={inspect["name"]} health={health.get(inspect["id"])} labels={inspect["labels"] ?? {}} onClose={() => setInspect(null)} />}
     </div>
   );
 }

@@ -66,6 +66,18 @@ step("an invalid document is rejected with a pointer and changes nothing", async
   assert.equal((await http("GET", `${ADMIN}/v1/nodes`, { headers: admin })).json.last_seq, before);
 });
 
+// Issue #14: list endpoints filter by label.
+step("routes and services are listed by label", async () => {
+  const labels = { "valkv-name": `portal-${run}` };
+  assert.equal((await http("PATCH", `${D}/routes/e2e-${run}`, { headers: admin, body: { labels } })).status, 200);
+  assert.equal((await http("PATCH", `${D}/services/e2e-${run}`, { headers: admin, body: { labels } })).status, 200);
+  const routes = await http("GET", `${D}/routes?label=valkv-name=portal-${run}`, { headers: admin });
+  assert.deepEqual(routes.json.data.map((r) => [r.name, r.labels]), [[`e2e-${run}`, labels]]);
+  const services = await http("GET", `${D}/services?label=valkv-name=portal-${run}`, { headers: admin });
+  assert.deepEqual(services.json.data.map((s) => s.name), [`e2e-${run}`]);
+  assert.deepEqual((await http("GET", `${D}/routes?label=valkv-name=nobody-${run}`, { headers: admin })).json.data, []);
+});
+
 step("a heartbeat makes the node visible with its lag", async () => {
   const last = (await http("GET", `${ADMIN}/v1/nodes`, { headers: admin })).json.last_seq;
   const hb = await http("POST", `${ADMIN}/dp/heartbeat`, { headers: node, body: { node_id: `e2e-${run}`, version: "test", source: "api_poll", applied_seq: last - 1 } });

@@ -89,7 +89,7 @@ export function buildOpenApi(endpoints: readonly EndpointDoc[], schemas: SchemaR
         { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 500, default: 50 } },
         { name: "cursor", in: "query", schema: { type: "string" } },
         { name: "name", in: "query", schema: { type: "string" } },
-        { name: "label", in: "query", schema: { type: "string" }, description: "key=value" },
+        { name: "label", in: "query", schema: { type: "string" }, description: "key=value: only resources carrying this label. Repeat to require several." },
       );
     }
     if (e.method !== "get") query.push({ name: "dry_run", in: "query", schema: { type: "boolean" }, description: "Validate and return the result without writing" });

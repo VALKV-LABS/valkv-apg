@@ -107,6 +107,83 @@ describe("what a role sees", () => {
   });
 });
 
+// Issue #14: routes and services say what they are by their labels, and can be filtered by them.
+describe("labels on routes and services", () => {
+  const route = (id: string, name: string, labels: object) => ({
+    id, workspace_id: "ws-default", name, hosts: ["api.example.com"], paths: ["/"], methods: [], service: "s1", priority: 0, enabled: true,
+    labels, metadata: {}, revision: 1, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+  });
+  const routes = [
+    route("r1", "r-0193f2a0", { "valkv-name": "portal", owner: "team-a" }),
+    route("r2", "r-0193f2a1", { "valkv-name": "billing", owner: "team-b" }),
+    route("r3", "r-0193f2a2", {}),
+  ];
+
+  it("shows labels in the Routes list, the display label under the name, and filters by key=value", async () => {
+    serve({ "GET /v1/workspaces/default/routes": { body: { data: routes, next_cursor: null } } }, { brand: { display_label: "valkv-name" } });
+    const user = userEvent.setup();
+    open("/routes");
+    const row = (name: string) => screen.getByText(name).closest("tr")!;
+    expect(await screen.findByText("r-0193f2a0")).toBeInTheDocument();
+    expect(within(row("r-0193f2a0")).getByText("portal")).toHaveClass("cell-sub");
+    expect(within(row("r-0193f2a0")).getByRole("button", { name: "Filter by valkv-name=portal" })).toBeInTheDocument();
+    expect(within(row("r-0193f2a2")).getByText("none")).toBeInTheDocument();
+
+    // Typed: key=value matches the label exactly, so "valkv-name=port" matches nothing.
+    const filter = screen.getByRole("searchbox", { name: "Filter routes" });
+    await user.type(filter, "valkv-name=portal");
+    expect(screen.getByText("r-0193f2a0")).toBeInTheDocument();
+    expect(screen.queryByText("r-0193f2a1")).not.toBeInTheDocument();
+    expect(screen.queryByText("r-0193f2a2")).not.toBeInTheDocument();
+    await user.clear(filter);
+    await user.type(filter, "valkv-name=port");
+    expect(screen.getByText("Nothing matches the filter.")).toBeInTheDocument();
+
+    // Several terms must all match; a plain word is looked for anywhere.
+    await user.clear(filter);
+    await user.type(filter, "owner=team-b billing");
+    expect(screen.getByText("r-0193f2a1")).toBeInTheDocument();
+    expect(screen.queryByText("r-0193f2a0")).not.toBeInTheDocument();
+
+    // Clicking a chip filters by it.
+    await user.clear(filter);
+    await user.click(within(row("r-0193f2a0")).getByRole("button", { name: "Filter by owner=team-a" }));
+    expect(filter).toHaveValue("owner=team-a");
+    expect(screen.queryByText("r-0193f2a1")).not.toBeInTheDocument();
+
+    // And the route's own dialog lists them.
+    await user.click(screen.getByRole("button", { name: "Plugins and usage of r-0193f2a0" }));
+    const dialog = await screen.findByRole("dialog", { name: "Route r-0193f2a0" });
+    expect(within(dialog).getByText("valkv-name=portal")).toBeInTheDocument();
+    expect(within(dialog).getByText("owner=team-a")).toBeInTheDocument();
+  });
+
+  it("without a display label configured, the name stands alone and labels are still listed", async () => {
+    serve({ "GET /v1/workspaces/default/routes": { body: { data: routes, next_cursor: null } } });
+    open("/routes");
+    const row = (await screen.findByText("r-0193f2a0")).closest("tr")!;
+    expect(row.querySelector(".cell-sub")).toBeNull();
+    expect(within(row).getByText("valkv-name=portal")).toBeInTheDocument();
+  });
+
+  it("shows labels in the Services list and the service's health dialog, and filters by them", async () => {
+    serve({ "GET /v1/workspaces/default/services": { body: { data: [
+      { ...SERVICE, id: "s1", name: "app-17", labels: { "valkv-name": "orders" } },
+      { ...SERVICE, id: "s2", name: "app-18", labels: { "valkv-name": "users" } },
+    ], next_cursor: null } } }, { brand: { display_label: "valkv-name" } });
+    const user = userEvent.setup();
+    open("/services");
+    const row = (await screen.findByText("app-17")).closest("tr")!;
+    expect(within(row).getByText("orders")).toHaveClass("cell-sub");
+    expect(within(row).getByRole("button", { name: "Filter by valkv-name=orders" })).toBeInTheDocument();
+    await user.type(screen.getByRole("searchbox", { name: "Filter services" }), "valkv-name=users");
+    expect(screen.queryByText("app-17")).not.toBeInTheDocument();
+    expect(screen.getByText("app-18")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Health of app-18" }));
+    expect(within(await screen.findByRole("dialog", { name: "Health of app-18" })).getByText("valkv-name=users")).toBeInTheDocument();
+  });
+});
+
 describe("loading, empty and error states", () => {
   it("shows the server's message and tries again on request", async () => {
     let fail = true;
