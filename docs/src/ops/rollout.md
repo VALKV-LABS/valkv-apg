@@ -165,7 +165,7 @@ Changing `version_tag` and applying replaces the admin instances first, then the
 
 | What you see | What it means | Do |
 |---|---|---|
-| A node is `not reporting` in `apgctl nodes` | It cannot reach the control plane, or is down | It still serves from its cache if it is up. Check its `/readyz` and its log. |
+| A node is `not reporting` in `apgctl nodes` | It cannot reach the control plane, or is down | It still serves from its cache if it is up. Check its `/readyz` and its log. If the node was replaced and is gone for good, remove it from the Nodes page or with `DELETE /v1/nodes/{node_id}`; it is removed by itself after `APG_NODE_RETENTION_HOURS`. |
 | `LAG` stays above 0 on one node | It is not applying changes | Look for `apg_changelog_errors_total` on that node; restart it. It will take a snapshot. |
 | `stale: true` in `/readyz` | The node has not heard from the control plane for a while | It keeps serving. Fix the control plane or the network between them. |
 | The admin does not start after the upgrade | A migration failed | The log names it. The database is unchanged by a failed migration; start the previous admin version. |

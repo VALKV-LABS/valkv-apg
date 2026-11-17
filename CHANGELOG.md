@@ -5,6 +5,14 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Nodes: a node that is gone for good can be removed with `DELETE /v1/nodes/{node_id}` (admin
+  only, audited) or **Remove node** on the console's Nodes page, so replaced nodes no longer
+  pile up as "not reporting" and in the fleet totals. Only a node silent for more than 30
+  seconds can be removed; a live one is refused with `409 CONFLICT`. A removed node that
+  reports again is listed again. Nodes silent longer than `APG_NODE_RETENTION_HOURS` (24 unless
+  set; `0` turns this off) are removed by the control plane on its own (#13).
+
 ## [0.1.3] - 2026-11-14
 
 ### Fixed

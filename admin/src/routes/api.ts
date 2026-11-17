@@ -305,6 +305,27 @@ export function registerApi(app: FastifyInstance, store: Store, schemas: SchemaR
     return { data: rows.map((r) => ({ ...r, lag: Math.max(0, last - r["applied_seq"]) })), last_seq: last };
   });
 
+  // A node that is gone for good stays listed until removed here or pruned by
+  // the node_retention job. A node heard from in the last 30 seconds is live and
+  // cannot be removed; a removed node that reports again simply re-registers.
+  doc({ method: "delete", path: "/v1/nodes/{node_id}", summary: "Remove a node that has stopped reporting", tag: "nodes", success: 204, roles: "admin" });
+  app.delete("/v1/nodes/:node_id", async (request, reply) => {
+    const ctx = ctxOf(request);
+    requireAdmin(ctx.actor);
+    const nodeId = (request.params as P)["node_id"]!;
+    await sql.begin(async (tx) => {
+      const [row] = await tx<Row[]>`
+        SELECT node_id, version, source, applied_seq, region, first_seen, last_seen, (last_seen > now() - interval '30 seconds') AS live
+        FROM apg_nodes WHERE node_id = ${nodeId} FOR UPDATE`;
+      if (!row) throw new ApiError("NOT_FOUND", `node '${nodeId}' not found`);
+      const { live, ...before } = row;
+      if (live) throw new ApiError("CONFLICT", `node '${nodeId}' reported in the last 30 seconds; only a node that has stopped reporting can be removed`);
+      await tx`DELETE FROM apg_nodes WHERE node_id = ${nodeId}`;
+      await store.audit(tx, ctx, { action: "delete", kind: "node", resource_id: nodeId, resource_name: nodeId, before });
+    });
+    return reply.status(204).send();
+  });
+
   // ── Backend health, as nodes report it (spec OBS-4) ────────────────────────
 
   // Nodes keep health to themselves and report it every ten seconds, so this is

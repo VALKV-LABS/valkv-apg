@@ -20,7 +20,7 @@ export const READ_VARIABLES = [
   "APG_BOOTSTRAP_ADMIN_TOKEN", "APG_BOOTSTRAP_NODE_TOKEN", "APG_MIGRATE_ON_BOOT",
   "APG_ADMIN_JWT_JWKS_URL", "APG_ADMIN_JWT_PUBLIC_KEY", "APG_ADMIN_JWT_ISSUER", "APG_ADMIN_JWT_AUDIENCE",
   "APG_ADMIN_JWT_WORKSPACE_CLAIM", "APG_ADMIN_JWT_ROLE_CLAIM",
-  "APG_DOMAIN_VERIFICATION", "APG_CHANGELOG_RETENTION_HOURS", "APG_NODE_SLOT_TTL_HOURS", "APG_AUDIT_RETENTION_DAYS",
+  "APG_DOMAIN_VERIFICATION", "APG_CHANGELOG_RETENTION_HOURS", "APG_NODE_SLOT_TTL_HOURS", "APG_NODE_RETENTION_HOURS", "APG_AUDIT_RETENTION_DAYS",
   "APG_EGRESS_ALLOW_CIDRS", "APG_BACKEND_ALLOW_CIDRS", "APG_LOG_LEVEL", "APG_LOG_FORMAT",
   "APG_USAGE_ROLLUP_INTERVAL_SECS", "APG_USAGE_RAW_RETENTION_DAYS", "APG_USAGE_HOURLY_RETENTION_DAYS", "APG_USAGE_WEBHOOK_URL",
   "APG_UI_ENABLED", "APG_UI_DIR", "APG_UI_BRAND_NAME", "APG_UI_LOGO_URL", "APG_UI_PRIMARY_COLOR", "APG_UI_EMBED_ORIGINS",
@@ -81,6 +81,8 @@ export interface Config {
   domainVerification: "none" | "dns_txt";
   changelogRetentionHours: number;
   nodeSlotTtlHours: number;
+  /** Silence after which a node is removed from the list; 0 keeps nodes until removed by hand. */
+  nodeRetentionHours: number;
   auditRetentionDays: number;
   usageRollupSecs: number;
   usageRawRetentionDays: number;
@@ -169,6 +171,7 @@ export function loadConfig(env: Env = process.env): Config {
     domainVerification: oneOf("APG_DOMAIN_VERIFICATION", get(env, "APG_DOMAIN_VERIFICATION") ?? "none", ["none", "dns_txt"] as const),
     changelogRetentionHours: positiveInt("APG_CHANGELOG_RETENTION_HOURS", get(env, "APG_CHANGELOG_RETENTION_HOURS") ?? "168"),
     nodeSlotTtlHours: positiveInt("APG_NODE_SLOT_TTL_HOURS", get(env, "APG_NODE_SLOT_TTL_HOURS") ?? "24"),
+    nodeRetentionHours: nonNegativeInt("APG_NODE_RETENTION_HOURS", get(env, "APG_NODE_RETENTION_HOURS") ?? "24"),
     auditRetentionDays: positiveInt("APG_AUDIT_RETENTION_DAYS", get(env, "APG_AUDIT_RETENTION_DAYS") ?? "400"),
     usageRollupSecs: positiveInt("APG_USAGE_ROLLUP_INTERVAL_SECS", get(env, "APG_USAGE_ROLLUP_INTERVAL_SECS") ?? "60"),
     usageRawRetentionDays: positiveInt("APG_USAGE_RAW_RETENTION_DAYS", get(env, "APG_USAGE_RAW_RETENTION_DAYS") ?? "7"),
@@ -297,6 +300,12 @@ function bool(key: string, value: string): boolean {
 function positiveInt(key: string, value: string): number {
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1) throw new ConfigError(`${key} must be a positive integer; got '${value}'`);
+  return n;
+}
+
+function nonNegativeInt(key: string, value: string): number {
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) throw new ConfigError(`${key} must be a whole number, 0 or more; got '${value}'`);
   return n;
 }
 

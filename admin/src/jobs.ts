@@ -21,6 +21,8 @@ export interface Job {
 export interface JobSettings {
   changelogRetentionHours: number;
   nodeSlotTtlHours: number;
+  /** 0 turns node pruning off. */
+  nodeRetentionHours?: number;
   auditRetentionDays: number;
   usageRollupSecs?: number;
   usageRawRetentionDays?: number;
@@ -82,6 +84,17 @@ export function buildJobs(store: Store, s: JobSettings): Job[] {
       name: "idempotency_cleanup",
       everyMs: 3600_000,
       run: async (tx) => (await tx`DELETE FROM apg_idempotency_keys WHERE created_at < now() - interval '24 hours'`).count,
+    },
+    {
+      // A node silent past the retention is gone for good (replaced, scaled in):
+      // drop it from the list and the fleet totals. If it reports again it re-registers.
+      name: "node_retention",
+      everyMs: 10 * 60_000,
+      run: async (tx) => {
+        const hours = s.nodeRetentionHours ?? 24;
+        if (hours === 0) return 0;
+        return (await tx`DELETE FROM apg_nodes WHERE last_seen < now() - make_interval(hours => ${hours})`).count;
+      },
     },
     {
       // spec CFG-15. An inactive slot pins WAL until the disk fills; drop the

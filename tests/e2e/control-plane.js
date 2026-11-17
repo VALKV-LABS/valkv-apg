@@ -76,11 +76,37 @@ step("a heartbeat makes the node visible with its lag", async () => {
   assert.equal(me.live, true);
 });
 
+// Issue #13: a node that is gone for good can be removed; a live one cannot.
+// The node beats once here and then stays silent, as a terminated instance would.
+let goneAt = 0;
+step("a live node cannot be removed", async () => {
+  const hb = await http("POST", `${ADMIN}/dp/heartbeat`, { headers: node, body: { node_id: `gone-${run}`, version: "test", source: "api_poll", applied_seq: 0 } });
+  assert.equal(hb.status, 204);
+  goneAt = Date.now();
+  const res = await http("DELETE", `${ADMIN}/v1/nodes/gone-${run}`, { headers: admin });
+  assert.equal(res.status, 409, res.text);
+  assert.equal(res.json.error.code, "CONFLICT");
+  assert.equal((await http("DELETE", `${ADMIN}/v1/nodes/gone-${run}`, { headers: node })).status, 403);
+  assert.ok((await http("GET", `${ADMIN}/v1/nodes`, { headers: admin })).json.data.some((n) => n.node_id === `gone-${run}`));
+});
+
 step("cleaning up emits deletes in dependency order", async () => {
   const since = (await http("GET", `${ADMIN}/v1/nodes`, { headers: admin })).json.last_seq;
   assert.equal((await http("DELETE", `${D}/services/e2e-${run}?cascade=true`, { headers: admin })).status, 204);
   const res = await http("GET", `${ADMIN}/dp/changes?since=${since}`, { headers: node });
   assert.deepEqual(res.json.changes.map((c) => `${c.data.kind}:${c.data.op}`), ["route:delete", "service:delete"]);
+});
+
+step("a node that stopped reporting is removed and is gone from the list", async () => {
+  // Live means heard from in the last 30 seconds.
+  const wait = goneAt + 31_000 - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  const listed = (await http("GET", `${ADMIN}/v1/nodes`, { headers: admin })).json.data.find((n) => n.node_id === `gone-${run}`);
+  assert.equal(listed.live, false);
+  const res = await http("DELETE", `${ADMIN}/v1/nodes/gone-${run}`, { headers: admin });
+  assert.equal(res.status, 204, res.text);
+  assert.ok(!(await http("GET", `${ADMIN}/v1/nodes`, { headers: admin })).json.data.some((n) => n.node_id === `gone-${run}`));
+  assert.equal((await http("DELETE", `${ADMIN}/v1/nodes/gone-${run}`, { headers: admin })).status, 404);
 });
 
 step("the admin serves its OpenAPI document and metrics", async () => {
