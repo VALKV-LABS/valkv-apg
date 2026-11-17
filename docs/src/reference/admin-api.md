@@ -105,6 +105,7 @@ Everything the console and `apgctl` do, they do through this API. The machine-re
 | Method | Path | What it does | Role |
 |---|---|---|---|
 | GET | `/v1/nodes` | List data-plane nodes with their config lag | admin |
+| DELETE | `/v1/nodes/{node_id}` | Remove a node that has stopped reporting | admin |
 
 ## plugins
 

@@ -86,6 +86,7 @@ Each process is configured by its environment, read once at start. A variable th
 | `APG_DOMAIN_VERIFICATION` | `none`, `dns_txt` | `none` | Whether a Domain must be proven before it becomes active. |
 | `APG_CHANGELOG_RETENTION_HOURS` | integer | `168` | Age at which changelog rows are deleted. |
 | `APG_NODE_SLOT_TTL_HOURS` | integer | `24` | Silence after which a node's replication slot is dropped. |
+| `APG_NODE_RETENTION_HOURS` | integer | `24` | Silence after which a node is removed from the node list and the fleet totals; 0 keeps it until removed by hand. |
 | `APG_USAGE_ROLLUP_INTERVAL_SECS` | integer | `60` | How often hourly and daily usage is rebuilt from the windows received. |
 | `APG_USAGE_RAW_RETENTION_DAYS` | integer | `7` | Retention of raw usage windows. |
 | `APG_USAGE_HOURLY_RETENTION_DAYS` | integer | `400` | Retention of hourly usage. |

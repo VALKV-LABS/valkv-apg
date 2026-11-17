@@ -103,6 +103,7 @@ describe("process configuration", () => {
       domainVerification: "none",
       changelogRetentionHours: 168,
       nodeSlotTtlHours: 24,
+      nodeRetentionHours: 24,
       auditRetentionDays: 400,
       logLevel: "info",
       logFormat: "json",
@@ -124,6 +125,13 @@ describe("process configuration", () => {
     expect(() => loadConfig({ ...base, APG_CHANGELOG_RETENTION_HOURS: "0" })).toThrow(/positive integer/);
     expect(() => loadConfig({ ...base, APG_BACKEND_ALLOW_CIDRS: "10.0.0.0/99" })).toThrow(/CIDR/);
     expect(() => loadConfig({ ...base, APG_MIGRATE_ON_BOOT: "yes" })).toThrow(/true or false/);
+  });
+
+  it("node retention may be 0, which keeps silent nodes until removed by hand", () => {
+    expect(loadConfig({ ...base, APG_NODE_RETENTION_HOURS: "0" }).nodeRetentionHours).toBe(0);
+    expect(loadConfig({ ...base, APG_NODE_RETENTION_HOURS: "72" }).nodeRetentionHours).toBe(72);
+    expect(() => loadConfig({ ...base, APG_NODE_RETENTION_HOURS: "-1" })).toThrow(/APG_NODE_RETENTION_HOURS/);
+    expect(() => loadConfig({ ...base, APG_NODE_RETENTION_HOURS: "1.5" })).toThrow(/APG_NODE_RETENTION_HOURS/);
   });
 
   it("fails when the database URL is absent or empty", () => {

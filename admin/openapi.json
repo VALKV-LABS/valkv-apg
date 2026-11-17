@@ -1340,6 +1340,128 @@
         }
       }
     },
+    "/v1/nodes/{node_id}": {
+      "delete": {
+        "operationId": "delete_nodes_node_id",
+        "summary": "Remove a node that has stopped reporting",
+        "tags": [
+          "nodes"
+        ],
+        "description": "Minimum role: admin.",
+        "parameters": [
+          {
+            "name": "node_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Id or name"
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Validate and return the result without writing"
+          },
+          {
+            "name": "cascade",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "description": "Also delete resources that reference this one"
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Done"
+          },
+          "400": {
+            "description": "Malformed request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The caller's role does not allow this",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found, or outside the caller's scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Conflict, or the resource is in use",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "If-Match did not match the current revision",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many requests",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/schemas/plugins": {
       "get": {
         "operationId": "get_schemas_plugins",

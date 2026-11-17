@@ -170,6 +170,45 @@ describe("nodes", () => {
     expect((await h.call("GET", "/dp/nodes/applied", node())).json).toEqual({ min_applied_seq: last - 3, live_nodes: 2 });
     expect((await h.call("POST", "/dp/heartbeat", { ...node(), body: { applied_seq: 1 } })).status).toBe(422);
   });
+
+  // Issue #13: a node that is gone for good can be removed; a live one cannot.
+  it("a node that stopped reporting can be removed, a live one cannot, and a removed node that reports again re-registers", async () => {
+    const last = await h.lastSeq();
+    const beat = (nodeId: string) => h.call("POST", "/dp/heartbeat", { ...node(), body: { node_id: nodeId, version: "0.1.0", source: "api_poll", applied_seq: last - 1 } });
+    await beat("gone-1");
+    await beat("alive-1");
+    const ids = async () => (await h.call("GET", "/v1/nodes")).json.data.map((n: any) => n.node_id);
+
+    // Live: refused, and still listed.
+    const refused = await h.call("DELETE", "/v1/nodes/alive-1");
+    expect([refused.status, refused.json.error.code]).toEqual([409, "CONFLICT"]);
+    expect(await ids()).toContain("alive-1");
+
+    // Silent for more than 30 seconds: removed, gone from the list and the totals, and audited.
+    await h.sql`UPDATE apg_nodes SET last_seen = now() - interval '31 seconds' WHERE node_id = 'gone-1'`;
+    expect((await h.call("GET", "/v1/nodes")).json.data.find((n: any) => n.node_id === "gone-1").live).toBe(false);
+    expect((await h.call("DELETE", "/v1/nodes/gone-1")).status).toBe(204);
+    expect(await ids()).not.toContain("gone-1");
+    expect((await h.sql`SELECT count(*)::int AS n FROM apg_nodes WHERE node_id = 'gone-1'`)[0]!["n"]).toBe(0);
+    const [audit] = await h.sql`SELECT action, kind, resource_id, outcome, before FROM apg_audit_log WHERE kind = 'node' ORDER BY id DESC LIMIT 1`;
+    expect([audit!["action"], audit!["kind"], audit!["resource_id"], audit!["outcome"], audit!["before"]["applied_seq"]]).toEqual(["delete", "node", "gone-1", "ok", last - 1]);
+
+    // Removing it again, or a node never seen, is a 404.
+    expect((await h.call("DELETE", "/v1/nodes/gone-1")).status).toBe(404);
+    expect((await h.call("DELETE", "/v1/nodes/never-seen")).status).toBe(404);
+
+    // Admin only.
+    const editor = await h.token("editor");
+    await h.sql`UPDATE apg_nodes SET last_seen = now() - interval '5 minutes' WHERE node_id = 'alive-1'`;
+    expect((await h.call("DELETE", "/v1/nodes/alive-1", { token: editor })).status).toBe(403);
+    expect((await h.call("DELETE", "/v1/nodes/alive-1", node())).status).toBe(403);
+    expect(await ids()).toContain("alive-1");
+
+    // A removed node that reports again is simply listed again.
+    await beat("gone-1");
+    const back = (await h.call("GET", "/v1/nodes")).json.data.find((n: any) => n.node_id === "gone-1");
+    expect([back.live, back.lag]).toEqual([true, 1]);
+  });
 });
 
 describe("backend health", () => {
@@ -324,6 +363,21 @@ describe("jobs", () => {
     const last = await h.lastSeq();
     expect((await h.call("GET", `/dp/changes?since=${last}`, node())).status).toBe(204);
     expect((await h.call("GET", `/dp/changes?since=${last - 1}`, node())).status).toBe(410);
+  });
+
+  // Issue #13: nodes silent past node_retention are pruned; 0 turns pruning off.
+  it("node retention removes nodes silent past the retention and keeps the rest", async () => {
+    const beat = (nodeId: string) => h.call("POST", "/dp/heartbeat", { ...node(), body: { node_id: nodeId, applied_seq: 1 } });
+    await beat("prune-old");
+    await beat("prune-recent");
+    await h.sql`UPDATE apg_nodes SET last_seen = now() - interval '2 hours' WHERE node_id = 'prune-old'`;
+    await h.sql`UPDATE apg_nodes SET last_seen = now() - interval '5 minutes' WHERE node_id = 'prune-recent'`;
+    const prune = (hours: number) => buildJobs(h.store, { changelogRetentionHours: 1, nodeSlotTtlHours: 1, auditRetentionDays: 1, nodeRetentionHours: hours }).find((j) => j.name === "node_retention")!;
+    expect(await h.jobs.runOnce(prune(0))).toBe(0);
+    expect(await h.jobs.runOnce(prune(1))).toBeGreaterThanOrEqual(1);
+    const ids = (await h.call("GET", "/v1/nodes")).json.data.map((n: any) => n.node_id);
+    expect(ids).not.toContain("prune-old");
+    expect(ids).toContain("prune-recent");
   });
 
   it("expired ACME challenges are swept and nodes are told", async () => {

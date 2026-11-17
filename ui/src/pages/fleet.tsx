@@ -95,7 +95,7 @@ function NodeState({ node }: { node: Json }) {
 }
 
 /** One node on its own: what it holds, and every backend as this node sees it. */
-function NodeDialog({ node, onClose }: { node: Json; onClose: () => void }) {
+function NodeDialog({ node, onClose, onRemove }: { node: Json; onClose: () => void; onRemove: () => void }) {
   const { workspaces } = useSession();
   const services = (Array.isArray(node["info"]?.["backends"]) ? node["info"]["backends"] : []) as Json[];
   const counts = (node["info"]?.["counts"] ?? {}) as Json;
@@ -114,7 +114,10 @@ function NodeDialog({ node, onClose }: { node: Json; onClose: () => void }) {
     ["Holds", `${counts["routes"] ?? 0} routes, ${counts["services"] ?? 0} services, ${counts["workspaces"] ?? 0} workspaces`],
   ];
   return (
-    <Dialog title={`Node ${node["node_id"]}`} onClose={onClose} foot={<button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>}>
+    <Dialog title={`Node ${node["node_id"]}`} onClose={onClose} foot={<>
+      {!node["live"] && <button type="button" className="btn btn-danger" onClick={onRemove}><Trash2 size={13} aria-hidden="true" /> Remove node</button>}
+      <button type="button" className="btn btn-ghost" onClick={onClose}>Close</button>
+    </>}>
       <div className="form">
         {!node["live"] && <div className="notice notice-danger">This node has not reported for more than 30 seconds. What follows is the last thing it said.</div>}
         <div className="table-scroll"><table className="t">
@@ -143,8 +146,14 @@ function NodeDialog({ node, onClose }: { node: Json; onClose: () => void }) {
 }
 
 export function Nodes() {
+  const client = useQueryClient();
   const nodes = useQuery({ queryKey: ["nodes"], queryFn: () => api<{ data: Json[]; last_seq: number }>("GET", "/v1/nodes"), refetchInterval: 10_000 });
   const [open, setOpen] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
+  const remove = (nodeId: string) => void api("DELETE", `/v1/nodes/${encodeURIComponent(nodeId)}`)
+    .then(() => { setRemoving(null); setOpen(null); return client.invalidateQueries({ queryKey: ["nodes"] }); })
+    .catch(setError);
   const all = nodes.data?.data ?? [];
   const live = all.filter((n) => n["live"]);
   const behind = live.filter((n) => Number(n["lag"]) > 0).length;
@@ -194,7 +203,10 @@ export function Nodes() {
                     <td>{b.unhealthy > 0 ? <Tag tone="danger" dot>{b.unhealthy} failing</Tag> : b.healthy + b.unknown === 0 ? <span className="dim">none</span> : <Tag tone="ok" dot>none failing</Tag>}</td>
                     <td>{n["region"] ?? ""}</td>
                     <td title={formatTime(n["last_seen"])}>{relativeTime(n["last_seen"])}</td>
-                    <td className="actions"><button type="button" className="icon-btn" aria-label={`Details of node ${n["node_id"]}`} title="What this node holds and sees" onClick={() => setOpen(n["node_id"])}><Search size={14} aria-hidden="true" /></button></td>
+                    <td className="actions">
+                      <button type="button" className="icon-btn" aria-label={`Details of node ${n["node_id"]}`} title="What this node holds and sees" onClick={() => setOpen(n["node_id"])}><Search size={14} aria-hidden="true" /></button>
+                      {!n["live"] && <button type="button" className="icon-btn" aria-label={`Remove node ${n["node_id"]}`} title="Remove this node from the list" onClick={() => { setError(null); setRemoving(n["node_id"]); }}><Trash2 size={14} aria-hidden="true" /></button>}
+                    </td>
                   </tr>
                 );
               })}
@@ -202,7 +214,12 @@ export function Nodes() {
           </table></div>
         ))}
       </Card>
-      {inspected && <NodeDialog node={inspected} onClose={() => setOpen(null)} />}
+      {inspected && !removing && <NodeDialog node={inspected} onClose={() => setOpen(null)} onRemove={() => { setError(null); setRemoving(inspected["node_id"]); }} />}
+      {removing && (
+        <Confirm title={`Remove node ${removing}?`} confirmLabel="Remove node" danger error={error} onClose={() => setRemoving(null)} onConfirm={() => remove(removing)}>
+          <p>It is dropped from this list and from the fleet totals. Nothing is sent to the node: if it reports again, it is listed again.</p>
+        </Confirm>
+      )}
     </div>
   );
 }

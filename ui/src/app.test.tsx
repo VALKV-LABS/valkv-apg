@@ -365,6 +365,40 @@ describe("the fleet, and one node of it", () => {
     expect(row).toHaveTextContent("connection refused; not sending it traffic");
   });
 
+  // Issue #13: a node that is not reporting can be removed; a live one has no Remove button.
+  it("removes a node that is not reporting, from its row or its dialog, and offers no removal for a live node", async () => {
+    let listed = [node("n1"), node("gone-a", { live: false }), node("gone-b", { live: false })];
+    const server = serve({
+      "GET /v1/nodes": () => ({ body: { last_seq: 9, data: listed } }),
+      "DELETE /v1/nodes/gone-a": () => { listed = listed.filter((n) => n.node_id !== "gone-a"); return { status: 204 }; },
+      "DELETE /v1/nodes/gone-b": () => { listed = listed.filter((n) => n.node_id !== "gone-b"); return { status: 204 }; },
+    });
+    const user = userEvent.setup();
+    open("/nodes");
+    expect(await screen.findByText("gone-a")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove node n1" })).not.toBeInTheDocument();
+
+    // From the row.
+    await user.click(screen.getByRole("button", { name: "Remove node gone-a" }));
+    const confirm = await screen.findByRole("dialog", { name: "Remove node gone-a?" });
+    await user.click(within(confirm).getByRole("button", { name: "Remove node" }));
+    await waitFor(() => expect(screen.queryByText("gone-a")).not.toBeInTheDocument());
+    expect(server.calls.filter((c) => c.method === "DELETE").map((c) => c.path)).toEqual(["/v1/nodes/gone-a"]);
+    expect(screen.getByText("Not reporting", { selector: ".stat-label" }).parentElement!).toHaveTextContent("1");
+
+    // From the node's own dialog.
+    await user.click(screen.getByRole("button", { name: "Details of node gone-b" }));
+    const dialog = await screen.findByRole("dialog", { name: "Node gone-b" });
+    await user.click(within(dialog).getByRole("button", { name: "Remove node" }));
+    await user.click(within(await screen.findByRole("dialog", { name: "Remove node gone-b?" })).getByRole("button", { name: "Remove node" }));
+    await waitFor(() => expect(screen.queryByText("gone-b")).not.toBeInTheDocument());
+    expect(screen.getByText("Not reporting", { selector: ".stat-label" }).parentElement!).toHaveTextContent("None");
+
+    // A live node's dialog has no Remove button.
+    await user.click(screen.getByRole("button", { name: "Details of node n1" }));
+    expect(within(await screen.findByRole("dialog", { name: "Node n1" })).queryByRole("button", { name: "Remove node" })).not.toBeInTheDocument();
+  });
+
   it("says so when every node is fine", async () => {
     serve({ "GET /v1/nodes": { body: { last_seq: 9, data: [node("n1")] } } });
     open("/nodes");
