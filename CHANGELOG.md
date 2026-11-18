@@ -5,6 +5,8 @@ the project uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-17
+
 ### Added
 - Nodes: a node that is gone for good can be removed with `DELETE /v1/nodes/{node_id}` (admin
   only, audited) or **Remove node** on the console's Nodes page, so replaced nodes no longer
