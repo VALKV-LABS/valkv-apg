@@ -134,6 +134,12 @@ describe("process configuration", () => {
     expect(() => loadConfig({ ...base, APG_NODE_RETENTION_HOURS: "1.5" })).toThrow(/APG_NODE_RETENTION_HOURS/);
   });
 
+  it("the console's display label is a label key, or unset", () => {
+    expect(loadConfig(base).ui.displayLabel).toBeNull();
+    expect(loadConfig({ ...base, APG_UI_DISPLAY_LABEL: "app.example.com/name" }).ui.displayLabel).toBe("app.example.com/name");
+    expect(() => loadConfig({ ...base, APG_UI_DISPLAY_LABEL: "not a key" })).toThrow(/APG_UI_DISPLAY_LABEL/);
+  });
+
   it("fails when the database URL is absent or empty", () => {
     expect(() => loadConfig({})).toThrow(ConfigError);
     expect(() => loadConfig({ ...base, APG_DATABASE_URL: "  " })).toThrow(/APG_DATABASE_URL/);

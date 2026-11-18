@@ -12,6 +12,12 @@ the project uses [Semantic Versioning](https://semver.org/).
   seconds can be removed; a live one is refused with `409 CONFLICT`. A removed node that
   reports again is listed again. Nodes silent longer than `APG_NODE_RETENTION_HOURS` (24 unless
   set; `0` turns this off) are removed by the control plane on its own (#13).
+- Console: the Routes and Services lists show each resource's labels, and the route's and the
+  service's dialogs list them too. With `APG_UI_DISPLAY_LABEL` set to a label key, that label's
+  value is shown under each name, for names chosen by a program (`r-<uuid>`). The filter box
+  takes `key=value` to match a label exactly; clicking a label filters by it (#14).
+- `?label=key=value` on list endpoints can be repeated; a resource must carry every label asked
+  for (#14).
 
 ## [0.1.3] - 2026-11-14
 

@@ -26,11 +26,15 @@ export function pageOf(request: FastifyRequest): Page {
   const limit = q["limit"] === undefined ? 50 : Number(q["limit"]);
   if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new ApiError("BAD_REQUEST", "limit must be an integer from 1 to 500");
   if (q["cursor"] !== undefined && !isUuid(q["cursor"])) throw new ApiError("BAD_REQUEST", "cursor is not valid");
+  // `?label=k=v`, repeatable: a resource matches when it carries every one.
   let label: Record<string, string> | undefined;
-  if (q["label"] !== undefined) {
-    const i = q["label"].indexOf("=");
+  const asked = q["label"] as string | string[] | undefined;
+  for (const one of asked === undefined ? [] : Array.isArray(asked) ? asked : [asked]) {
+    const i = one.indexOf("=");
     if (i < 1) throw new ApiError("BAD_REQUEST", "label must be key=value");
-    label = { [q["label"].slice(0, i)]: q["label"].slice(i + 1) };
+    const key = one.slice(0, i);
+    if (label?.[key] !== undefined && label[key] !== one.slice(i + 1)) throw new ApiError("BAD_REQUEST", `label '${key}' is asked for with two values`);
+    label = { ...label, [key]: one.slice(i + 1) };
   }
   return { limit, cursor: q["cursor"], name: q["name"], label };
 }

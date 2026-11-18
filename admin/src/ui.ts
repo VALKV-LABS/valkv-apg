@@ -68,6 +68,7 @@ export function registerUi(app: FastifyInstance, ui: UiConfig, version: string, 
       primary_color: ui.primaryColor,
       version,
       embed_origins: ui.embedOrigins,
+      display_label: ui.displayLabel ?? null,
       single_sign_on: singleSignOn,
     }));
 

@@ -97,6 +97,7 @@ Each process is configured by its environment, read once at start. A variable th
 | `APG_UI_BRAND_NAME` | string | `valkv-apg` | Name shown in the console. |
 | `APG_UI_LOGO_URL` | url |  | Logo shown in the console. |
 | `APG_UI_PRIMARY_COLOR` | string |  | Accent colour of the console. |
+| `APG_UI_DISPLAY_LABEL` | string |  | A label key, such as app.example.com/name, whose value the console shows under each route's and service's name, for names chosen by a program. |
 | `APG_UI_EMBED_ORIGINS` | string-list |  | Origins allowed to frame the console. |
 | `APG_UI_DIR` | path | `ui/ next to the service` | Directory holding the built console. |
 | `APG_DEBUG_NODE_URL` | url |  | Management address of one node. It answers the route tester. |

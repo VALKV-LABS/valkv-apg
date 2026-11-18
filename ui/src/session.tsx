@@ -28,6 +28,8 @@ export interface Brand {
   embed_origins: string[];
   /** True when the control plane offers sign-in through an identity provider. */
   single_sign_on: boolean;
+  /** A label key whose value is shown under a route's or service's name (APG_UI_DISPLAY_LABEL). */
+  display_label?: string | null;
 }
 
 export interface Session {
